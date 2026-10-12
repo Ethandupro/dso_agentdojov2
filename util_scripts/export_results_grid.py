@@ -119,35 +119,70 @@ def detect_version(records: list[dict[str, Any]], v1_injection_ids: set[str], de
     return default
 
 
-def build_dataset(logdir: Path, default_version: str, groups: list[tuple[str, list[str]]]) -> dict[str, Any]:
+def load_record(path: Path, suite_dir: str, attack_dir: str) -> dict[str, Any] | None:
+    """Summarise one result file, or return None if it isn't a user-task run."""
+    data = json.loads(path.read_text())
+    user_task_id = data.get("user_task_id")
+    if user_task_id is None or not str(user_task_id).startswith("user_task"):
+        return None  # `injection_task_*/none/none.json` checks the injection task itself, not a pair
+    return {
+        "suite_name": data.get("suite_name") or suite_dir,
+        "user_task_id": user_task_id,
+        "injection_task_id": data.get("injection_task_id"),
+        "attack_type": data.get("attack_type") or attack_dir,
+        "utility": bool(data.get("utility")),
+        "security": bool(data.get("security")),
+        "error": data.get("error"),
+        "calls": tool_calls(data.get("messages") or []),
+        "detections": format_detections(data.get("guardrail_detections") or []),
+        "benchmark_version": data.get("benchmark_version"),
+    }
+
+
+class RecordCache:
+    """Keeps parsed result files keyed by path, re-reading a file only when its mtime or size changes."""
+
+    def __init__(self) -> None:
+        self.entries: dict[Path, tuple[tuple[int, int], dict[str, Any] | None]] = {}
+
+    def get(self, path: Path, suite_dir: str, attack_dir: str) -> dict[str, Any] | None:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = self.entries.get(path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        record = load_record(path, suite_dir, attack_dir)
+        self.entries[path] = (stamp, record)
+        return record
+
+    def prune(self, seen: set[Path]) -> None:
+        for path in self.entries.keys() - seen:
+            del self.entries[path]
+
+
+def build_dataset(
+    logdir: Path, default_version: str, groups: list[tuple[str, list[str]]], cache: RecordCache | None = None
+) -> dict[str, Any]:
+    cache = cache or RecordCache()
     strings = Interner()
     attacks = Interner()
     suites_index = Interner()
     task_ids: dict[str, set[str]] = {}
     raw_pipelines: dict[str, list[dict[str, Any]]] = {}
 
+    seen: set[Path] = set()
     for path in sorted(logdir.glob("*/*/*/*/*.json")):
         pipeline_dir, suite_dir, _, attack_dir, _ = path.relative_to(logdir).parts
         if "dos" in attack_dir:  # DoS attacks only run on one injection task and score security as `not utility`
             continue
-        data = json.loads(path.read_text())
-        user_task_id = data.get("user_task_id")
-        if user_task_id is None or not str(user_task_id).startswith("user_task"):
-            continue  # `injection_task_*/none/none.json` checks the injection task itself, not a pair
-        raw_pipelines.setdefault(pipeline_dir, []).append(
-            {
-                "suite_name": data.get("suite_name") or suite_dir,
-                "user_task_id": user_task_id,
-                "injection_task_id": data.get("injection_task_id"),
-                "attack_type": data.get("attack_type") or attack_dir,
-                "utility": bool(data.get("utility")),
-                "security": bool(data.get("security")),
-                "error": data.get("error"),
-                "calls": tool_calls(data.get("messages") or []),
-                "detections": format_detections(data.get("guardrail_detections") or []),
-                "benchmark_version": data.get("benchmark_version"),
-            }
-        )
+        try:
+            record = cache.get(path, suite_dir, attack_dir)
+        except (OSError, json.JSONDecodeError):
+            continue  # a run still being written or a file removed mid-scan; it is picked up on the next build
+        seen.add(path)
+        if record is not None:
+            raw_pipelines.setdefault(pipeline_dir, []).append(record)
+    cache.prune(seen)
 
     v1_injection_ids = set(get_suites(V1_VERSION)["workspace"].injection_tasks)
     versions: dict[str, Any] = {}
@@ -207,15 +242,13 @@ def build_dataset(logdir: Path, default_version: str, groups: list[tuple[str, li
         for run in pipeline["benign"]:
             run[1] = positions[suite_names[run[0]]][run[1]]
 
+    # Pool only the members that have results so far; a group appears once any member has run.
     known = {pipeline["name"] for pipeline in pipelines}
-    for label, members in groups:
-        missing = [member for member in members if member not in known]
-        if missing:
-            raise click.BadParameter(f"group {label!r} names unknown pipelines: {', '.join(missing)}")
+    pooled = [(label, [m for m in members if m in known]) for label, members in groups]
 
     return {
         "meta": {
-            "generated": datetime.datetime.now().astimezone().isoformat(timespec="minutes"),
+            "generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "logdir": str(logdir),
             "polarity": "security == true means the attacker succeeded",
         },
@@ -225,7 +258,7 @@ def build_dataset(logdir: Path, default_version: str, groups: list[tuple[str, li
         "strings": strings.values,
         "versions": versions,
         "pipelines": pipelines,
-        "groups": [{"name": label, "members": members} for label, members in groups],
+        "groups": [{"name": label, "members": members} for label, members in pooled if members],
     }
 
 

@@ -1028,15 +1028,18 @@ footer.defs dd { margin: 0; }
     const runs = D.pipelines.reduce((n, p) => n + p.runs.length, 0);
     const guardrail = D.pipelines.some((p) => p.kind.endsWith("_guardrail"));
     document.getElementById("meta").innerHTML =
-      `${D.pipelines.length} pipelines · ${runs.toLocaleString("en")} attack runs · exported ${esc(D.meta.generated.replace("T", " "))} from <code>${esc(D.meta.logdir)}</code>` +
-      (guardrail ? "" : `<br><span class="notice" style="display:inline-block;margin-top:8px">This export has no static or evolving guardrail pipelines yet. Re-run the exporter after the experiment writes its results.</span>`);
+      `${D.pipelines.length} pipelines · ${runs.toLocaleString("en")} attack runs · ` +
+      (D.meta.live ? "live from" : "exported") +
+      ` <code>${esc(D.meta.logdir)}</code> at ${esc(D.meta.generated.replace("T", " "))}` +
+      (D.meta.live ? " · reload to update" : "") +
+      (guardrail ? "" : `<br><span class="notice" style="display:inline-block;margin-top:8px">No static or evolving guardrail pipelines yet. They appear here once the experiment writes its results${D.meta.live ? "; reload the page to check" : ""}.</span>`);
   }
 
   function showEmpty(message) {
     app.innerHTML = `<div class="empty">
       <h2>No results loaded</h2>
       <p>${message || "This page has no data embedded. Generate it from a results directory:"}</p>
-      <pre>PYTHONPATH=src python util_scripts/export_results_grid.py runs --out runs/results_grid.html</pre>
+      <pre>PYTHONPATH=src python util_scripts/serve_results_grid.py runs</pre>
       <p>Or open a dataset written with <code>--json</code>:</p>
       <input type="file" id="file-in" accept=".json,application/json">
     </div>`;
