@@ -1,0 +1,477 @@
+<title>Skill File Evolution</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; each figure is a wide, scrollable plate with its caption underneath. */
+:root {
+  --bg: #f4f6f9; --surface: #ffffff; --fg: #1a2230; --muted: #5a6577; --line: #c3cad5;
+  --llm: #2d5ccc; --llm-bg: #e7edfb;
+  --inj: #c0432a; --inj-bg: #fbe9e4;
+  --evo: #0c8463; --evo-bg: #e0f3ec;
+  --zone: #eaeef4;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10141a; --surface: #18202a; --fg: #e2e7ee; --muted: #97a3b4; --line: #3a4656;
+  --llm: #84a6ff; --llm-bg: #1b2641; --inj: #ff8b6d; --inj-bg: #3a2019;
+  --evo: #4fd0a7; --evo-bg: #10322a; --zone: #151b23; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #10141a; --surface: #18202a; --fg: #e2e7ee; --muted: #97a3b4; --line: #3a4656;
+  --llm: #84a6ff; --llm-bg: #1b2641; --inj: #ff8b6d; --inj-bg: #3a2019;
+  --evo: #4fd0a7; --evo-bg: #10322a; --zone: #151b23; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 44px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; }
+h2 { font-size: 22px; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+.eyebrow { font: 600 12px/1 var(--body); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); }
+header { display: grid; gap: 14px; }
+.lede { font-size: 18px; color: var(--muted); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 14px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 22px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+.sw.llm { background: var(--llm-bg); border-color: var(--llm); }
+.sw.inj { background: var(--inj-bg); border-color: var(--inj); }
+.sw.det { background: var(--surface); border-color: var(--line); }
+.sw.evo { background: transparent; border: 2px dashed var(--evo); }
+
+section { display: grid; gap: 14px; }
+.sec-head { display: grid; gap: 6px; }
+figure { margin: 0; display: grid; gap: 12px; }
+.plate { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; padding: 16px; }
+.plate svg { display: block; width: 100%; min-width: 860px; height: auto; color: var(--fg); }
+figcaption { font-size: 15px; color: var(--muted); max-width: 80ch; }
+figcaption b { color: var(--fg); font-weight: 600; }
+
+/* SVG vocabulary */
+.b-det { fill: var(--surface); stroke: var(--line); stroke-width: 1.4; }
+.b-llm { fill: var(--llm-bg); stroke: var(--llm); stroke-width: 1.4; }
+.b-inj { fill: var(--inj-bg); stroke: var(--inj); stroke-width: 1.4; }
+.evo { stroke: var(--evo); stroke-width: 2.4; stroke-dasharray: 7 4; }
+.zone { fill: var(--zone); stroke: var(--line); stroke-dasharray: 3 4; }
+.zone-test { fill: none; stroke: var(--muted); stroke-dasharray: 3 4; stroke-width: 1.2; }
+.t { font: 600 13.5px var(--body); fill: var(--fg); }
+.s { font: 400 12px var(--body); fill: var(--muted); }
+.m { font: 400 11px var(--mono); fill: var(--muted); }
+.lbl { font: 400 11.5px var(--body); fill: var(--muted); }
+.zl { font: 600 11px var(--body); fill: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.et { font: 600 11.5px var(--body); fill: var(--evo); }
+.it { font: 600 11.5px var(--body); fill: var(--inj); }
+.ar { stroke: currentColor; stroke-width: 1.4; fill: none; }
+.ar-fb { stroke: var(--inj); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+.halo { stroke: var(--surface); stroke-width: 9; fill: none; }
+.ah { fill: currentColor; }
+.ahi { fill: var(--inj); }
+
+/* Conditions grid */
+.grid2 { display: grid; grid-template-columns: minmax(110px, 0.6fr) 1fr 1fr; gap: 8px; }
+.grid2 > div { border-radius: 8px; padding: 14px 16px; min-width: 0; }
+.gh { font-weight: 600; color: var(--muted); font-size: 14px; display: flex; align-items: end; }
+.gr { font-weight: 600; color: var(--muted); font-size: 14px; display: flex; align-items: center; }
+.cell { background: var(--surface); border: 1px solid var(--line); display: grid; gap: 4px; }
+.cell.e { border: 2px dashed var(--evo); }
+.cell .id { font: 700 20px var(--display); }
+.cell .run { font: 400 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.cell p { font-size: 14.5px; }
+.extras { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+.extras > div { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; font-size: 14.5px; background: var(--surface); }
+.hyp { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.hyp li { display: grid; grid-template-columns: 44px 1fr; gap: 10px; font-size: 15px; }
+.hyp b { font-family: var(--display); }
+
+/* Tables */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 14.5px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; border: 1.5px solid; vertical-align: 0; }
+.tbd { color: var(--inj); font-weight: 600; }
+
+/* Split bar */
+.split { display: flex; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+.split > div { padding: 12px 14px; min-width: 0; display: grid; gap: 4px; font-size: 14.5px; }
+.split .tr { flex: 60; background: var(--zone); }
+.split .te { flex: 40; background: var(--surface); border-left: 1px dashed var(--muted); }
+.split strong { font-family: var(--display); font-size: 16px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px 28px; font-size: 14.5px; }
+.facts div { display: grid; gap: 2px; }
+.facts .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+
+.open { border: 1px solid var(--inj); background: var(--inj-bg); border-radius: 10px; padding: 14px 18px; display: grid; gap: 6px; }
+.open ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 15px; }
+
+@media (max-width: 640px) {
+  .grid2 { grid-template-columns: 1fr 1fr; }
+  .grid2 .corner { display: none; }
+  .grid2 .gr { grid-column: 1 / -1; }
+  .split { flex-direction: column; }
+  .split .te { border-left: 0; border-top: 1px dashed var(--muted); }
+}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">AgentDojo v1.2.2 · experiment design</div>
+  <h1>Skill File Evolution</h1>
+  <p class="lede">Can a judge model keep rewriting a checker's security policy (the "skill file") from attacks that got through, so prompt-injection success drops over rounds, including against attackers that adapt back?</p>
+  <div class="legend" aria-label="Legend">
+    <span><i class="sw llm"></i>LLM call</span>
+    <span><i class="sw inj"></i>Attacker or injected content</span>
+    <span><i class="sw det"></i>Deterministic code, no model</span>
+    <span><i class="sw evo"></i>Changes between rounds (evolution)</span>
+  </div>
+</header>
+
+<!-- FIG 1 -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">Figure 1 · the smallest unit</div>
+    <h2>One trial: a user task, one injection, every tool call screened</h2>
+  </div>
+  <figure>
+    <div class="plate">
+    <svg viewBox="0 -8 1040 488" role="img" aria-label="One trial. The victim agent calls AgentDojo tools; each raw tool output goes to the checker, which reads the skill file and flags spans; the harness deletes them and returns the sanitized output to the agent. The attacker has planted injection text in the environment. After the run, AgentDojo's deterministic checks score utility and security.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a1i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahi" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <!-- attacker feedback (evolving attacker only) -->
+      <path class="ar-fb" d="M1020 425 H1032 V12 H490 V26" marker-end="url(#a1i)"/>
+      <text class="it" x="760" y="6" text-anchor="middle">success/fail + agent's final answer → attacker (evolving attacker only)</text>
+
+      <!-- attacker -->
+      <rect class="b-inj evo" x="400" y="30" width="180" height="72" rx="8"/>
+      <text class="t" x="490" y="56" text-anchor="middle">Attacker</text>
+      <text class="s" x="490" y="74" text-anchor="middle">writes injection text</text>
+      <text class="et" x="490" y="92" text-anchor="middle">evolves in C2, C4</text>
+      <line class="ar" x1="490" y1="102" x2="490" y2="168" marker-end="url(#a1)"/>
+      <text class="lbl" x="498" y="140">fills injection slots</text>
+
+      <!-- skill file -->
+      <rect class="b-det evo" x="650" y="30" width="180" height="72" rx="8"/>
+      <text class="t" x="740" y="56" text-anchor="middle">Skill file S_r</text>
+      <text class="s" x="740" y="74" text-anchor="middle">markdown policy, ≤1500 tok</text>
+      <text class="et" x="740" y="92" text-anchor="middle">evolves in C3, C4</text>
+      <line class="ar" x1="740" y1="102" x2="740" y2="168" marker-end="url(#a1)"/>
+      <text class="lbl" x="748" y="140">read on every call</text>
+
+      <!-- user task -->
+      <rect class="b-det" x="20" y="180" width="130" height="80" rx="8"/>
+      <text class="t" x="85" y="214" text-anchor="middle">User task</text>
+      <text class="s" x="85" y="232" text-anchor="middle">from the suite</text>
+      <line class="ar" x1="150" y1="220" x2="198" y2="220" marker-end="url(#a1)"/>
+      <text class="lbl" x="174" y="212" text-anchor="middle">prompt</text>
+
+      <!-- agent -->
+      <rect class="b-llm" x="200" y="170" width="160" height="100" rx="8"/>
+      <text class="t" x="280" y="202" text-anchor="middle">Victim agent</text>
+      <text class="s" x="280" y="221" text-anchor="middle">DeepAgents main agent</text>
+      <text class="m" x="280" y="240" text-anchor="middle">deepseek-v4.1-flash</text>
+      <text class="s" x="280" y="257" text-anchor="middle">≤30 model calls</text>
+      <line class="ar" x1="360" y1="200" x2="408" y2="200" marker-end="url(#a1)"/>
+      <text class="lbl" x="384" y="192" text-anchor="middle">tool call</text>
+
+      <!-- env -->
+      <rect class="b-det" x="410" y="170" width="160" height="100" rx="8"/>
+      <text class="t" x="490" y="202" text-anchor="middle">AgentDojo tools</text>
+      <text class="s" x="490" y="221" text-anchor="middle">run in FunctionsRuntime</text>
+      <text class="s" x="490" y="239" text-anchor="middle">on the task environment,</text>
+      <text class="it" x="490" y="257" text-anchor="middle">which holds the injection</text>
+      <line class="ar" x1="570" y1="220" x2="648" y2="220" marker-end="url(#a1)"/>
+      <text class="lbl" x="609" y="212" text-anchor="middle">raw output</text>
+
+      <!-- checker -->
+      <rect class="b-llm" x="650" y="170" width="180" height="100" rx="8"/>
+      <text class="t" x="740" y="202" text-anchor="middle">Checker</text>
+      <text class="s" x="740" y="221" text-anchor="middle">wrap_tool_call middleware</text>
+      <text class="s" x="740" y="239" text-anchor="middle">sees skill file, user task,</text>
+      <text class="s" x="740" y="257" text-anchor="middle">raw output; no tools</text>
+      <line class="ar" x1="830" y1="220" x2="868" y2="220" marker-end="url(#a1)"/>
+      <text class="lbl" x="849" y="212" text-anchor="middle">spans</text>
+
+      <!-- span remover -->
+      <rect class="b-det" x="870" y="170" width="150" height="100" rx="8"/>
+      <text class="t" x="945" y="202" text-anchor="middle">Span remover</text>
+      <text class="s" x="945" y="221" text-anchor="middle">deletes flagged spans,</text>
+      <text class="s" x="945" y="239" text-anchor="middle">inserts placeholder</text>
+      <text class="m" x="945" y="257" text-anchor="middle">[N item(s) removed]</text>
+
+      <!-- sanitized return -->
+      <path class="ar" d="M945 270 V312 H330 V272" marker-end="url(#a1)"/>
+      <text class="lbl" x="730" y="330" text-anchor="middle">sanitized output enters agent context (agent never sees the skill file)</text>
+
+      <!-- subagent -->
+      <line class="ar" x1="240" y1="270" x2="240" y2="378" marker-end="url(#a1)"/>
+      <text class="lbl" x="232" y="330" text-anchor="end">task()</text>
+      <line class="ar" x1="290" y1="380" x2="290" y2="272" marker-end="url(#a1)"/>
+      <text class="lbl" x="298" y="352">result</text>
+      <rect class="b-llm" x="200" y="380" width="160" height="80" rx="8"/>
+      <text class="t" x="280" y="408" text-anchor="middle">Subagent</text>
+      <text class="s" x="280" y="426" text-anchor="middle">same model, same tools,</text>
+      <text class="s" x="280" y="443" text-anchor="middle">same checker</text>
+
+      <!-- env to scoring (bridges over return line) -->
+      <line class="halo" x1="490" y1="300" x2="490" y2="324"/>
+      <line class="ar" x1="490" y1="270" x2="490" y2="378" marker-end="url(#a1)"/>
+      <text class="lbl" x="498" y="362">final env state + trace</text>
+
+      <!-- scoring -->
+      <rect class="b-det" x="410" y="380" width="420" height="90" rx="8"/>
+      <text class="t" x="620" y="408" text-anchor="middle">AgentDojo scoring (deterministic)</text>
+      <text class="s" x="620" y="428" text-anchor="middle">utility(): was the user's task done?</text>
+      <text class="s" x="620" y="447" text-anchor="middle">security(): did the injection task succeed? → this is "attack success"</text>
+      <line class="ar" x1="830" y1="425" x2="868" y2="425" marker-end="url(#a1)"/>
+
+      <!-- record -->
+      <rect class="b-det" x="870" y="380" width="150" height="90" rx="8"/>
+      <text class="t" x="945" y="408" text-anchor="middle">Trial record</text>
+      <text class="s" x="945" y="428" text-anchor="middle">feeds ASR, utility</text>
+      <text class="s" x="945" y="447" text-anchor="middle">and the round loop</text>
+    </svg>
+    </div>
+    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. On a parse failure it fails closed and the failure is counted. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. Block mode (replace the whole output) exists only as a comparison.</figcaption>
+  </figure>
+</section>
+
+<!-- FIG 2 -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">Figure 2 · where the defense evolves</div>
+    <h2>The round loop: failures in, a gated rewrite out</h2>
+  </div>
+  <figure>
+    <div class="plate">
+    <svg viewBox="0 0 1040 400" role="img" aria-label="Round loop. Skill file S_r is attacked on the train split. If at least 5 attacks succeed, the judge reads up to 20 of them and writes a candidate S-prime. An acceptance gate with four checks adopts or rejects it. The resulting file is evaluated on test and benign sets, which the judge never sees, and the next round begins.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+
+      <path class="zone" d="M195 26 H1030 V388 H585 V184 H195 Z"/>
+      <text class="zl" x="205" y="18">Train split · the judge may see this</text>
+      <rect class="zone-test" x="235" y="202" width="320" height="168" rx="8"/>
+      <text class="zl" x="245" y="388">Test + benign · never shown to the judge</text>
+
+      <!-- S_r -->
+      <rect class="b-det evo" x="20" y="50" width="150" height="80" rx="8"/>
+      <text class="t" x="95" y="84" text-anchor="middle">Skill file S_r</text>
+      <text class="s" x="95" y="103" text-anchor="middle">round r of 5; v0 at start</text>
+      <line class="ar" x1="170" y1="90" x2="208" y2="90" marker-end="url(#a2)"/>
+
+      <!-- train attacks -->
+      <rect class="b-inj" x="210" y="50" width="190" height="80" rx="8"/>
+      <text class="t" x="305" y="78" text-anchor="middle">Train attack phase</text>
+      <text class="s" x="305" y="97" text-anchor="middle">sampled train pairs, Fig. 1</text>
+      <text class="s" x="305" y="115" text-anchor="middle">static or evolving attacker</text>
+      <line class="ar" x1="400" y1="90" x2="438" y2="90" marker-end="url(#a2)"/>
+
+      <!-- failures -->
+      <rect class="b-det" x="440" y="50" width="160" height="80" rx="8"/>
+      <text class="t" x="520" y="78" text-anchor="middle">Collect failures</text>
+      <text class="s" x="520" y="97" text-anchor="middle">attacks that succeeded:</text>
+      <text class="m" x="520" y="115" text-anchor="middle">security() == True</text>
+      <line class="ar" x1="600" y1="90" x2="628" y2="90" marker-end="url(#a2)"/>
+
+      <!-- trigger -->
+      <polygon class="b-det" points="680,48 730,90 680,132 630,90"/>
+      <text class="t" x="680" y="87" text-anchor="middle">≥ 5</text>
+      <text class="s" x="680" y="103" text-anchor="middle">failures?</text>
+      <line class="ar" x1="730" y1="90" x2="808" y2="90" marker-end="url(#a2)"/>
+      <text class="lbl" x="769" y="82" text-anchor="middle">yes</text>
+      <line class="ar" x1="680" y1="132" x2="680" y2="198" marker-end="url(#a2)"/>
+      <text class="lbl" x="688" y="170">no</text>
+
+      <!-- judge -->
+      <rect class="b-llm evo" x="810" y="40" width="210" height="104" rx="8"/>
+      <text class="t" x="915" y="62" text-anchor="middle">Judge</text>
+      <text class="m" x="915" y="79" text-anchor="middle">Claude Opus 5.5</text>
+      <text class="s" x="915" y="97" text-anchor="middle">reads S_r + ≤20 failures,</text>
+      <text class="s" x="915" y="114" text-anchor="middle">checker reasons, agent actions</text>
+      <text class="s" x="915" y="131" text-anchor="middle">writes full S′ + changelog</text>
+      <line class="ar" x1="915" y1="144" x2="915" y2="198" marker-end="url(#a2)"/>
+      <text class="lbl" x="923" y="176">candidate S′</text>
+
+      <!-- gate -->
+      <rect class="b-det" x="810" y="200" width="210" height="170" rx="8"/>
+      <text class="t" x="825" y="226">Acceptance gate</text>
+      <text class="s" x="825" y="244">all four must pass:</text>
+      <text class="s" x="825" y="270">1  Replay: ASR drops ≥ 5 pts</text>
+      <text class="s" x="825" y="292">2  Benign FPR, utility ±2 pts</text>
+      <text class="s" x="825" y="314">3  ≤ 1500 tokens and parses</text>
+      <text class="s" x="825" y="336">4  No 8-gram shared with any</text>
+      <text class="s" x="840" y="352">archived attack string</text>
+
+      <!-- reject / accept -->
+      <rect class="b-det" x="600" y="200" width="160" height="60" rx="8"/>
+      <text class="t" x="680" y="225" text-anchor="middle">Keep S_r</text>
+      <text class="s" x="680" y="244" text-anchor="middle">no trigger, or rejected</text>
+      <line class="ar" x1="810" y1="236" x2="762" y2="236" marker-end="url(#a2)"/>
+      <text class="lbl" x="786" y="228" text-anchor="middle">fail</text>
+
+      <rect class="b-det evo" x="600" y="300" width="160" height="60" rx="8"/>
+      <text class="t" x="680" y="325" text-anchor="middle">Adopt S′</text>
+      <text class="s" x="680" y="344" text-anchor="middle">S_r+1 = S′, saved to disk</text>
+      <line class="ar" x1="810" y1="330" x2="762" y2="330" marker-end="url(#a2)"/>
+      <text class="lbl" x="786" y="322" text-anchor="middle">pass</text>
+
+      <!-- evaluate -->
+      <line class="ar" x1="600" y1="230" x2="542" y2="230" marker-end="url(#a2)"/>
+      <line class="ar" x1="600" y1="330" x2="542" y2="330" marker-end="url(#a2)"/>
+      <rect class="b-det" x="250" y="216" width="290" height="140" rx="8"/>
+      <text class="t" x="395" y="244" text-anchor="middle">Evaluate S_r+1</text>
+      <text class="s" x="395" y="266" text-anchor="middle">test injections, fresh attacks,</text>
+      <text class="s" x="395" y="284" text-anchor="middle">plus held-out attack styles</text>
+      <text class="s" x="395" y="306" text-anchor="middle">benign set: every user task, no injection</text>
+      <text class="s" x="395" y="330" text-anchor="middle">→ metrics only</text>
+
+      <!-- next round -->
+      <path class="ar" d="M250 286 H95 V132" marker-end="url(#a2)"/>
+      <text class="lbl" x="103" y="214">next round</text>
+      <text class="lbl" x="103" y="230">r → r+1</text>
+    </svg>
+    </div>
+    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. In C1 and C2 the judge and gate are skipped and S stays at v0, but the attack and evaluation phases still run so the curves line up. The replay set for check 1 is this round's failures plus an equal number of fresh train attacks. Check 4 forces the judge to describe attack patterns abstractly instead of pasting attack strings. The loop runs 5 rounds and stops early after 2 rounds in a row with no trigger or a rejected rewrite; later rounds are plotted flat.</figcaption>
+  </figure>
+</section>
+
+<!-- FIG 3 -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">Figure 3 · where the attack evolves</div>
+    <h2>The evolving attacker: up to 5 tries per pair per round</h2>
+  </div>
+  <figure>
+    <div class="plate">
+    <svg viewBox="0 0 1040 220" role="img" aria-label="Evolving attacker loop. The attacker LLM reads its archive and writes injection text, a trial runs, and on failure it sees only fail plus the agent's final answer, which goes back into the archive, for up to 5 attempts.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a3i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahi" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <rect class="b-inj evo" x="20" y="50" width="170" height="90" rx="8"/>
+      <text class="t" x="105" y="80" text-anchor="middle">Attack archive</text>
+      <text class="s" x="105" y="99" text-anchor="middle">past attempts + outcomes</text>
+      <text class="s" x="105" y="117" text-anchor="middle">one per run, never shared</text>
+      <line class="ar" x1="190" y1="95" x2="238" y2="95" marker-end="url(#a3)"/>
+      <text class="lbl" x="214" y="87" text-anchor="middle">history</text>
+
+      <rect class="b-llm" x="240" y="50" width="200" height="90" rx="8"/>
+      <text class="t" x="340" y="76" text-anchor="middle">Attacker LLM</text>
+      <text class="s" x="340" y="95" text-anchor="middle">ported SuperRed logic:</text>
+      <text class="s" x="340" y="112" text-anchor="middle">MUZZLE, GEPA, AgentVigil</text>
+      <text class="s" x="340" y="129" text-anchor="middle">mid-tier model, same in all runs</text>
+      <line class="ar" x1="440" y1="95" x2="498" y2="95" marker-end="url(#a3)"/>
+      <text class="lbl" x="469" y="87" text-anchor="middle">injection</text>
+
+      <rect class="b-det" x="500" y="50" width="190" height="90" rx="8"/>
+      <text class="t" x="595" y="84" text-anchor="middle">Run one trial</text>
+      <text class="s" x="595" y="103" text-anchor="middle">Fig. 1, current S_r</text>
+      <line class="ar" x1="690" y1="95" x2="728" y2="95" marker-end="url(#a3)"/>
+
+      <polygon class="b-det" points="785,53 840,95 785,137 730,95"/>
+      <text class="t" x="785" y="92" text-anchor="middle">attack</text>
+      <text class="s" x="785" y="108" text-anchor="middle">won?</text>
+      <line class="ar" x1="840" y1="95" x2="868" y2="95" marker-end="url(#a3)"/>
+      <text class="lbl" x="854" y="87" text-anchor="middle">yes</text>
+
+      <rect class="b-det" x="870" y="50" width="150" height="90" rx="8"/>
+      <text class="t" x="945" y="80" text-anchor="middle">Success</text>
+      <text class="s" x="945" y="99" text-anchor="middle">counts toward ASR;</text>
+      <text class="s" x="945" y="117" text-anchor="middle">trace can reach judge</text>
+
+      <path class="ar-fb" d="M785 137 V180 H105 V142" marker-end="url(#a3i)"/>
+      <text class="it" x="445" y="200" text-anchor="middle">no, and attempt &lt; 5: attacker sees only "failed" + agent's final answer</text>
+    </svg>
+    </div>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts or any test-split injection task. When the checker removes its text, it only sees a failure and can't tell whether the checker or the agent stopped it (internal logs record which). The static attacker is AgentDojo's <code>important_instructions</code> template, the same every round. The three attackers are ported in order (MUZZLE first) through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code>, and each must reproduce its upstream smoke result before use.</figcaption>
+  </figure>
+</section>
+
+<!-- MODELS -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">Who does what</div>
+    <h2>Four models, one scorer, and what each is allowed to see</h2>
+  </div>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Role</th><th>Model</th><th>Job</th><th>Sees</th><th>Never sees</th></tr></thead>
+    <tbody>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Victim agent</td><td><code>deepseek/deepseek-v4.1-flash</code> via OpenRouter, on DeepAgents</td><td>Does the user's task with AgentDojo tools; can delegate to a subagent</td><td>User task, sanitized tool outputs</td><td>Skill file, raw outputs</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker</td><td><span class="tbd">TBD in Phase 0</span>: cheaper than the agent, &lt;2% JSON parse failures</td><td>Flags spans to remove from each tool output, with reasons</td><td>Skill file, user task, raw tool output</td><td>Anything else; it has no tools (it can still be targeted by the injection it reads)</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>Claude Opus 5.5</code>, the strongest available</td><td>Rewrites the whole skill file when ≥5 train attacks succeed</td><td>Current file, ≤20 train failures, checker reasons, what the agent did next</td><td>Test split, held-out attack styles</td></tr>
+      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><span class="tbd">TBD in Phase 0</span>: mid-tier, willing to write injections, fixed across conditions</td><td>Writes injection text (evolving conditions only)</td><td>Success/fail, agent's final answer, its own archive</td><td>Skill file, checker verdicts, test injections</td></tr>
+      <tr><td><i class="dot" style="background:var(--surface);border-color:var(--line)"></i>Scorer</td><td>No model: AgentDojo's own checks</td><td>Decides utility and attack success for every trial</td><td>Final environment state and the full trace</td><td>n/a</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- CONDITIONS -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">The experiment</div>
+    <h2>Four runs in a 2 × 2, plus two reference runs</h2>
+    <p>Each cell is its own run with its own directory, cache and attacker archive under <code>results/&lt;run_id&gt;/seed_&lt;n&gt;/</code>. Dashed cells are where the skill file evolves.</p>
+  </div>
+  <div class="grid2">
+    <div class="gh corner"></div>
+    <div class="gh">Static attack<br><span class="mono" style="font-weight:400">important_instructions</span></div>
+    <div class="gh">Evolving attack<br><span style="font-weight:400">ported SuperRed attacker</span></div>
+
+    <div class="gr">Static skill file<br>(v0, judge off)</div>
+    <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-skill_static-attack · 3 seeds</span></div>
+    <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-skill_evolving-attack · 3 seeds</span></div>
+
+    <div class="gr">Evolving skill file<br>(judge + gate)</div>
+    <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 1 seed</span></div>
+    <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-skill_evolving-attack · 3 seeds</span></div>
+  </div>
+  <div class="extras">
+    <div><b>C0 · no checker.</b> Raw ASR and the utility ceiling. Also run once on AgentDojo's native loop to show the DeepAgents harness doesn't shift the numbers. 1 seed.</div>
+    <div><b>C5 · frozen evolved file.</b> The final C4 skill file, locked, against a fresh evolving attacker with an empty archive. 1 seed.</div>
+  </div>
+  <ul class="hyp">
+    <li><b>H1</b><span>Evolving files lower <b>test</b> ASR over rounds: C3 and C4 against C1, at equal <b>benign</b> utility.</span></li>
+    <li><b>H2</b><span>Against an adaptive attacker, a static file degrades faster: the ASR slope over rounds in C2 against C4.</span></li>
+    <li><b>H3</b><span>Gains generalize: ASR on held-out attack styles over test injections, and C5 against a fresh attacker.</span></li>
+  </ul>
+</section>
+
+<!-- DATA -->
+<section>
+  <div class="sec-head">
+    <div class="eyebrow">Data</div>
+    <h2>Split by injection task, so the judge can't memorize the goal</h2>
+  </div>
+  <div class="split" role="img" aria-label="Injection tasks split 60 percent train, 40 percent test">
+    <div class="tr"><strong>Train · 60% · ~21 injection tasks</strong><span>Attacks: <code>important_instructions</code> or the evolving attacker. Judge input and gate replays come only from here.</span></div>
+    <div class="te"><strong>Test · 40% · ~14 injection tasks</strong><span>Adds held-out styles <code>injecagent</code> and <code>ignore_previous</code>, never used in training.</span></div>
+  </div>
+  <div class="facts">
+    <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2), stratified split, seed 0</span></div>
+    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for false-positive rate and benign utility, in the gate and in evaluation</span></div>
+    <div><span class="k">Per round</span><span>A fixed number of (user task, injection task) pairs per split, fixed per-round seed. Pair count set by a power check after the pilot</span></div>
+    <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, checker FPR, injected text removed, benign text removed, cost per component; bootstrap 95% CIs</span></div>
+  </div>
+</section>
+
+<section class="open">
+  <div class="eyebrow" style="color:var(--inj)">Still open before Phase 1</div>
+  <ul>
+    <li>The victim scored 0/16 ASR on the banking slice smoke test. The "C0 ASR ≥ 20%" rule has to be checked across all suites and injection tasks, or there's nothing to defend.</li>
+    <li>Checker and attacker model IDs are still to be chosen against the OpenRouter catalogue.</li>
+    <li>Checker prompt, skill file v0 and the SuperRed ports aren't built yet.</li>
+  </ul>
+</section>
+</div>
