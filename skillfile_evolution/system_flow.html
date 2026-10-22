@@ -241,7 +241,7 @@ td:first-child { font-weight: 600; white-space: nowrap; }
       <text class="s" x="945" y="447" text-anchor="middle">and the round loop</text>
     </svg>
     </div>
-    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. On a parse failure it fails closed and the failure is counted. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. Block mode (replace the whole output) exists only as a comparison.</figcaption>
+    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. On a parse failure it fails closed and the failure is counted. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. Block mode (replace the whole output) exists only as a comparison. The checker is built once per task from the user's prompt and shared by both agent levels, so the subagent's checker also judges against the <b>user's</b> task. Every run builds this same victim from one <code>DeepAgentsConfig</code>, saved in its <code>config.json</code>; only the checker differs, and C0 has none.</figcaption>
   </figure>
 </section>
 
@@ -471,7 +471,8 @@ td:first-child { font-weight: 600; white-space: nowrap; }
   <ul>
     <li>The victim scored 0/16 ASR on the banking slice smoke test. The "C0 ASR ≥ 20%" rule has to be checked across all suites and injection tasks, or there's nothing to defend.</li>
     <li>Checker and attacker model IDs are still to be chosen against the OpenRouter catalogue.</li>
-    <li>Checker prompt, skill file v0 and the SuperRed ports aren't built yet.</li>
+    <li>Checker prompt, skill file v0, the SuperRed ports and the round runner aren't built yet. The DeepAgents victim is ready for them: the runner plugs the checker in through <code>tool_middleware_factory</code>.</li>
+    <li>The native-loop reference addresses the model as "AI assistant" in <code>important_instructions</code>, while the DeepAgents run says "DeepSeek". The two need the same attack text before the comparison means anything.</li>
   </ul>
 </section>
 </div>

@@ -1,4 +1,6 @@
+import json
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,9 +17,17 @@ from langgraph.types import Command
 from pydantic import Field
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
-from agentdojo.agent_pipeline.deepagents_pipeline import DEEPAGENTS_BUILTIN_TOOL_NAMES, DeepAgentsPipeline
+from agentdojo.agent_pipeline.deepagents_pipeline import (
+    DEEPAGENTS_BUILTIN_TOOL_NAMES,
+    DeepAgentsConfig,
+    DeepAgentsPipeline,
+    ToolMiddlewareFactory,
+)
 from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
+from agentdojo.attacks.base_attacks import get_model_name_from_pipeline
+from agentdojo.benchmark import benchmark_suite_without_injections, load_task_results
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
+from agentdojo.logging import OutputLogger
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import ChatMessage
 
@@ -70,11 +80,23 @@ def _tool_call_message(name: str, args: dict, call_id: str) -> AIMessage:
 class GroundTruthReplay(BasePipelineElement):
     """Scripts the deep agent to replay a task's ground-truth tool calls, either directly or via the subagent."""
 
-    def __init__(self, task, delegate: bool, tool_middleware: Sequence[AgentMiddleware] = ()) -> None:
+    def __init__(
+        self,
+        task,
+        delegate: bool,
+        tool_middleware: Sequence[AgentMiddleware] = (),
+        tool_middleware_factory: ToolMiddlewareFactory | None = None,
+    ) -> None:
         self.task = task
         self.delegate = delegate
         self.model = ScriptedChatModel()
-        self.pipeline = DeepAgentsPipeline(self.model, name="scripted", tool_middleware=tool_middleware)
+        self.pipeline = DeepAgentsPipeline(
+            self.model,
+            name="scripted",
+            tool_middleware=tool_middleware,
+            tool_middleware_factory=tool_middleware_factory,
+        )
+        self.name = self.pipeline.name
 
     def query(
         self,
@@ -196,3 +218,56 @@ def test_call_to_hidden_tool_is_rejected_not_executed():
     tool_results = [m for m in messages if m["role"] == "tool"]
     assert [m["error"] for m in tool_results] == ["Invalid tool write_file provided.", "Invalid tool ls provided."]
     assert extra_args["deepagents"]["rejected_hidden_tool_calls"] == 2
+
+
+def test_tool_middleware_factory_gets_user_task_in_main_agent_and_subagent():
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    task = suite.user_tasks["user_task_0"]
+    prompts: list[str] = []
+    spies: list[ToolCallSpy] = []
+
+    def factory(prompt: str) -> Sequence[AgentMiddleware]:
+        prompts.append(prompt)
+        spies.append(ToolCallSpy())
+        return spies[-1:]
+
+    pipeline = GroundTruthReplay(task, delegate=True, tool_middleware_factory=factory)
+    env = task.init_environment(suite.load_and_inject_default_environment({}))
+    expected = [call.function for call in task.ground_truth(env.model_copy(deep=True))]
+    pipeline.query(task.PROMPT, FunctionsRuntime(suite.tools), env)
+
+    # Built once per task from the user's prompt, and shared by the main agent and the subagent.
+    assert prompts == [task.PROMPT]
+    assert spies[0].seen == ["task", *expected]
+
+
+def test_benchmark_saves_trace_and_diagnostics(tmp_path: Path):
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    task = suite.user_tasks["user_task_0"]
+    pipeline = GroundTruthReplay(task, delegate=True)
+    with OutputLogger(str(tmp_path)):
+        results = benchmark_suite_without_injections(
+            pipeline,
+            suite,
+            user_tasks=["user_task_0"],
+            logdir=tmp_path,
+            force_rerun=False,
+            benchmark_version=BENCHMARK_VERSION,
+        )
+    assert results["utility_results"][("user_task_0", "")] is True
+
+    # Loading succeeds only with the messages logged, which is what lets an interrupted run resume.
+    saved = load_task_results("scripted", "banking", "user_task_0", "none", "none", tmp_path)
+    assert [m["role"] for m in saved.messages[:2]] == ["system", "user"]
+    assert saved.messages[-1]["role"] == "assistant"
+    raw = json.loads((tmp_path / "scripted" / "banking" / "user_task_0" / "none" / "none.json").read_text())
+    assert raw["deepagents"]["n_subagent_events"] > 0
+
+
+def test_from_config_name_lets_attacks_address_the_model():
+    config = DeepAgentsConfig(model_id="deepseek/deepseek-v4.1-flash", max_model_calls=7)
+    pipeline = DeepAgentsPipeline.from_config(config, model=ScriptedChatModel())
+    assert pipeline.name == "deepagents-deepseek_deepseek-v4.1-flash"
+    assert "/" not in pipeline.name
+    assert get_model_name_from_pipeline(pipeline) == "DeepSeek"
+    assert pipeline.max_model_calls == 7

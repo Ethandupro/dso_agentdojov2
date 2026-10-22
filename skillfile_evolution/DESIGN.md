@@ -11,7 +11,7 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
   - DeepAgents defaults in 0.7.25, for models with no harness profile (OpenRouter models get none): an in-memory virtual filesystem (`ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`) and the general-purpose subagent (`task`).
     - *Correction:* there is no `write_todos` planning tool and no `execute` tool in this configuration.
     - DeepAgents also adds no system-prompt text of its own: the model sees only our system prompt (AgentDojo's default).
-  - The tools and system prompt each agent actually received are recorded per run in `extra_args["deepagents"]["agent_setup"]`.
+  - The tools and system prompt each agent actually received are recorded per run in `extra_args["deepagents"]["agent_setup"]`, and (since 2026-10-22) in every trial's trace file under `"deepagents"`.
   - Name clash: banking's `read_file` replaces DeepAgents' `read_file`. This is deterministic, because LangChain registers user tools after middleware tools, and a test covers it.
   - Each task starts from fresh agent state. Main agent and subagent are each capped at 30 model calls per run.
   - DeepAgents' own `skills` feature is **not** used. It has nothing to do with the checker's skill file.
@@ -27,19 +27,32 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
     - It never hides an AgentDojo tool, so banking's `read_file` stays.
   - The agent sees AgentDojo's tools plus `task` (the general-purpose subagent).
   - Side effect: DeepAgents moves tool outputs over ~80k chars into the virtual filesystem, which the agent can no longer read. The largest ground-truth output in v1.2.2 is ~28k chars, so this shouldn't happen. Any such output is counted in `extra_args["deepagents"]["oversized_tool_outputs"]`.
-- **The checker is a LangChain `AgentMiddleware`** using `wrap_tool_call`, not a `PromptInjectionDetector` subclass. `DeepAgentsPipeline(tool_middleware=[...])` attaches it.
+- **Wired into the runs (2026-10-22).** C0–C5 all use the same victim construction; only the checker middleware differs (none in C0).
+  - A run builds its victim with `DeepAgentsPipeline.from_config(DeepAgentsConfig(...), tool_middleware_factory=...)`.
+  - `DeepAgentsConfig` holds everything that defines the victim apart from the checker: OpenRouter `model_id`, `temperature` (0.0), `max_model_calls` (30), `hide_filesystem_tools` (on), system message, tool output format. It's dumped into the run's `config.json`, so the "resume only an identical config" rule covers the victim too.
+  - Pipeline name: `deepagents-<model id, / replaced by _>`, e.g. `deepagents-deepseek_deepseek-v4.1-flash`.
+    - It contains the model id, so `important_instructions` addresses the model as "DeepSeek".
+    - No `/`: AgentDojo saves traces under the name with `/` replaced but looks them up under the raw name, so a `/` would make every finished trial look unfinished on resume.
+  - *Fix:* the benchmark runs `DeepAgentsPipeline` on its own, not inside an `AgentPipeline`, and `run_task_with_pipeline` drops `extra_args`. Before this fix, trace files had **no messages**: the saved results failed to load, resumed runs redid every trial, and the DeepAgents diagnostics were lost. The pipeline now logs the trace itself and writes the diagnostics into the trace file under `"deepagents"`. A test runs the benchmark and reloads the saved result.
+  - Benchmark CLI: `--harness deepagents --model-id <OpenRouter id>` runs the DeepAgents victim with no checker. That covers C0 and the Phase 0 pilot. C1–C4 need the checker, so they go through the experiment runner, not the CLI.
+  - The CLI's `--max-workers` path was broken upstream (positional arguments out of order, suite names passed where suites were expected). It's fixed.
+- **The checker is a LangChain `AgentMiddleware`** using `wrap_tool_call`, not a `PromptInjectionDetector` subclass.
+  - *Decided 2026-10-22:* it's attached with `tool_middleware_factory`, a function called once per task with the user's task prompt that returns the middleware. The same instances go on the main agent and the subagent, so the subagent's checker also sees the **user's** task, not the main agent's delegation message (the only "task" in the subagent's own messages). A test covers this.
+  - For C3/C4, a new skill file means building the factory (and pipeline) again for the next round; the gate's side-by-side replay uses one pipeline per file.
+  - `tool_middleware=[...]` remains for middleware that doesn't depend on the task.
   - It screens only AgentDojo environment tools. DeepAgents' built-in tools only hold content that already passed the checker.
   - *Correction:* the default general-purpose subagent is "isolated" and does **not** inherit the main agent's custom middleware. Inheritance only happens for `mode="fork"` subagents.
   - `DeepAgentsPipeline` therefore declares the general-purpose subagent itself, with the recorder and `tool_middleware` attached. A test checks that subagent tool calls are intercepted and traced, and fails if this is removed.
 - **Repo changes:**
   - No `requires-python` bump. The dependencies sit in an optional extra, `deepagents` (`deepagents==0.7.25`, `langchain-openai==1.7.2`), limited to Python ≥ 3.11, so upstream AgentDojo still installs on 3.10.
   - The project venv is uv-managed Python 3.12. System Python 3.14 can't build the locked `regex` without a C compiler.
+  - Always pass the extra: `uv sync --dev --extra deepagents`, `uv run --extra deepagents ...`. A plain `uv run` re-syncs the venv **without** it, and the DeepAgents tests then skip silently instead of failing.
   - The extra forces major upgrades of upstream's dependencies:
     - openai 1.76 → 3.31
     - anthropic 0.50 → 1.14
     - google-genai 1.15 → 2.31
     - langchain 0.3 → 1.4
-  - Upstream's tests still pass (43/43 including the new ones), but pyright now reports 10 errors in upstream's `openai_llm.py`, `anthropic_llm.py` and `google_llm.py` (0 with the original lock).
+  - Upstream's tests still pass (43/43 including the new ones; 48/48 on 2026-10-22), but pyright now reports 10 errors in upstream's `openai_llm.py`, `anthropic_llm.py` and `google_llm.py` (0 with the original lock).
   - At least one is a real runtime break: anthropic 1.14 has no `temperature` parameter on `messages.create`/`stream`, so the native `AnthropicLLM` would crash. None of this is on our OpenRouter path.
 - **Sanity reference:** one C0 run with AgentDojo's native tool-calling loop on the same model. If the harness changes ASR or utility, it's reported, not hidden.
 - SuperRed's evolving attackers are **ported into this repo** (decision 2026-10-15), not used as an external harness. AgentDojo stays the base repo. See "Evolving attackers" below.
@@ -142,6 +155,7 @@ Segmentation rules:
   - native loop: benign utility 15/16, utility under attack 14/16, ASR 0/16
   - DeepAgents: benign utility 15/16, utility under attack 12/16, ASR 0/16
 - **Open:** 0% ASR on this slice. The "C0 ASR ≥ 20%" rule needs checking across all injection tasks and suites before Phase 1.
+- **Open (2026-10-22):** the native-loop sanity run doesn't send the same attack text. Through `--model openai-compatible` its pipeline name is `openai-compatible`, so `important_instructions` addresses the model as "AI assistant", while the DeepAgents run says "DeepSeek". The native reference needs a pipeline name containing `deepseek-v4.1-flash` before its numbers are compared.
 
 ## Checker mode (decided 2026-10-15 by user)
 - **Main mode: sanitize.**

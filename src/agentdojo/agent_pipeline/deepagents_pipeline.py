@@ -11,12 +11,18 @@ Every model response and tool result, at every agent level (main agent and subag
 `_TranscriptRecorder` and flattened in chronological order into AgentDojo messages. This is needed because a
 subagent's tool calls never appear in the main agent's message list, but AgentDojo's checks read the full
 function-call trace.
+
+Experiment runs (C0-C5 in `skillfile_evolution/DESIGN.md`) build the victim with
+`DeepAgentsPipeline.from_config(DeepAgentsConfig(...), tool_middleware_factory=...)`, where the factory builds the
+checker for each task. The benchmark CLI selects it with `--harness deepagents --model-id <OpenRouter model id>`.
 """
 
+import json
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from functools import partial
+from typing import Any, Literal
 
 from deepagents import create_deep_agent
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
@@ -27,6 +33,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
+from pydantic import BaseModel
 
 from agentdojo.agent_pipeline.agent_pipeline import load_system_message
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -40,6 +47,7 @@ from agentdojo.functions_runtime import (
     FunctionsRuntime,
     TaskEnvironment,
 )
+from agentdojo.logging import Logger, TraceLogger
 from agentdojo.types import (
     ChatAssistantMessage,
     ChatMessage,
@@ -73,6 +81,38 @@ not read it back, so such outputs are counted in `extra_args["deepagents"]["over
 ground-truth tool output in AgentDojo v1.2.2 is ~28k chars (workspace `list_files`)."""
 
 _AGENTDOJO_TOOL_METADATA_KEY = "agentdojo_function"
+
+ToolMiddlewareFactory = Callable[[str], Sequence[AgentMiddleware]]
+"""Builds tool middleware (e.g. the checker) for one task, given the user's task prompt. The middleware it returns
+is attached to both the main agent and the subagent, so the subagent's checker also sees the user's task rather
+than the main agent's delegation message."""
+
+
+class DeepAgentsConfig(BaseModel):
+    """Everything that defines the DeepAgents victim of a run, apart from the tool middleware.
+
+    Experiment runs save it in their `config.json`, so a run only resumes with an identical victim.
+    """
+
+    model_id: str
+    """OpenRouter model id, e.g. `deepseek/deepseek-v4.1-flash`."""
+    temperature: float | None = 0.0
+    max_model_calls: int = 30
+    """Per-agent limit on model calls in one run (main agent and each subagent run separately)."""
+    hide_filesystem_tools: bool = True
+    system_message_name: str | None = None
+    """The name of the system message to use. If not provided, AgentDojo's default system message is used."""
+    system_message: str | None = None
+    """The system message to use. If provided, it overrides `system_message_name`."""
+    tool_output_format: Literal["yaml", "json"] | None = None
+    """Format to use for tool outputs. If not provided, the default format is yaml."""
+
+    @property
+    def pipeline_name(self) -> str:
+        """Contains the model id, so attacks can address the model (see `agentdojo.models.MODEL_NAMES`). `/` is
+        replaced because AgentDojo saves traces under `<logdir>/<pipeline name with / replaced>/` but looks
+        them up under the raw name, so a `/` would make finished tasks look unfinished."""
+        return f"deepagents-{self.model_id.replace('/', '_')}"
 
 
 def make_openrouter_chat_model(model: str, temperature: float | None = 0.0, **kwargs: Any) -> ChatOpenAI:
@@ -295,8 +335,10 @@ class DeepAgentsPipeline(BasePipelineElement):
         name: the pipeline name. AgentDojo attacks derive the model name from it, so it should contain the model
             name (see `agentdojo.models.MODEL_NAMES`).
         system_prompt: passed to `create_deep_agent`. Defaults to AgentDojo's default system message.
-        tool_middleware: extra middleware (e.g. a tool-output checker) applied to both the main agent and the
-            general-purpose subagent, inside the transcript recorder.
+        tool_middleware: extra middleware applied to both the main agent and the general-purpose subagent, inside
+            the transcript recorder.
+        tool_middleware_factory: builds more such middleware (e.g. the checker) for each task, from the user's task
+            prompt. Its middleware runs after `tool_middleware`.
         hide_filesystem_tools: hide DeepAgents' in-memory virtual filesystem tools from the main agent and the
             subagent. On by default: with them visible, agents look for the user's files in the (empty) virtual
             filesystem instead of using AgentDojo's tools, which lowers both utility and ASR for reasons unrelated
@@ -314,16 +356,49 @@ class DeepAgentsPipeline(BasePipelineElement):
         max_model_calls: int = 30,
         tool_output_formatter: Callable[[FunctionReturnType], str] = tool_result_to_str,
         hide_filesystem_tools: bool = True,
+        tool_middleware_factory: ToolMiddlewareFactory | None = None,
     ) -> None:
         self.model = model
         self.name = name
         self.system_prompt = system_prompt if system_prompt is not None else load_system_message(None)
         self.tool_middleware = list(tool_middleware)
+        self.tool_middleware_factory = tool_middleware_factory
         self.max_model_calls = max_model_calls
         self.tool_output_formatter = tool_output_formatter
         self.hide_filesystem_tools = hide_filesystem_tools
 
-    def _build_agent(self, tools: list[BaseTool], transcript: _Transcript):
+    @classmethod
+    def from_config(
+        cls,
+        config: DeepAgentsConfig,
+        tool_middleware: Sequence[AgentMiddleware] = (),
+        tool_middleware_factory: ToolMiddlewareFactory | None = None,
+        model: BaseChatModel | None = None,
+    ) -> "DeepAgentsPipeline":
+        """Builds the pipeline for a run. `model` replaces the OpenRouter model built from `config` (for tests)."""
+        if model is None:
+            model = make_openrouter_chat_model(config.model_id, temperature=config.temperature)
+        if config.tool_output_format == "json":
+            tool_output_formatter = partial(tool_result_to_str, dump_fn=json.dumps)
+        else:
+            tool_output_formatter = tool_result_to_str
+        system_prompt = (
+            config.system_message
+            if config.system_message is not None
+            else load_system_message(config.system_message_name)
+        )
+        return cls(
+            model,
+            name=config.pipeline_name,
+            system_prompt=system_prompt,
+            tool_middleware=tool_middleware,
+            max_model_calls=config.max_model_calls,
+            tool_output_formatter=tool_output_formatter,
+            hide_filesystem_tools=config.hide_filesystem_tools,
+            tool_middleware_factory=tool_middleware_factory,
+        )
+
+    def _build_agent(self, tools: list[BaseTool], transcript: _Transcript, tool_middleware: list[AgentMiddleware]):
         # The default general-purpose subagent is "isolated" and does not inherit the main agent's custom
         # middleware (deepagents 0.7.25, graph.py). Declaring it explicitly, with the same name, replaces the
         # default and lets us attach the recorder and the tool middleware to it.
@@ -332,14 +407,14 @@ class DeepAgentsPipeline(BasePipelineElement):
             "middleware": [
                 _TranscriptRecorder(transcript, agent="general-purpose"),
                 _ToolVisibility(transcript, agent="general-purpose", hide_filesystem_tools=self.hide_filesystem_tools),
-                *self.tool_middleware,
+                *tool_middleware,
                 ModelCallLimitMiddleware(run_limit=self.max_model_calls, exit_behavior="end"),
             ],
         }
         main_middleware: list[AgentMiddleware[Any, Any, Any]] = [
             _TranscriptRecorder(transcript, agent="main"),
             _ToolVisibility(transcript, agent="main", hide_filesystem_tools=self.hide_filesystem_tools),
-            *self.tool_middleware,
+            *tool_middleware,
             ModelCallLimitMiddleware(run_limit=self.max_model_calls, exit_behavior="end"),
         ]
         return create_deep_agent(
@@ -366,8 +441,11 @@ class DeepAgentsPipeline(BasePipelineElement):
             for function in runtime.functions.values()
         ]
         shadowed = sorted({tool.name for tool in tools} & DEEPAGENTS_BUILTIN_TOOL_NAMES)
+        tool_middleware = list(self.tool_middleware)
+        if self.tool_middleware_factory is not None:
+            tool_middleware.extend(self.tool_middleware_factory(query))
         transcript = _Transcript()
-        agent = self._build_agent(tools, transcript)
+        agent = self._build_agent(tools, transcript, tool_middleware)
         final_state = agent.invoke({"messages": [HumanMessage(content=query)]})
 
         new_messages: list[ChatMessage] = [
@@ -385,17 +463,24 @@ class DeepAgentsPipeline(BasePipelineElement):
             new_messages.append(_event_to_agentdojo(_TranscriptEvent(agent="main", message=final_message)))
             hit_limit = True
 
-        extra_args = {
-            **extra_args,
-            "deepagents": {
-                "n_events": len(transcript.events),
-                "n_subagent_events": sum(event.agent != "main" for event in transcript.events),
-                "final_message_unrecorded": hit_limit,
-                "shadowed_builtin_tools": shadowed,
-                "agent_setup": transcript.agent_setup,
-                "hide_filesystem_tools": self.hide_filesystem_tools,
-                "rejected_hidden_tool_calls": transcript.rejected_hidden_tool_calls,
-                "oversized_tool_outputs": transcript.oversized_tool_outputs,
-            },
+        diagnostics = {
+            "n_events": len(transcript.events),
+            "n_subagent_events": sum(event.agent != "main" for event in transcript.events),
+            "final_message_unrecorded": hit_limit,
+            "shadowed_builtin_tools": shadowed,
+            "agent_setup": transcript.agent_setup,
+            "hide_filesystem_tools": self.hide_filesystem_tools,
+            "rejected_hidden_tool_calls": transcript.rejected_hidden_tool_calls,
+            "oversized_tool_outputs": transcript.oversized_tool_outputs,
         }
+
+        # The benchmark runs this element on its own, not inside an `AgentPipeline`, and drops `extra_args`. So it
+        # logs the trace itself (without messages, saved results fail to load and resumed runs redo every task),
+        # and saves the diagnostics in the trace file under "deepagents".
+        logger = Logger.get()
+        logger.log(new_messages)
+        if isinstance(logger, TraceLogger):
+            logger.set_contextarg("deepagents", diagnostics)
+
+        extra_args = {**extra_args, "deepagents": diagnostics}
         return query, runtime, env, new_messages, extra_args
