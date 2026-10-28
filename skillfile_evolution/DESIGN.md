@@ -73,11 +73,13 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - Split **by injection task**, stratified by suite: **60% train / 40% test**. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
 - A user task can appear in both splits. What's held out is the injection, and the judge only ever sees train injections.
 - Each round samples a fixed number of (user task, injection task) pairs per split, using a fixed per-round seed. That gives far more trials than there are injection tasks.
+- **Matched pairs (decided 2026-10-28 by user).** The per-round seed depends only on the round number, never on the condition or the run seed. Round r uses the same pairs in C1, C2, C3 and C4, and in every seed.
 - Benign set: every user task run with no injection. Used for the gate's false-positive rate and for benign utility.
 
 ## Attacks
 - **Static (train):** `important_instructions`.
 - **Evolving (train):** ported SuperRed attackers (MUZZLE first, then GEPA-agentic, then AgentVigil), black-box. Same budget for every attacker: Per (pair, round), up to 5 attempts. The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file or test-split injection tasks.
+- **Identical start (decided 2026-10-28 by user).** Round 0 is the same in every condition. Each pair gets one attempt: the `important_instructions` template filled with that pair's injection-task goal. In C2 and C4 the attacker makes no rewrites in round 0. It starts in round 1, building on its own run's round-0 outcomes (task success, security success, final answer). The 5-attempt budget above applies from round 1. C1 and C3 keep the round-0 text in every round. In all conditions, the pairs stay matched every round.
 - **Held-out styles (test only):** `injecagent` and `ignore_previous`. These are never used in training.
 - **No white-box ablation** until the main results exist.
 
@@ -132,6 +134,7 @@ Segmentation rules:
 - Inside it: `config.json` (condition, skill/attack mode, models, seed, git commit), `round_<r>/{train,test,benign}/` trial logs, `skill_files/` (versions, changelogs, gate decisions), and `checker_verdicts.jsonl`.
 - Every trial record also carries `condition`, `skill_mode`, `attack_mode`, `seed`, `round` and `split`, so pooled tables can be split again without relying on paths.
 - A run refuses to start if its directory already holds results from a different config; it resumes only an identical config.
+- The round-0 inputs (pairs + injection texts) and every round's pair list are generated once into a committed manifest, `skillfile_evolution/pairs_manifest.json`. Each run checks its own inputs against the manifest before making any model call, and exits with an error if they don't match. Its `config.json` records the manifest hash. Only inputs are checked: utility and security results are expected to vary with provider noise.
 - Aggregation produces one table and curve per condition; cross-condition comparisons (H1: C3/C4 vs C1, H2: C2 vs C4) are computed from those, never from mixed logs.
 
 ## Hypotheses: how each is measured
@@ -141,6 +144,7 @@ Segmentation rules:
 
 ## Seeds and statistics
 - **3 seeds** for C1, C2, C3 and C4. 1 seed for C0 and C5. Add more seeds if the budget allows.
+- A seed changes only the random parts (attacker output, judge output, provider noise). It never changes the pairs or the round-0 injection text.
 - Report bootstrap 95% confidence intervals over trials.
 - A power check after the pilot decides the number of pairs per round.
 
