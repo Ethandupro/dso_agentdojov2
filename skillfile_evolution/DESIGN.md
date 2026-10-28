@@ -140,7 +140,7 @@ Segmentation rules:
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
 ## Seeds and statistics
-- **3 seeds** for C1, C2 and C4. 1 seed for C0, C3 and C5. Add more seeds if the budget allows.
+- **3 seeds** for C1, C2, C3 and C4. 1 seed for C0 and C5. Add more seeds if the budget allows.
 - Report bootstrap 95% confidence intervals over trials.
 - A power check after the pilot decides the number of pairs per round.
 
