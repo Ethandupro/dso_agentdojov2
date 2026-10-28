@@ -393,7 +393,7 @@ td:first-child { font-weight: 600; white-space: nowrap; }
       <text class="it" x="445" y="200" text-anchor="middle">no, and attempt &lt; 5: attacker sees only "failed" + agent's final answer</text>
     </svg>
     </div>
-    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts or any test-split injection task. When the checker removes its text, it only sees a failure and can't tell whether the checker or the agent stopped it (internal logs record which). The static attacker is AgentDojo's <code>important_instructions</code> template, the same every round. The three attackers are ported in order (MUZZLE first) through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code>, and each must reproduce its upstream smoke result before use.</figcaption>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts or any test-split injection task. When the checker removes its text, it only sees a failure and can't tell whether the checker or the agent stopped it (internal logs record which). Round 0 is identical across conditions: each pair gets one attempt with the unchanged <code>important_instructions</code> text and no rewrites. The 5-try budget starts in round 1. The static attacker is AgentDojo's <code>important_instructions</code> template, the same every round. The three attackers are ported in order (MUZZLE first) through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code>, and each must reproduce its upstream smoke result before use.</figcaption>
   </figure>
 </section>
 
@@ -434,7 +434,7 @@ td:first-child { font-weight: 600; white-space: nowrap; }
     <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-skill_evolving-attack · 3 seeds</span></div>
 
     <div class="gr">Evolving skill file<br>(judge + gate)</div>
-    <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 1 seed</span></div>
+    <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 3 seeds</span></div>
     <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-skill_evolving-attack · 3 seeds</span></div>
   </div>
   <div class="extras">
