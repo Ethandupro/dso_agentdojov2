@@ -250,11 +250,11 @@ tr.same td { background: var(--zone); }
 <section>
   <div class="sec-head">
     <div class="eyebrow">Figure 2 · where the defense evolves</div>
-    <h2>The round loop: failures in, a gated rewrite out</h2>
+    <h2>The round loop: failures in, a blind rewrite out</h2>
   </div>
   <figure>
     <div class="plate">
-    <svg viewBox="0 0 1040 400" role="img" aria-label="Round loop. Skill file S_r is attacked on the train split. If at least 5 attacks succeed, the judge reads up to 20 of them and writes a candidate S-prime. An acceptance gate with four checks adopts or rejects it. The resulting file is evaluated on test and benign sets, which the judge never sees, and the next round begins.">
+    <svg viewBox="0 0 1040 400" role="img" aria-label="Round loop. Skill file S_r is attacked on the train split. If at least 5 attacks succeed, the judge reads up to 20 of them and writes S-prime. Two text checks (length and format, leakage), with one retry, decide whether S-prime is adopted; it is never tested before adoption. The resulting file is evaluated on test and benign sets, which the judge never sees, and the next round begins.">
       <defs>
         <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
       </defs>
@@ -303,20 +303,20 @@ tr.same td { background: var(--zone); }
       <line class="ar" x1="915" y1="144" x2="915" y2="198" marker-end="url(#a2)"/>
       <text class="lbl" x="923" y="176">candidate S′</text>
 
-      <!-- gate -->
+      <!-- text checks -->
       <rect class="b-det" x="810" y="200" width="210" height="170" rx="8"/>
-      <text class="t" x="825" y="226">Acceptance gate</text>
-      <text class="s" x="825" y="244">all four must pass:</text>
-      <text class="s" x="825" y="270">1  Replay: ASR drops ≥ 5 pts</text>
-      <text class="s" x="825" y="292">2  Benign FPR, utility ±2 pts</text>
-      <text class="s" x="825" y="314">3  ≤ 1500 tokens and parses</text>
-      <text class="s" x="825" y="336">4  No 8-gram shared with any</text>
-      <text class="s" x="840" y="352">archived attack string</text>
+      <text class="t" x="825" y="226">Text checks only</text>
+      <text class="s" x="825" y="244">no replay, S′ never tested:</text>
+      <text class="s" x="825" y="270">1  ≤ 1500 tokens and parses</text>
+      <text class="s" x="825" y="292">2  No 8-gram shared with any</text>
+      <text class="s" x="840" y="308">archived attack string</text>
+      <text class="s" x="825" y="334">fail → judge retries once</text>
+      <text class="s" x="825" y="352">with the error message</text>
 
       <!-- reject / accept -->
       <rect class="b-det" x="600" y="200" width="160" height="60" rx="8"/>
       <text class="t" x="680" y="225" text-anchor="middle">Keep S_r</text>
-      <text class="s" x="680" y="244" text-anchor="middle">no trigger, or rejected</text>
+      <text class="s" x="680" y="244" text-anchor="middle">no trigger, or retry failed</text>
       <line class="ar" x1="810" y1="236" x2="762" y2="236" marker-end="url(#a2)"/>
       <text class="lbl" x="786" y="228" text-anchor="middle">fail</text>
 
@@ -342,7 +342,7 @@ tr.same td { background: var(--zone); }
       <text class="lbl" x="103" y="230">r → r+1</text>
     </svg>
     </div>
-    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. In C1 and C2 the judge and gate are skipped and S stays at S0, but the attack and evaluation phases still run so the curves line up. The replay set for check 1 is this round's failures plus an equal number of fresh train attacks; replays reuse the injection texts stored for that round, so S_r and S′ see identical text. Check 4 forces the judge to describe attack patterns abstractly instead of pasting attack strings. <b>The loop runs exactly 3 rounds (0, 1, 2) with no early stop.</b> The judge can run after round 0 and after round 1, so the skill file is rewritten at most twice; nothing is rewritten after round 2.</figcaption>
+    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. In C1 and C2 the judge is skipped and S stays at S0, but the attack and evaluation phases still run so the curves line up. <b>The rewrite is blind</b> (since 2026-11-05): S′ goes straight into the next round without a replay or benign comparison, so it can turn out worse than S_r, and that is measured, not prevented. The judge sees only attacks that got through, so benign utility is tracked every round to catch over-removal. Check 2 forces the judge to describe attack patterns abstractly instead of pasting attack strings. <b>The loop runs exactly 3 rounds (0, 1, 2) with no early stop.</b> The judge can run after round 0 and after round 1, so the skill file is rewritten at most twice; nothing is rewritten after round 2.</figcaption>
   </figure>
 </section>
 
@@ -452,7 +452,7 @@ tr.same td { background: var(--zone); }
     <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-skill_static-attack · 3 seeds</span></div>
     <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-skill_evolving-attack · 3 seeds</span></div>
 
-    <div class="gr">Evolving skill file<br>(judge + gate)</div>
+    <div class="gr">Evolving skill file<br>(blind judge rewrite)</div>
     <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 3 seeds</span></div>
     <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-skill_evolving-attack · 3 seeds</span></div>
   </div>
@@ -474,12 +474,12 @@ tr.same td { background: var(--zone); }
     <h2>Split by injection task, so the judge can't memorize the goal</h2>
   </div>
   <div class="split" role="img" aria-label="Injection tasks split 60 percent train, 40 percent test">
-    <div class="tr"><strong>Train · 60% · ~21 injection tasks</strong><span>Attacks: <code>important_instructions</code> or the evolving attacker. Judge input and gate replays come only from here.</span></div>
+    <div class="tr"><strong>Train · 60% · ~21 injection tasks</strong><span>Attacks: <code>important_instructions</code> or the evolving attacker. Judge input comes only from here.</span></div>
     <div class="te"><strong>Test · 40% · ~14 injection tasks</strong><span>Adds held-out styles <code>injecagent</code> and <code>ignore_previous</code>, never used in training.</span></div>
   </div>
   <div class="facts">
     <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2), stratified split, seed 0</span></div>
-    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for false-positive rate and benign utility, in the gate and in evaluation</span></div>
+    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for false-positive rate and benign utility, in evaluation only (never to choose a skill file)</span></div>
     <div><span class="k">Pairs</span><span>One fixed set of (user task, injection task) pairs per split, sampled once with a fixed seed and used in every round, condition and seed. Pair count set by a power check after the pilot</span></div>
     <div><span class="k">Rounds</span><span>3 per run (0, 1, 2), always all 3, one trial per pair per round; 3 seeds per condition</span></div>
     <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, checker FPR, injected text removed, benign text removed, cost per component; bootstrap 95% CIs</span></div>
@@ -492,8 +492,8 @@ tr.same td { background: var(--zone); }
     <li>The victim scored 0/16 ASR on the banking slice smoke test. The "C0 ASR ≥ 20%" rule has to be checked across all suites and injection tasks, or there's nothing to defend.</li>
     <li>Checker and attacker model IDs are still to be chosen against the OpenRouter catalogue.</li>
     <li>Test-split pairs: the attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise they keep the round-0 text in every round and condition, which makes C2's test ASR measure exactly what C1's does.</li>
-    <li>The gate's "fresh train attacks" must come from train pairs outside the fixed set, and in C4 it's undecided which text they get, since the attacker has no history for them.</li>
-    <li>Checker prompt, skill file S0, the SuperRed ports and the round runner aren't built yet. The DeepAgents victim is ready for them: the runner plugs the checker in through <code>tool_middleware_factory</code>.</li>
+    <li>What "the file parses" means in text check 1: strict (S0's six sections, fixed), loose (title, non-empty, no code block) or the middle version (six sections in order, extra sections allowed).</li>
+    <li>Checker prompt, the SuperRed ports and the round runner aren't built yet. The DeepAgents victim is ready for them: the runner plugs the checker in through <code>tool_middleware_factory</code>.</li>
     <li>The native-loop reference addresses the model as "AI assistant" in <code>important_instructions</code>, while the DeepAgents run says "DeepSeek". The two need the same attack text before the comparison means anything.</li>
   </ul>
 </section>
