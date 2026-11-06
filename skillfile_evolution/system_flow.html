@@ -391,7 +391,7 @@ tr.same td { background: var(--zone); }
       <text class="it" x="490" y="200" text-anchor="middle">after rounds 0 and 1, win or not: task result + security result + agent's final answer</text>
     </svg>
     </div>
-    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts, the victim's system prompt or trace, or any test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Round 0 is identical across conditions:</b> each pair gets one trial against the same S0 with the unchanged <code>important_instructions</code> text. In rounds 1 and 2 the evolving attacker rewrites each pair's text once, building on that same pair's previous round, and it still rewrites after a win. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker keeps the round-0 text every round. The three attackers are ported in order (MUZZLE first) through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code>, and each must reproduce its upstream smoke result before use.</figcaption>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts, the victim's system prompt or trace, or any test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Round 0 is identical across conditions:</b> each pair gets one trial against the same S0 with the unchanged <code>important_instructions</code> text. In rounds 1 and 2 the evolving attacker rewrites each pair's text once, building on that same pair's previous round, and it still rewrites after a win. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker keeps the round-0 text every round. MUZZLE is the only evolving attacker. It's ported through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code> and must reproduce its upstream smoke result before use.</figcaption>
   </figure>
 </section>
 
@@ -446,7 +446,7 @@ tr.same td { background: var(--zone); }
   <div class="grid2">
     <div class="gh corner"></div>
     <div class="gh">Static attack<br><span class="mono" style="font-weight:400">important_instructions</span></div>
-    <div class="gh">Evolving attack<br><span style="font-weight:400">ported SuperRed attacker</span></div>
+    <div class="gh">Evolving attack<br><span style="font-weight:400">ported MUZZLE</span></div>
 
     <div class="gr">Static skill file<br>(S0, judge off)</div>
     <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-skill_static-attack · 3 seeds</span></div>

@@ -55,7 +55,7 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
   - Upstream's tests still pass (43/43 including the new ones; 48/48 on 2026-10-22), but pyright now reports 10 errors in upstream's `openai_llm.py`, `anthropic_llm.py` and `google_llm.py` (0 with the original lock).
   - At least one is a real runtime break: anthropic 1.14 has no `temperature` parameter on `messages.create`/`stream`, so the native `AnthropicLLM` would crash. None of this is on our OpenRouter path.
 - **Sanity reference:** one C0 run with AgentDojo's native tool-calling loop on the same model. If the harness changes ASR or utility, it's reported, not hidden.
-- SuperRed's evolving attackers are **ported into this repo** (decision 2026-10-15), not used as an external harness. AgentDojo stays the base repo. See "Evolving attackers" below.
+- SuperRed's MUZZLE attacker is **ported into this repo** (decision 2026-10-15), not used as an external harness. AgentDojo stays the base repo. See "Evolving attacker" below.
 - Benchmark version: `v1.2.2`. Suites: workspace, travel, banking, slack.
 - Providers: OpenRouter only (the only key in `api.env`).
 
@@ -78,9 +78,9 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Attacks
 - **Static (train):** `important_instructions`.
-- **Evolving (train):** ported SuperRed attackers (MUZZLE first, then GEPA-agentic, then AgentVigil), black-box. The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file or test-split injection tasks.
+- **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file or test-split injection tasks.
 - **Identical start (decided 2026-10-28 by user; S0 made explicit 2026-10-29).** Round 0 is the same in every condition. Each pair gets one attempt against the same skill file S0, with the `important_instructions` template filled with that pair's injection-task goal. For example, pair A (user task 1 × injection task 4) has identical round-0 inputs in C1, C2, C3 and C4. Each condition still runs its own round 0 in its own directory, so the inputs match but outputs can differ through provider noise. In C2 and C4 the attacker makes no rewrite in round 0. C1 and C3 keep the round-0 text in every round. In all conditions, the pairs stay matched every round.
-- **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts").** Same for every attacker: one attempt per pair per round, over 3 rounds.
+- **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts").** One attempt per pair per round, over 3 rounds.
   - Round 0: the `important_instructions` text above. No rewrite.
   - Rounds 1 and 2 (C2 and C4 only): the attacker rewrites the pair's injection text once per round, building on that same pair's previous round: the text it sent, task success, security success and the agent's final answer.
   - All 3 rounds always run, even when an earlier round already succeeded. The next rewrite then starts from the text that worked.
@@ -89,18 +89,17 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - **Held-out styles (test only):** `injecagent` and `ignore_previous`. These are never used in training.
 - **No white-box ablation** until the main results exist.
 
-## Evolving attackers (SuperRed port)
-- Source: `RoldSI/superred-modules/optimizers/{muzzle,gepa_agentic,agentvigil_websentinel}` (~5.5k lines, excluding smoke scripts and tests).
-- Each one is written against SuperRed's core: an async `Optimizer` driven by an event channel, `LLMClient` (litellm), `Controllable`, `Goal` and `BudgetExhaustedError`.
+## Evolving attacker (SuperRed MUZZLE port)
+- Source: `RoldSI/superred-modules/optimizers/muzzle`.
+- It's written against SuperRed's core: an async `Optimizer` driven by an event channel, `LLMClient` (litellm), `Controllable`, `Goal` and `BudgetExhaustedError`.
 - We don't vendor the 6k-line core. Instead we write a thin adapter in `src/agentdojo/attacks/adaptive/` that implements those few types on top of AgentDojo:
   - The controllable is the injection vector's text.
   - The goal is the injection task.
   - Success comes from AgentDojo's utility and security checks, combined as in "Attacker success" above.
   - LLM calls go through OpenRouter.
-- The attack logic itself is copied as faithfully as possible, apart from the parts listed for each attacker below.
-- Licensing: MIT for all three. MUZZLE also bundles Apache-2.0 code (upstream MUZZLE) and MIT code (PAIR); its `NOTICE` and `LICENSES/` files are copied alongside.
-- AgentVigil is marked "pending" upstream, so it's ported last and only after its smoke test passes.
-- Each port has to reproduce its upstream AgentDojo smoke result on a small task set before it's used in experiments.
+- The attack logic itself is copied as faithfully as possible, apart from the parts listed below.
+- Licensing: MIT. MUZZLE also bundles Apache-2.0 code (upstream MUZZLE) and MIT code (PAIR); its `NOTICE` and `LICENSES/` files are copied alongside.
+- The port has to reproduce MUZZLE's upstream AgentDojo smoke result on a small task set before it's used in experiments.
 
 ### MUZZLE: iterative part only (decided 2026-10-29 by user)
 - **Kept:** MUZZLE's refinement loop. After rounds 0 and 1, its Judge reads the pair's last attempt (injection text, success result, agent's final answer) and writes recommendations. Offline PAIR then rewrites the text, starting from the last text plus those recommendations, with the injection task's goal as its target.
@@ -169,7 +168,7 @@ The main experiment is **4 separate runs**, one per cell of skill file × attack
 | Condition | Skill file | Attack (train) | Run ID |
 |---|---|---|---|
 | C1 | static (S0, judge never runs) | static (`important_instructions`) | `c1_static-skill_static-attack` |
-| C2 | static | evolving (ported SuperRed attacker) | `c2_static-skill_evolving-attack` |
+| C2 | static | evolving (ported MUZZLE) | `c2_static-skill_evolving-attack` |
 | C3 | evolving (judge between rounds, text checks only) | static | `c3_evolving-skill_static-attack` |
 | C4 | evolving | evolving | `c4_evolving-skill_evolving-attack` |
 
