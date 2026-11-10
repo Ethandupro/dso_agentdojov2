@@ -10,10 +10,12 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
   - A recorder middleware logs every model response and tool result at every agent level (main agent and subagent) and flattens them into AgentDojo messages, so the checks that read the function-call trace see subagent calls too.
   - DeepAgents defaults in 0.7.25, for models with no harness profile (OpenRouter models get none): an in-memory virtual filesystem (`ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`) and the general-purpose subagent (`task`).
     - *Correction:* there is no `write_todos` planning tool and no `execute` tool in this configuration.
-    - DeepAgents also adds no system-prompt text of its own: the model sees only our system prompt (AgentDojo's default).
+    - DeepAgents also adds no system-prompt text of its own: the main agent sees only our system prompt (AgentDojo's default).
+    - *Correction (2026-11-10):* the general-purpose subagent does **not** get our system prompt. It gets DeepAgents' default subagent prompt (`DEFAULT_SUBAGENT_PROMPT`, "In order to complete the objective that the user asks of you…"), plus the main agent's delegation message as its task. This is stock DeepAgents behaviour and is recorded in `agent_setup["general-purpose"]["system_prompt"]`.
   - The tools and system prompt each agent actually received are recorded per run in `extra_args["deepagents"]["agent_setup"]`, and (since 2026-10-22) in every trial's trace file under `"deepagents"`.
   - Name clash: banking's `read_file` replaces DeepAgents' `read_file`. This is deterministic, because LangChain registers user tools after middleware tools, and a test covers it.
   - Each task starts from fresh agent state. Main agent and subagent are each capped at 30 model calls per run.
+  - *Fix (2026-11-10):* tool calls run one at a time, in the order the model gave them. LangGraph runs the tool calls of one model turn concurrently in threads by default, so environment changes (e.g. banking transaction ids) happened in a random order, unlike AgentDojo's own loop. The agent now runs with `max_concurrency=1` (main agent and subagent), and a test covers it. Runs from before this fix may differ from later ones wherever the model made parallel tool calls.
   - DeepAgents' own `skills` feature is **not** used. It has nothing to do with the checker's skill file.
   - The model is `langchain-openai`'s `ChatOpenAI`, pointed at OpenRouter.
 - **Virtual filesystem tools are hidden (decided 2026-10-15, option 1).**
@@ -54,6 +56,8 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
     - langchain 0.3 → 1.4
   - Upstream's tests still pass (43/43 including the new ones; 48/48 on 2026-10-22), but pyright now reports 10 errors in upstream's `openai_llm.py`, `anthropic_llm.py` and `google_llm.py` (0 with the original lock).
   - At least one is a real runtime break: anthropic 1.14 has no `temperature` parameter on `messages.create`/`stream`, so the native `AnthropicLLM` would crash. None of this is on our OpenRouter path.
+  - *Fix (2026-11-10):* these upgrades apply on Python ≥ 3.11 even **without** the extra, because the lockfile resolves per Python version. The wrappers now pass only the optional arguments that are set (no `NOT_GIVEN`), so they type-check against both major versions, and `AnthropicLLM` sends `temperature` in the request body. pyright: 0 errors on 3.10 and 3.12.
+  - *CI (2026-11-10):* the Lint workflow failed on every Python version since 2026-10-31 (3.11/3.12 showed "cancelled" only because 3.10 failed first): it never installed the extra, so pyright couldn't resolve the DeepAgents imports and the harness tests were skipped. CI now installs the extra on 3.11/3.12, and on 3.10 runs pyright with `pyrightconfig.py310.json`, which skips the harness and its tests.
 - **Sanity reference:** one C0 run with AgentDojo's native tool-calling loop on the same model. If the harness changes ASR or utility, it's reported, not hidden.
 - SuperRed's MUZZLE attacker is **ported into this repo** (decision 2026-10-15), not used as an external harness. AgentDojo stays the base repo. See "Evolving attacker" below.
 - Benchmark version: `v1.2.2`. Suites: workspace, travel, banking, slack.

@@ -1,9 +1,9 @@
 import asyncio
 import re
 from collections.abc import Sequence
-from typing import overload
+from typing import Any, overload
 
-from anthropic import NOT_GIVEN, Anthropic, AsyncAnthropic, BadRequestError
+from anthropic import Anthropic, AsyncAnthropic, BadRequestError
 from anthropic.types import (
     ContentBlock,
     MessageParam,
@@ -36,7 +36,7 @@ def _tool_call_to_anthropic(tool_call: FunctionCall) -> ToolUseBlockParam:
         raise ValueError("Tool call ID is required for Anthropic")
     return ToolUseBlockParam(
         id=tool_call.id,
-        input=tool_call.args,
+        input=dict(tool_call.args),
         name=tool_call.function,
         type="tool_use",
     )
@@ -166,7 +166,11 @@ def _anthropic_content_block_to_message_content(
 
 
 def _parse_text_content(message: AnthropicMessage) -> list[MessageContentBlock]:
-    content_blocks = [block for block in message.content if block.type != "tool_use"]
+    # Server-side tool blocks (web search, code execution, ...) are never requested by AgentDojo, so only text and
+    # thinking blocks are kept.
+    content_blocks = [
+        block for block in message.content if isinstance(block, TextBlock | ThinkingBlock | RedactedThinkingBlock)
+    ]
     return [_anthropic_content_block_to_message_content(content_block) for content_block in content_blocks]
 
 
@@ -197,14 +201,23 @@ async def chat_completion_request(
     temperature: float | None = 0.0,
     thinking_budget_tokens: int | None = None,
 ) -> AnthropicMessage:
+    # Only the parameters that are set are passed: anthropic 0.x types "not set" as `NotGiven` and anthropic >= 1 as
+    # `Omit`, and the lockfile resolves a different major version on Python 3.10 than on 3.11+. anthropic >= 1 also
+    # has no `temperature` parameter, so the temperature is sent in the request body, which works with both.
+    optional_args: dict[str, Any] = {}
+    if tools:
+        optional_args["tools"] = tools
+    if system_prompt:
+        optional_args["system"] = system_prompt
+    if thinking_budget_tokens:
+        optional_args["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget_tokens}
+    if temperature is not None:
+        optional_args["extra_body"] = {"temperature": temperature}
     async with client.messages.stream(
         model=model,
         messages=messages,
-        tools=tools or NOT_GIVEN,
         max_tokens=max_tokens,
-        system=system_prompt or NOT_GIVEN,
-        temperature=temperature if temperature is not None else NOT_GIVEN,
-        thinking={"type": "enabled", "budget_tokens": thinking_budget_tokens} if thinking_budget_tokens else NOT_GIVEN,
+        **optional_args,
     ) as stream:
         return await stream.get_final_message()
 

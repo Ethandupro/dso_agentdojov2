@@ -446,7 +446,10 @@ class DeepAgentsPipeline(BasePipelineElement):
             tool_middleware.extend(self.tool_middleware_factory(query))
         transcript = _Transcript()
         agent = self._build_agent(tools, transcript, tool_middleware)
-        final_state = agent.invoke({"messages": [HumanMessage(content=query)]})
+        # LangGraph runs the tool calls of one model turn concurrently, in threads. AgentDojo's own loop runs them
+        # one after another, in the order the model gave them, and environment changes (e.g. banking transaction
+        # ids) depend on that order. `max_concurrency=1` restores it, for the main agent and the subagent.
+        final_state = agent.invoke({"messages": [HumanMessage(content=query)]}, config={"max_concurrency": 1})
 
         new_messages: list[ChatMessage] = [
             ChatSystemMessage(role="system", content=[text_content_block_from_string(self.system_prompt)]),

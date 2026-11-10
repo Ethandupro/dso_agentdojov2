@@ -166,7 +166,7 @@ def _message_to_google(message: ChatMessage) -> genai_types.Content:
 def chat_completion_request(
     model: str,
     client: genai.Client,
-    contents: genai_types.ContentListUnion,
+    contents: genai_types.ContentListUnionDict,
     generation_config: genai_types.GenerateContentConfig,
 ) -> genai_types.GenerateContentResponse:
     response = client.models.generate_content(
