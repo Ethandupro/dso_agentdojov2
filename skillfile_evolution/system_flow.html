@@ -206,8 +206,8 @@ tr.same td { background: var(--zone); }
       <rect class="b-det" x="870" y="170" width="150" height="100" rx="8"/>
       <text class="t" x="945" y="202" text-anchor="middle">Span remover</text>
       <text class="s" x="945" y="221" text-anchor="middle">deletes flagged spans,</text>
-      <text class="s" x="945" y="239" text-anchor="middle">inserts placeholder</text>
-      <text class="m" x="945" y="257" text-anchor="middle">[N item(s) removed]</text>
+      <text class="s" x="945" y="239" text-anchor="middle">marks each deletion</text>
+      <text class="m" x="945" y="257" text-anchor="middle">[removed by …]</text>
 
       <!-- sanitized return -->
       <path class="ar" d="M945 270 V312 H330 V272" marker-end="url(#a1)"/>
@@ -242,7 +242,7 @@ tr.same td { background: var(--zone); }
       <text class="s" x="945" y="447" text-anchor="middle">and the round loop</text>
     </svg>
     </div>
-    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. It fails closed: if its reply doesn't parse, or a flagged span isn't found verbatim in the output, the whole output is removed, and each case is counted. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. There is no block mode: sanitizing is the only policy, in every condition with a checker. The checker is built once per task from the user's prompt and shared by both agent levels, so the subagent's checker also judges against the <b>user's</b> task. Every run builds this same victim from one <code>DeepAgentsConfig</code>, saved in its <code>config.json</code>; only the checker differs, and C0 has none.</figcaption>
+    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. Everything it doesn't flag reaches the agent, so the user's task keeps its data. A flagged span that isn't found verbatim in the output is ignored and counted; the rest is still removed. Only a reply that doesn't parse removes the whole output, with its own marker, and that's counted too. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. There is no block mode: sanitizing is the only policy, in every condition with a checker. The checker is built once per task from the user's prompt and shared by both agent levels, so the subagent's checker also judges against the <b>user's</b> task. Every run builds this same victim from one <code>DeepAgentsConfig</code>, saved in its <code>config.json</code>; only the checker differs, and C0 has none.</figcaption>
   </figure>
 </section>
 
@@ -391,7 +391,7 @@ tr.same td { background: var(--zone); }
       <text class="it" x="490" y="200" text-anchor="middle">after rounds 0 and 1, win or not: task result + security result + agent's final answer</text>
     </svg>
     </div>
-    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's verdicts, the victim's system prompt or trace, or any test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Round 0 is identical across conditions:</b> each pair gets one trial against the same S0 with the unchanged <code>important_instructions</code> text. In rounds 1 and 2 the evolving attacker rewrites each pair's text once, building on that same pair's previous round, and it still rewrites after a win. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker keeps the round-0 text every round. MUZZLE is the only evolving attacker. It's ported through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code> and must reproduce its upstream smoke result before use.</figcaption>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's removals, the victim's system prompt or trace, or any test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Round 0 is identical across conditions:</b> each pair gets one trial against the same S0 with the unchanged <code>important_instructions</code> text. In rounds 1 and 2 the evolving attacker rewrites each pair's text once, building on that same pair's previous round, and it still rewrites after a win. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker keeps the round-0 text every round. MUZZLE is the only evolving attacker. It's ported through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code> and must reproduce its upstream smoke result before use.</figcaption>
   </figure>
 </section>
 
@@ -427,9 +427,9 @@ tr.same td { background: var(--zone); }
     <thead><tr><th>Role</th><th>Model</th><th>Job</th><th>Sees</th><th>Never sees</th></tr></thead>
     <tbody>
       <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Victim agent</td><td><code>deepseek/deepseek-v4.1-flash</code> via OpenRouter, on DeepAgents</td><td>Does the user's task with AgentDojo tools; can delegate to a subagent</td><td>User task, sanitized tool outputs</td><td>Skill file, raw outputs</td></tr>
-      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker</td><td><span class="tbd">TBD in Phase 0</span>: cheaper than the agent, &lt;2% JSON parse failures</td><td>Flags spans to remove from each tool output, with reasons</td><td>Skill file, user task, raw tool output</td><td>Anything else; it has no tools (it can still be targeted by the injection it reads)</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker</td><td><span class="tbd">TBD in Phase 0</span>: cheaper than the agent, &lt;2% JSON parse failures; unmatched-span rate reported</td><td>Flags spans to remove from each tool output, with reasons</td><td>Skill file, user task, raw tool output</td><td>Anything else; it has no tools (it can still be targeted by the injection it reads)</td></tr>
       <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>Claude Opus 5.5</code>, the strongest available</td><td>Rewrites the whole skill file when ≥5 train attacks succeed</td><td>Current file, ≤20 train failures, checker reasons, what the agent did next</td><td>Test split, held-out attack styles</td></tr>
-      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><span class="tbd">TBD in Phase 0</span>: mid-tier, willing to write injections, fixed across conditions</td><td>Rewrites each pair's injection text once in round 1 and once in round 2 (evolving conditions only)</td><td>Per pair: task result, security result, agent's final answer; its own archive</td><td>Skill file, checker verdicts, victim system prompt and trace, test injections</td></tr>
+      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><span class="tbd">TBD in Phase 0</span>: mid-tier, willing to write injections, fixed across conditions</td><td>Rewrites each pair's injection text once in round 1 and once in round 2 (evolving conditions only)</td><td>Per pair: task result, security result, agent's final answer; its own archive</td><td>Skill file, checker removals, victim system prompt and trace, test injections</td></tr>
       <tr><td><i class="dot" style="background:var(--surface);border-color:var(--line)"></i>Scorer</td><td>No model: AgentDojo's own checks</td><td>Decides utility and attack success for every trial</td><td>Final environment state and the full trace</td><td>n/a</td></tr>
     </tbody>
   </table>
@@ -479,7 +479,7 @@ tr.same td { background: var(--zone); }
   </div>
   <div class="facts">
     <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2), stratified split, seed 0</span></div>
-    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for false-positive rate and benign utility, in evaluation only (never to choose a skill file)</span></div>
+    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for checker false-positive rate (share of benign outputs with anything removed) and benign utility, in evaluation only (never to choose a skill file)</span></div>
     <div><span class="k">Pairs</span><span>One fixed set of (user task, injection task) pairs per split, sampled once with a fixed seed and used in every round, condition and seed. Pair count set by a power check after the pilot</span></div>
     <div><span class="k">Rounds</span><span>3 per run (0, 1, 2), always all 3, one trial per pair per round; 3 seeds per condition</span></div>
     <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, checker FPR, injected text removed, benign text removed, cost per component; bootstrap 95% CIs</span></div>
