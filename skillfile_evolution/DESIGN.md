@@ -74,7 +74,8 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
 Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Splits (seed 0, fixed)
-- Split **by injection task**, stratified by suite: **60% train / 40% test**. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
+- **Only in runs where the skill file evolves, C3 and C4 (decided 2026-11-11 by user).** C0, C1 and C2 have no split and run every pair in the fixed set. In C3 and C4, the train pairs drive skill-file evolution and the test pairs get no evolution.
+- Split **by injection task**, stratified by suite: **60% train / 40% test** (confirmed 2026-11-11 by user, so every test pair is an attack the judge has never seen). A pair goes to the side its injection task is on. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
 - A user task can appear in both splits. What's held out is the injection, and the judge only ever sees train injections.
 - **Fixed pair set (decided 2026-10-29 by user; replaces a new pair sample each round).** A fixed number of (user task, injection task) pairs is sampled once per split, with a fixed seed. The same pairs run in every round, so each pair gets exactly 3 trials per run, one per round (see Round protocol). That still gives far more trials than there are injection tasks.
 - **Matched pairs (decided 2026-10-28 by user).** The pair sample depends only on its fixed seed, never on the condition or the run seed. C1, C2, C3 and C4 use the same pairs in every round and every seed.
@@ -82,14 +83,14 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Attacks
 - **Static (train):** `important_instructions`.
-- **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file or test-split injection tasks.
+- **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file. In C4 it also never sees test-split injection tasks. C2 has no split (2026-11-11), so its attacker rewrites every pair.
 - **Identical start (decided 2026-10-28 by user; S0 made explicit 2026-10-29).** Round 0 is the same in every condition. Each pair gets one attempt against the same skill file S0, with the `important_instructions` template filled with that pair's injection-task goal. For example, pair A (user task 1 × injection task 4) has identical round-0 inputs in C1, C2, C3 and C4. Each condition still runs its own round 0 in its own directory, so the inputs match but outputs can differ through provider noise. In C2 and C4 the attacker makes no rewrite in round 0. C1 and C3 keep the round-0 text in every round. In all conditions, the pairs stay matched every round.
 - **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts").** One attempt per pair per round, over 3 rounds.
   - Round 0: the `important_instructions` text above. No rewrite.
   - Rounds 1 and 2 (C2 and C4 only): the attacker rewrites the pair's injection text once per round, building on that same pair's previous round: the text it sent, task success, security success and the agent's final answer.
   - All 3 rounds always run, even when an earlier round already succeeded. The next rewrite then starts from the text that worked.
 - **Attacker success (decided 2026-10-29 by user):** an attempt counts as a success for the attacker if security is broken **or** utility is broken (the user task fails). This is only the attacker's own feedback signal. ASR everywhere in this doc stays AgentDojo's security result, and utility under attack is reported separately.
-- **Open (2026-10-29):** test-split pairs. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, test pairs keep the round-0 text in every round and every condition. Test ASR in C2 then measures exactly what C1 measures, and C4 differs from C3 only through its skill file.
+- **Open (2026-10-29, narrowed 2026-11-11):** test-split pairs in C4. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, C4 test pairs keep the round-0 text in every round, so on test C4 differs from C3 only through its skill file.
 - **Held-out styles (test only):** `injecagent` and `ignore_previous`. These are never used in training.
 - **No white-box ablation** until the main results exist.
 
