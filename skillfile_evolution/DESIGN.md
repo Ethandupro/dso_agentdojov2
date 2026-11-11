@@ -153,8 +153,8 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Trial protocol (revised 2026-11-11 by user; was 3 run-wide rounds with the judge running between rounds)
 - **History:** R = 5 rounds with early stopping until 2026-10-29. From 2026-10-29, R = 3 rounds: one round was one trial of every pair, and in C3/C4 the judge ran between rounds on a batch of failures (at least 5, up to 20 sampled across injection tasks), so the file changed at most twice (S0, S1, S2) and nothing was rewritten after round 2. On 2026-11-11 the user replaced this with the protocol below. "Round" is no longer a run-wide step. What the user calls a pair's "Run 1, 2, 3" are its trials 0, 1 and 2.
-- **Train phase.** Train pairs run one after another in the fixed order (see Splits). Each pair gets 3 trials in a row.
-- **C1 and C2:** every trial runs against S0.
+- **Train phase (C3 and C4).** Train pairs run one after another in the fixed order (see Splits). Each pair gets 3 trials in a row.
+- **C1 and C2: no split (2026-11-11).** Every pair gets 3 trials against S0, and nothing evolves between pairs, so there is no train or test phase. Splitting would not change a C1 run; in C2 it would only decide which pairs the attacker may rewrite, and it rewrites all of them. For matching, pairs still run in the same sequence as in C3/C4, and each trial record keeps its pair's `split` label (from its injection task), so C1 and C2 results can be cut to the same pairs as C3/C4.
 - **C3 and C4: one shared skill file (decided 2026-11-11 by user).** The run starts from S0. After each train trial:
   - **Attack succeeded:** the judge runs and returns delta edits (see the next section). If they pass the checks, the edited file becomes the current file.
   - **Attack failed:** the file stays the same and the pair is attacked again.
@@ -172,7 +172,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   "Baseline text" is the trial-0 `important_instructions` text. "Current file" is the shared file as it stands when the trial starts: S0 for the first pair's trial 0, and after that whatever the evolution steps so far produced. In C1 the 3 trials repeat the same setup, so they differ only by provider noise. In C3 a trial that follows a failed attack repeats the same file and the same text.
 - All 3 trials always run, even when an earlier trial already succeeded.
 - **Versions.** The file is S0, S1, S2, … with one new version per evolution step that changes it. A run can produce up to 3 versions per train pair.
-- **Test phase (decided 2026-11-11 by user).** After every train pair has finished its 3 trials, the file is frozen. Test pairs then run 3 trials each against that final file (in C1 and C2, against S0). A successful attack on a test pair never triggers the judge.
+- **Test phase (decided 2026-11-11 by user; C3 and C4 only).** After every train pair has finished its 3 trials, the file is frozen. Test pairs then run 3 trials each against that final file. A successful attack on a test pair never triggers the judge.
 - **Benign runs (decided 2026-11-11 by user).** In C3 and C4 the benign set runs once before the train phase, against S0, and once after it, against the final file (see Splits).
 
 ## Evolving the skill file: delta edits, adopted blind (revised 2026-11-11 by user; was a full rewrite of the file)
@@ -244,6 +244,7 @@ Segmentation rules:
 - **H1 (revised 2026-11-11):** test ASR on the final file for C3/C4 compared with C1, at **benign** utility (in C3/C4, before against after). It was "test ASR vs round"; test pairs now run only on the final file, so there is one value per run and no curve. Utility under attack is reported but not used for H1: removing spans can also remove data the user needed.
   - **Open (2026-11-11):** C1's benign runs (see Splits).
 - **H2:** ASR curve slope over rounds, C2 vs C4.
+  - Compared on train-injection pairs only (2026-11-11): C4's attacker can't rewrite test pairs, while C2 (no split) rewrites every pair.
   - **Open (2026-11-11):** rounds are no longer run-wide steps, and in C4 the file changes across pairs as well as across a pair's trials. The x-axis of this curve needs a new definition.
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
