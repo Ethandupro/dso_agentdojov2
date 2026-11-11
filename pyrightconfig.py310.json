@@ -1,0 +1,8 @@
+{
+  "extends": "./pyproject.toml",
+  "ignore": [
+    "**/experimental/**",
+    "src/agentdojo/agent_pipeline/deepagents_pipeline.py",
+    "tests/test_agent_pipeline/test_deepagents_pipeline.py"
+  ]
+}

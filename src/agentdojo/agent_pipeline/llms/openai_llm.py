@@ -1,9 +1,8 @@
 import json
 from collections.abc import Sequence
-from typing import overload
+from typing import Any, overload
 
 import openai
-from openai._types import NOT_GIVEN
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionContentPartTextParam,
@@ -109,7 +108,10 @@ def _message_to_openai(message: ChatMessage, model_name: str) -> ChatCompletionM
             raise ValueError(f"Invalid message type: {message}")
 
 
-def _openai_to_tool_call(tool_call: ChatCompletionMessageToolCall) -> FunctionCall:
+def _openai_to_tool_call(tool_call: Any) -> FunctionCall:
+    # openai >= 2 also returns custom (non-function) tool calls, which AgentDojo never defines.
+    if not isinstance(tool_call, ChatCompletionMessageToolCall):
+        raise ValueError(f"Unsupported tool call type: {tool_call.type}")
     return FunctionCall(
         function=tool_call.function.name,
         args=json.loads(tool_call.function.arguments),
@@ -154,14 +156,17 @@ def chat_completion_request(
     reasoning_effort: ChatCompletionReasoningEffort | None,
     temperature: float | None = 0.0,
 ):
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools or NOT_GIVEN,
-        tool_choice="auto" if tools else NOT_GIVEN,
-        temperature=temperature if temperature is not None else NOT_GIVEN,
-        reasoning_effort=reasoning_effort or NOT_GIVEN,
-    )
+    # Only the parameters that are set are passed. openai 1.x types "not set" as `NotGiven` and openai >= 2 as
+    # `Omit`, and the lockfile resolves a different major version on Python 3.10 than on 3.11+.
+    optional_args: dict[str, Any] = {}
+    if tools:
+        optional_args["tools"] = tools
+        optional_args["tool_choice"] = "auto"
+    if temperature is not None:
+        optional_args["temperature"] = temperature
+    if reasoning_effort:
+        optional_args["reasoning_effort"] = reasoning_effort
+    return client.chat.completions.create(model=model, messages=messages, **optional_args)
 
 
 class OpenAILLM(BasePipelineElement):
@@ -221,12 +226,13 @@ class OpenAILLMToolFilter(BasePipelineElement):
         messages = [*messages, ChatUserMessage(role="user", content=[text_content_block_from_string(self.prompt)])]
         openai_messages = [_message_to_openai(message, self.model) for message in messages]
         openai_tools = [_function_to_openai(tool) for tool in runtime.functions.values()]
+        optional_args: dict[str, Any] = {"tools": openai_tools} if openai_tools else {}
         completion = self.client.chat.completions.create(
             model=self.model,
             messages=openai_messages,
-            tools=openai_tools or NOT_GIVEN,
             tool_choice="none",
             temperature=self.temperature,
+            **optional_args,
         )
         output = _openai_to_assistant_message(completion.choices[0].message)
 

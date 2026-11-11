@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -262,6 +263,47 @@ def test_benchmark_saves_trace_and_diagnostics(tmp_path: Path):
     assert saved.messages[-1]["role"] == "assistant"
     raw = json.loads((tmp_path / "scripted" / "banking" / "user_task_0" / "none" / "none.json").read_text())
     assert raw["deepagents"]["n_subagent_events"] > 0
+
+
+class SlowToolSpy(AgentMiddleware):
+    """Records when each tool call starts and ends, and makes earlier calls slower, so concurrent calls would
+    finish out of order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[tuple[str, str]] = []
+
+    def wrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]
+    ) -> ToolMessage | Command:
+        call_id = str(request.tool_call["id"])
+        self.events.append(("start", call_id))
+        time.sleep(0.05 * (3 - int(call_id.removeprefix("call_"))))
+        result = handler(request)
+        self.events.append(("end", call_id))
+        return result
+
+
+def test_parallel_tool_calls_run_in_order_one_at_a_time():
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    env = suite.load_and_inject_default_environment({})
+    n_before = len(env.bank_account.transactions)
+    calls = [
+        {
+            "name": "send_money",
+            "args": {"recipient": f"R{i}", "amount": 1.0, "subject": "x", "date": "2022-01-01"},
+            "id": f"call_{i}",
+            "type": "tool_call",
+        }
+        for i in range(3)
+    ]
+    model = ScriptedChatModel(script=[AIMessage(content="", tool_calls=calls), AIMessage(content="ok")])
+    spy = SlowToolSpy()
+    DeepAgentsPipeline(model, tool_middleware=[spy]).query("pay", FunctionsRuntime(suite.tools), env)
+
+    assert spy.events == [(event, f"call_{i}") for i in range(3) for event in ("start", "end")]
+    new_transactions = env.bank_account.transactions[n_before:]
+    assert [t.recipient for t in new_transactions] == ["R0", "R1", "R2"]
 
 
 def test_from_config_name_lets_attacks_address_the_model():
