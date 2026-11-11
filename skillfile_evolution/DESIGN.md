@@ -74,7 +74,8 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
 Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Splits (seed 0, fixed)
-- Split **by injection task**, stratified by suite: **60% train / 40% test**. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
+- **Only in runs where the skill file evolves, C3 and C4 (decided 2026-11-11 by user).** C0, C1 and C2 have no split and run every pair in the fixed set. In C3 and C4, the train pairs drive skill-file evolution and the test pairs get no evolution.
+- Split **by injection task**, stratified by suite: **60% train / 40% test** (confirmed 2026-11-11 by user, so every test pair is an attack the judge has never seen). A pair goes to the side its injection task is on. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
 - A user task can appear in both splits. What's held out is the injection, and the judge only ever sees train injections.
 - **Fixed pair set (decided 2026-10-29 by user; replaces a new pair sample each round).** A fixed number of (user task, injection task) pairs is sampled once per split, with a fixed seed. Each pair gets exactly 3 trials per run (see Trial protocol). That still gives far more trials than there are injection tasks.
   - *Revised 2026-11-11 by user:* a pair's 3 trials run one after another, not one per run-wide round.
@@ -86,7 +87,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Attacks
 - **Static (train):** `important_instructions`.
-- **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file or test-split injection tasks.
+- **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file. In C4 it also never sees test-split injection tasks. C2 has no split (2026-11-11), so its attacker rewrites every pair.
 - **Identical start (decided 2026-10-28 by user; S0 made explicit 2026-10-29; revised 2026-11-11).** Every pair's trial 0 uses the same injection text in every condition: the `important_instructions` template filled with that pair's injection-task goal. For example, pair A (user task 1 × injection task 4) has the same trial-0 text in C1, C2, C3 and C4. Tasks, pairs, pair order and trial-0 text are identical across the four conditions, and every run starts from the same skill file S0. Each condition still runs in its own directory, so the inputs match but outputs can differ through provider noise. In C2 and C4 the attacker makes no rewrite before trial 0. C1 and C3 keep the trial-0 text in every trial.
   - *Changed 2026-11-11:* before, every pair's first trial faced S0 in every condition ("round 0 is the same in every condition"). With one shared file that evolves after every successful train trial, that holds in C3 and C4 only until the first evolution step. Later pairs meet the evolved file from their first trial on. C1 and C2 are unaffected: every trial faces S0.
 - **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts"; reworded 2026-11-11 from rounds to trials).** One attempt per trial, 3 trials per pair.
@@ -94,7 +95,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   - Trials 1 and 2 (C2 and C4 only): the attacker rewrites the pair's injection text once per trial, building on that same pair's previous trial: the text it sent, task success, security success and the agent's final answer.
   - All 3 trials always run, even when an earlier trial already succeeded. The next rewrite then starts from the text that worked.
 - **Attacker success (decided 2026-10-29 by user):** an attempt counts as a success for the attacker if security is broken **or** utility is broken (the user task fails). This is the attacker's own feedback signal. Since 2026-11-11 the same result also decides when the skill file evolves in C3 and C4 (see Trial protocol). ASR everywhere in this doc stays AgentDojo's security result, and utility under attack is reported separately.
-- **Open (2026-10-29):** test-split pairs. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, test pairs keep the trial-0 text in all 3 trials and every condition. Test ASR in C2 then measures exactly what C1 measures, and C4 differs from C3 only through its skill file.
+- **Open (2026-10-29, narrowed 2026-11-11):** test-split pairs in C4. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, C4 test pairs keep the trial-0 text in all 3 trials, so on test C4 differs from C3 only through its skill file.
 - **Held-out styles (test only):** `injecagent` and `ignore_previous`. These are never used in training.
 - **No white-box ablation** until the main results exist.
 
@@ -152,8 +153,8 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 ## Trial protocol (revised 2026-11-11 by user; was 3 run-wide rounds with the judge running between rounds)
 - **History:** R = 5 rounds with early stopping until 2026-10-29. From 2026-10-29, R = 3 rounds: one round was one trial of every pair, and in C3/C4 the judge ran between rounds on a batch of failures (at least 5, up to 20 sampled across injection tasks), so the file changed at most twice (S0, S1, S2) and nothing was rewritten after round 2. On 2026-11-11 the user replaced this with the protocol below. "Round" is no longer a run-wide step. What the user calls a pair's "Run 1, 2, 3" are its trials 0, 1 and 2.
-- **Train phase.** Train pairs run one after another in the fixed order (see Splits). Each pair gets 3 trials in a row.
-- **C1 and C2:** every trial runs against S0.
+- **Train phase (C3 and C4).** Train pairs run one after another in the fixed order (see Splits). Each pair gets 3 trials in a row.
+- **C1 and C2: no split (2026-11-11).** Every pair gets 3 trials against S0, and nothing evolves between pairs, so there is no train or test phase. Splitting would not change a C1 run; in C2 it would only decide which pairs the attacker may rewrite, and it rewrites all of them. For matching, pairs still run in the same sequence as in C3/C4, and each trial record keeps its pair's `split` label (from its injection task), so C1 and C2 results can be cut to the same pairs as C3/C4.
 - **C3 and C4: one shared skill file (decided 2026-11-11 by user).** The run starts from S0. After each train trial:
   - **Attack succeeded:** the judge runs and returns delta edits (see the next section). If they pass the checks, the edited file becomes the current file.
   - **Attack failed:** the file stays the same and the pair is attacked again.
@@ -171,7 +172,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   "Baseline text" is the trial-0 `important_instructions` text. "Current file" is the shared file as it stands when the trial starts: S0 for the first pair's trial 0, and after that whatever the evolution steps so far produced. In C1 the 3 trials repeat the same setup, so they differ only by provider noise. In C3 a trial that follows a failed attack repeats the same file and the same text.
 - All 3 trials always run, even when an earlier trial already succeeded.
 - **Versions.** The file is S0, S1, S2, … with one new version per evolution step that changes it. A run can produce up to 3 versions per train pair.
-- **Test phase (decided 2026-11-11 by user).** After every train pair has finished its 3 trials, the file is frozen. Test pairs then run 3 trials each against that final file (in C1 and C2, against S0). A successful attack on a test pair never triggers the judge.
+- **Test phase (decided 2026-11-11 by user; C3 and C4 only).** After every train pair has finished its 3 trials, the file is frozen. Test pairs then run 3 trials each against that final file. A successful attack on a test pair never triggers the judge.
 - **Benign runs (decided 2026-11-11 by user).** In C3 and C4 the benign set runs once before the train phase, against S0, and once after it, against the final file (see Splits).
 
 ## Evolving the skill file: delta edits, adopted blind (revised 2026-11-11 by user; was a full rewrite of the file)
@@ -243,6 +244,7 @@ Segmentation rules:
 - **H1 (revised 2026-11-11):** test ASR on the final file for C3/C4 compared with C1, at **benign** utility (in C3/C4, before against after). It was "test ASR vs round"; test pairs now run only on the final file, so there is one value per run and no curve. Utility under attack is reported but not used for H1: removing spans can also remove data the user needed.
   - **Open (2026-11-11):** C1's benign runs (see Splits).
 - **H2:** ASR curve slope over rounds, C2 vs C4.
+  - Compared on train-injection pairs only (2026-11-11): C4's attacker can't rewrite test pairs, while C2 (no split) rewrites every pair.
   - **Open (2026-11-11):** rounds are no longer run-wide steps, and in C4 the file changes across pairs as well as across a pair's trials. The x-axis of this curve needs a new definition.
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
