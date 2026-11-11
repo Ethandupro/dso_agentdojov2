@@ -216,7 +216,8 @@ def agentdojo_function_to_langchain_tool(
     )
 
 
-def _is_agentdojo_tool(tool: BaseTool | dict | None) -> bool:
+def is_agentdojo_tool(tool: BaseTool | dict | None) -> bool:
+    """Whether `tool` is an AgentDojo environment tool (as opposed to a DeepAgents built-in such as `task`)."""
     return isinstance(tool, BaseTool) and bool((tool.metadata or {}).get(_AGENTDOJO_TOOL_METADATA_KEY))
 
 
@@ -287,7 +288,7 @@ class _TranscriptRecorder(AgentMiddleware):
         tool_message = _tool_message_from_result(result)
         if tool_message is not None:
             if (
-                _is_agentdojo_tool(request.tool)
+                is_agentdojo_tool(request.tool)
                 and len(_message_text(tool_message)) > DEEPAGENTS_EVICTION_THRESHOLD_CHARS
             ):
                 self.transcript.oversized_tool_outputs += 1
@@ -324,7 +325,7 @@ class _ToolVisibility(AgentMiddleware):
     def _is_hidden(self, tool: BaseTool | dict) -> bool:
         return (
             self.hide_filesystem_tools
-            and not _is_agentdojo_tool(tool)
+            and not is_agentdojo_tool(tool)
             and _tool_name(tool) in DEEPAGENTS_FILESYSTEM_TOOL_NAMES
         )
 

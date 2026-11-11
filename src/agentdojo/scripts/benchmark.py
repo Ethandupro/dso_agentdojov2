@@ -42,6 +42,8 @@ def benchmark_suite(
     live: Live | None = None,
     tool_output_format: Literal["yaml", "json"] | None = None,
     harness: str = "native",
+    providers: tuple[str, ...] = (),
+    provider_fallbacks: bool = True,
 ) -> SuiteResults:
     if not load_dotenv(".env"):
         warnings.warn("No .env file found")
@@ -71,6 +73,8 @@ def benchmark_suite(
                 system_message_name=system_message_name,
                 system_message=system_message,
                 tool_output_format=tool_output_format,
+                provider_order=list(providers) or None,
+                allow_fallbacks=provider_fallbacks,
             )
         )
     else:
@@ -152,6 +156,22 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     default="native",
     help="The agent loop. `native` is AgentDojo's own tool-calling loop; `deepagents` runs the agent with LangChain "
     "DeepAgents on OpenRouter (needs `--model-id` and the `deepagents` extra; `--model` is ignored).",
+)
+@click.option(
+    "--provider",
+    "providers",
+    type=str,
+    multiple=True,
+    default=tuple(),
+    help="With `--harness deepagents`: OpenRouter provider(s) to serve the model, in order of preference (repeatable, "
+    "e.g. `--provider deepinfra`). Unset, OpenRouter picks a provider per request.",
+)
+@click.option(
+    "--no-provider-fallbacks",
+    "no_provider_fallbacks",
+    is_flag=True,
+    default=False,
+    help="With `--provider`: fail instead of falling back to other providers.",
 )
 @click.option(
     "--benchmark-version",
@@ -260,7 +280,11 @@ def main(
     force_rerun: bool = False,
     modules_to_load: tuple[str, ...] = (),
     harness: str = "native",
+    providers: tuple[str, ...] = (),
+    no_provider_fallbacks: bool = False,
 ):
+    if no_provider_fallbacks and not providers:
+        raise ValueError("--no-provider-fallbacks needs --provider")
     for module in modules_to_load:
         importlib.import_module(module)
 
@@ -292,6 +316,8 @@ def main(
                 system_message=system_message,
                 force_rerun=force_rerun,
                 harness=harness,
+                providers=providers,
+                provider_fallbacks=not no_provider_fallbacks,
             )
         combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
         for suite_name, result in results.items():
@@ -331,6 +357,8 @@ def main(
             system_message_name=system_message_name,
             system_message=system_message,
             harness=harness,
+            providers=providers,
+            provider_fallbacks=not no_provider_fallbacks,
         )
         results = p.map(run_suite, suites)
 

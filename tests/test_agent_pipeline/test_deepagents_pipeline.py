@@ -6,6 +6,7 @@ from typing import Any
 
 import openai
 import pytest
+from click.testing import CliRunner
 
 pytest.importorskip("deepagents")
 
@@ -37,6 +38,7 @@ from agentdojo.benchmark import (
 )
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
 from agentdojo.logging import OutputLogger
+from agentdojo.scripts import benchmark as benchmark_script
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import ChatMessage
 
@@ -550,3 +552,27 @@ def test_summarization_is_recorded_in_diagnostics():
     assert len(summaries) == 1
     assert summaries[0]["agent"] == "main"
     assert "conversation that has been summarized" in summaries[0]["summary"]
+
+
+def test_cli_passes_provider_pinning_to_the_victim_config(monkeypatch: pytest.MonkeyPatch):
+    captured: list[DeepAgentsConfig] = []
+
+    def fake_from_config(config: DeepAgentsConfig, **kwargs: Any) -> DeepAgentsPipeline:
+        captured.append(config)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(DeepAgentsPipeline, "from_config", staticmethod(fake_from_config))
+    args = [
+        "-s",
+        "banking",
+        "-ut",
+        "user_task_0",
+        "--harness",
+        "deepagents",
+        "--model-id",
+        "deepseek/deepseek-v4.1-flash",
+    ]
+    CliRunner().invoke(benchmark_script.main, [*args, "--provider", "deepinfra", "--no-provider-fallbacks"])
+    assert captured[-1].provider_order == ["deepinfra"] and captured[-1].allow_fallbacks is False
+    CliRunner().invoke(benchmark_script.main, args)
+    assert captured[-1].provider_order is None
