@@ -334,6 +334,46 @@ def test_from_config_sets_openrouter_retries_and_timeout(monkeypatch: pytest.Mon
     assert model.request_timeout == 60.0  # type: ignore[attr-defined]
 
 
+def test_from_config_pins_openrouter_provider_and_seed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    unpinned = DeepAgentsPipeline.from_config(DeepAgentsConfig(model_id="deepseek/deepseek-v4.1-flash")).model
+    assert unpinned.extra_body is None  # type: ignore[attr-defined]
+    assert unpinned.seed is None  # type: ignore[attr-defined]
+    config = DeepAgentsConfig(
+        model_id="deepseek/deepseek-v4.1-flash", provider_order=["deepinfra"], allow_fallbacks=False, seed=3
+    )
+    model = DeepAgentsPipeline.from_config(config).model
+    assert model.extra_body == {"provider": {"order": ["deepinfra"], "allow_fallbacks": False}}  # type: ignore[attr-defined]
+    assert model.seed == 3  # type: ignore[attr-defined]
+
+
+def test_token_usage_is_recorded_per_agent():
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    call = {"name": "get_balance", "args": {}, "id": "call_0", "type": "tool_call"}
+    usage = {"input_tokens": 100, "output_tokens": 7, "total_tokens": 107}
+    model = ScriptedChatModel(
+        script=[
+            AIMessage(content="", tool_calls=[call], usage_metadata=usage, response_metadata={"model_name": "m"}),
+            AIMessage(content="done", usage_metadata=usage, response_metadata={"model_name": "m"}),
+        ]
+    )
+    _, _, _, _, extra = DeepAgentsPipeline(model).query(
+        "balance?", FunctionsRuntime(suite.tools), suite.load_and_inject_default_environment({})
+    )
+    assert extra["deepagents"]["usage"] == {"main": {"model_calls": 2, "input_tokens": 200, "output_tokens": 14}}
+    assert extra["deepagents"]["served_models"] == ["m"]
+
+
+def test_json_tool_output_format_handles_datetimes():
+    suite = get_suite(BENCHMARK_VERSION, "workspace")
+    env = suite.load_and_inject_default_environment({})
+    config = DeepAgentsConfig(model_id="deepseek/deepseek-v4.1-flash", tool_output_format="json")
+    pipeline = DeepAgentsPipeline.from_config(config, model=ScriptedChatModel())
+    result, error = FunctionsRuntime(suite.tools).run_function(env, "search_calendar_events", {"query": "Networking"})
+    assert error is None
+    assert json.loads(pipeline.tool_output_formatter(result))
+
+
 def _bad_request(message: str) -> openai.BadRequestError:
     """A 400 error as the OpenAI client raises it (built without an HTTP response)."""
     error = openai.BadRequestError.__new__(openai.BadRequestError)
