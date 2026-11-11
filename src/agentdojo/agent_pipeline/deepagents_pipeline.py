@@ -12,6 +12,10 @@ Every model response and tool result, at every agent level (main agent and subag
 subagent's tool calls never appear in the main agent's message list, but AgentDojo's checks read the full
 function-call trace.
 
+Errors: if the conversation outgrows the model's context (after DeepAgents' own summarize-and-retry), the run ends
+there and is scored from the environment and tool calls so far, with the error saved in the trace. Any other model
+error (after `max_retries`) stops the benchmark; that pair has no saved result, so it reruns on resume.
+
 Experiment runs (C0-C5 in `skillfile_evolution/DESIGN.md`) build the victim with
 `DeepAgentsPipeline.from_config(DeepAgentsConfig(...), tool_middleware_factory=...)`, where the factory builds the
 checker for each task. The benchmark CLI selects it with `--harness deepagents --model-id <OpenRouter model id>`.
@@ -24,9 +28,11 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
+import openai
 from deepagents import create_deep_agent
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware, ModelRequest, ModelResponse
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -82,6 +88,34 @@ ground-truth tool output in AgentDojo v1.2.2 is ~28k chars (workspace `list_file
 
 _AGENTDOJO_TOOL_METADATA_KEY = "agentdojo_function"
 
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "maximum context length",  # OpenRouter: "This endpoint's maximum context length is N tokens. ..."
+    "context window",
+    "prompt is too long",
+    "reduce the length",
+)
+
+
+def is_context_overflow_error(error: BaseException) -> bool:
+    """Whether a model call failed because the conversation no longer fits in the model's context window.
+
+    LangChain only classifies OpenAI's own wording as `ContextOverflowError`; OpenRouter's error is a plain
+    `BadRequestError` whose message says "maximum context length".
+    """
+    if isinstance(error, ContextOverflowError):
+        return True
+    if isinstance(error, openai.BadRequestError):
+        message = str(error).lower()
+        return any(marker in message for marker in _CONTEXT_OVERFLOW_MARKERS)
+    return False
+
+
+CONTEXT_OVERFLOW_FINAL_MESSAGE = (
+    "[The agent run was stopped because the conversation exceeded the model's context length.]"
+)
+
+
 ToolMiddlewareFactory = Callable[[str], Sequence[AgentMiddleware]]
 """Builds tool middleware (e.g. the checker) for one task, given the user's task prompt. The middleware it returns
 is attached to both the main agent and the subagent, so the subagent's checker also sees the user's task rather
@@ -106,6 +140,11 @@ class DeepAgentsConfig(BaseModel):
     """The system message to use. If provided, it overrides `system_message_name`."""
     tool_output_format: Literal["yaml", "json"] | None = None
     """Format to use for tool outputs. If not provided, the default format is yaml."""
+    max_retries: int = 6
+    """Retries (with exponential backoff) of a failed OpenRouter request, e.g. on rate limits or provider 5xx
+    errors. A request that still fails stops the benchmark; the pair has no result saved, so it reruns on resume."""
+    request_timeout: float | None = 300.0
+    """Seconds before an OpenRouter request is abandoned (and retried)."""
 
     @property
     def pipeline_name(self) -> str:
@@ -181,6 +220,8 @@ class _Transcript:
     agent_setup: dict[str, dict[str, Any]] = field(default_factory=dict)
     oversized_tool_outputs: int = 0
     rejected_hidden_tool_calls: int = 0
+    # Conversation summaries DeepAgents' summarization middleware put in place of older messages, by message id.
+    summaries: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 class _TranscriptRecorder(AgentMiddleware):
@@ -200,6 +241,10 @@ class _TranscriptRecorder(AgentMiddleware):
         return f"AgentDojoTranscriptRecorder[{self.agent}]"
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        for message in request.messages:
+            if message.additional_kwargs.get("lc_source") == "summarization":
+                key = message.id or _message_text(message)
+                self.transcript.summaries.setdefault(key, {"agent": self.agent, "summary": _message_text(message)})
         response = handler(request)
         for message in response.result:
             if isinstance(message, AIMessage):
@@ -366,6 +411,8 @@ class DeepAgentsPipeline(BasePipelineElement):
         self.max_model_calls = max_model_calls
         self.tool_output_formatter = tool_output_formatter
         self.hide_filesystem_tools = hide_filesystem_tools
+        self.config: DeepAgentsConfig | None = None
+        """Set by `from_config`, and saved with each trace."""
 
     @classmethod
     def from_config(
@@ -377,7 +424,12 @@ class DeepAgentsPipeline(BasePipelineElement):
     ) -> "DeepAgentsPipeline":
         """Builds the pipeline for a run. `model` replaces the OpenRouter model built from `config` (for tests)."""
         if model is None:
-            model = make_openrouter_chat_model(config.model_id, temperature=config.temperature)
+            model = make_openrouter_chat_model(
+                config.model_id,
+                temperature=config.temperature,
+                max_retries=config.max_retries,
+                timeout=config.request_timeout,
+            )
         if config.tool_output_format == "json":
             tool_output_formatter = partial(tool_result_to_str, dump_fn=json.dumps)
         else:
@@ -387,7 +439,7 @@ class DeepAgentsPipeline(BasePipelineElement):
             if config.system_message is not None
             else load_system_message(config.system_message_name)
         )
-        return cls(
+        pipeline = cls(
             model,
             name=config.pipeline_name,
             system_prompt=system_prompt,
@@ -397,6 +449,8 @@ class DeepAgentsPipeline(BasePipelineElement):
             hide_filesystem_tools=config.hide_filesystem_tools,
             tool_middleware_factory=tool_middleware_factory,
         )
+        pipeline.config = config
+        return pipeline
 
     def _build_agent(self, tools: list[BaseTool], transcript: _Transcript, tool_middleware: list[AgentMiddleware]):
         # The default general-purpose subagent is "isolated" and does not inherit the main agent's custom
@@ -446,44 +500,90 @@ class DeepAgentsPipeline(BasePipelineElement):
             tool_middleware.extend(self.tool_middleware_factory(query))
         transcript = _Transcript()
         agent = self._build_agent(tools, transcript, tool_middleware)
-        # LangGraph runs the tool calls of one model turn concurrently, in threads. AgentDojo's own loop runs them
-        # one after another, in the order the model gave them, and environment changes (e.g. banking transaction
-        # ids) depend on that order. `max_concurrency=1` restores it, for the main agent and the subagent.
-        final_state = agent.invoke({"messages": [HumanMessage(content=query)]}, config={"max_concurrency": 1})
-
-        new_messages: list[ChatMessage] = [
+        logger = Logger.get()
+        prefix: list[ChatMessage] = [
             ChatSystemMessage(role="system", content=[text_content_block_from_string(self.system_prompt)]),
             ChatUserMessage(role="user", content=[text_content_block_from_string(query)]),
-            *(_event_to_agentdojo(event) for event in transcript.events),
         ]
 
-        # A message that ends the run without going through a model call (e.g. the model-call limit's exit
-        # message) is not seen by the recorder; append it so the last message is the agent's final answer.
-        final_message = final_state["messages"][-1]
-        recorded_ids = {event.message.id for event in transcript.events}
+        error: str | None = None
+        final_state: dict[str, Any] | None = None
+        try:
+            # LangGraph runs the tool calls of one model turn concurrently, in threads. AgentDojo's own loop runs
+            # them one after another, in the order the model gave them, and environment changes (e.g. banking
+            # transaction ids) depend on that order. `max_concurrency=1` restores it, for the main agent and the
+            # subagent.
+            final_state = agent.invoke({"messages": [HumanMessage(content=query)]}, config={"max_concurrency": 1})
+        except Exception as e:
+            if not is_context_overflow_error(e):
+                # Save what the agent did before the failure, for debugging. The pair gets no utility/security
+                # result, so it is rerun when the benchmark resumes.
+                logger.log([*prefix, *(_event_to_agentdojo(event) for event in transcript.events)])
+                raise
+            # The conversation no longer fits in the model's context. Like AgentDojo's `AbortAgentError`, end the
+            # run here and let the benchmark score it from the environment and the tool calls made so far: an
+            # injected action already executed still counts as a successful attack.
+            error = f"{type(e).__name__}: {e}"
+            if e.__cause__ is not None:
+                error += f" (caused by {type(e.__cause__).__name__}: {e.__cause__})"
+
+        new_messages: list[ChatMessage] = [*prefix, *(_event_to_agentdojo(event) for event in transcript.events)]
+
         hit_limit = False
-        if isinstance(final_message, AIMessage) and final_message.id not in recorded_ids:
-            new_messages.append(_event_to_agentdojo(_TranscriptEvent(agent="main", message=final_message)))
-            hit_limit = True
+        if final_state is not None:
+            # A message that ends the run without going through a model call (e.g. the model-call limit's exit
+            # message) is not seen by the recorder; append it so the last message is the agent's final answer.
+            final_message = final_state["messages"][-1]
+            recorded_ids = {event.message.id for event in transcript.events}
+            if isinstance(final_message, AIMessage) and final_message.id not in recorded_ids:
+                new_messages.append(_event_to_agentdojo(_TranscriptEvent(agent="main", message=final_message)))
+                hit_limit = True
+        else:
+            new_messages.append(
+                ChatAssistantMessage(
+                    role="assistant",
+                    content=[text_content_block_from_string(CONTEXT_OVERFLOW_FINAL_MESSAGE)],
+                    tool_calls=None,
+                )
+            )
+
+        # AgentDojo reruns the whole task, on the environment the first run already changed, when the final answer
+        # has no content (`TaskSuite.run_task_with_pipeline`). Side effects (e.g. a transfer) would then happen
+        # twice, and only the last run's tool calls would be scored. An empty answer is scored as it is instead.
+        empty_final_answer = False
+        last = new_messages[-1]
+        if last["role"] == "assistant" and last["content"] is None:
+            new_messages[-1] = ChatAssistantMessage(
+                role="assistant", content=[text_content_block_from_string("")], tool_calls=last["tool_calls"]
+            )
+            empty_final_answer = True
 
         diagnostics = {
             "n_events": len(transcript.events),
             "n_subagent_events": sum(event.agent != "main" for event in transcript.events),
             "final_message_unrecorded": hit_limit,
+            "empty_final_answer": empty_final_answer,
+            "error": error,
             "shadowed_builtin_tools": shadowed,
             "agent_setup": transcript.agent_setup,
             "hide_filesystem_tools": self.hide_filesystem_tools,
             "rejected_hidden_tool_calls": transcript.rejected_hidden_tool_calls,
             "oversized_tool_outputs": transcript.oversized_tool_outputs,
+            # DeepAgents summarizes older messages when the context gets long (170k tokens for models without a
+            # profile) or the provider reports an overflow. The agent then sees the summary instead of those
+            # messages, and the summarizing model call is not in the trace.
+            "summaries": list(transcript.summaries.values()),
+            "config": self.config.model_dump() if self.config is not None else None,
         }
 
         # The benchmark runs this element on its own, not inside an `AgentPipeline`, and drops `extra_args`. So it
         # logs the trace itself (without messages, saved results fail to load and resumed runs redo every task),
         # and saves the diagnostics in the trace file under "deepagents".
-        logger = Logger.get()
         logger.log(new_messages)
         if isinstance(logger, TraceLogger):
             logger.set_contextarg("deepagents", diagnostics)
+        if error is not None:
+            logger.log_error(error)
 
         extra_args = {**extra_args, "deepagents": diagnostics}
         return query, runtime, env, new_messages, extra_args
