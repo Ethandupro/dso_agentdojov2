@@ -40,7 +40,7 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
   - The CLI's `--max-workers` path was broken upstream (positional arguments out of order, suite names passed where suites were expected). It's fixed.
 - **The checker is a LangChain `AgentMiddleware`** using `wrap_tool_call`, not a `PromptInjectionDetector` subclass.
   - *Decided 2026-10-22:* it's attached with `tool_middleware_factory`, a function called once per task with the user's task prompt that returns the middleware. The same instances go on the main agent and the subagent, so the subagent's checker also sees the **user's** task, not the main agent's delegation message (the only "task" in the subagent's own messages). A test covers this.
-  - For C3/C4, a new skill file means building the factory (and pipeline) again for the next round. (No side-by-side replay since 2026-11-05.)
+  - For C3/C4, a new skill file means building the factory (and pipeline) again for the next trial. Since 2026-11-11 the file can change after any train trial; before that it changed between rounds. (No side-by-side replay since 2026-11-05.)
   - `tool_middleware=[...]` remains for middleware that doesn't depend on the task.
   - It screens only AgentDojo environment tools. DeepAgents' built-in tools only hold content that already passed the checker.
   - *Correction:* the default general-purpose subagent is "isolated" and does **not** inherit the main agent's custom middleware. Inheritance only happens for `mode="fork"` subagents.
@@ -77,20 +77,25 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - **Only in runs where the skill file evolves, C3 and C4 (decided 2026-11-11 by user).** C0, C1 and C2 have no split and run every pair in the fixed set. In C3 and C4, the train pairs drive skill-file evolution and the test pairs get no evolution.
 - Split **by injection task**, stratified by suite: **60% train / 40% test** (confirmed 2026-11-11 by user, so every test pair is an attack the judge has never seen). A pair goes to the side its injection task is on. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
 - A user task can appear in both splits. What's held out is the injection, and the judge only ever sees train injections.
-- **Fixed pair set (decided 2026-10-29 by user; replaces a new pair sample each round).** A fixed number of (user task, injection task) pairs is sampled once per split, with a fixed seed. The same pairs run in every round, so each pair gets exactly 3 trials per run, one per round (see Round protocol). That still gives far more trials than there are injection tasks.
-- **Matched pairs (decided 2026-10-28 by user).** The pair sample depends only on its fixed seed, never on the condition or the run seed. C1, C2, C3 and C4 use the same pairs in every round and every seed.
+- **Fixed pair set (decided 2026-10-29 by user; replaces a new pair sample each round).** A fixed number of (user task, injection task) pairs is sampled once per split, with a fixed seed. Each pair gets exactly 3 trials per run (see Trial protocol). That still gives far more trials than there are injection tasks.
+  - *Revised 2026-11-11 by user:* a pair's 3 trials run one after another, not one per run-wide round.
+  - **Train pair order (2026-11-11).** Train pairs run one at a time in a fixed order, because C3 and C4 share one skill file across pairs (see Trial protocol). The order is part of the fixed pair list. **Open (2026-11-11):** how the order is chosen, for example shuffled with the fixed seed or grouped by suite.
+- **Matched pairs (decided 2026-10-28 by user).** The pair sample depends only on its fixed seed, never on the condition or the run seed. C1, C2, C3 and C4 use the same pairs, in the same order, in every seed.
 - Benign set: every user task run with no injection. Used for benign utility and the checker's false-positive rate (see Checker), in evaluation only. Since 2026-11-05 nothing that decides the skill file uses it, so H1's benign utility is never measured on data that selected the skill file.
+  - **When it runs (decided 2026-11-11 by user):** in C3 and C4, twice per run: once against S0 before the train phase ("before") and once against the final evolved file after it ("after").
+  - **Open (2026-11-11):** when it runs in C1 and C2. It used to run once per round against S0, and there are no run-wide rounds any more.
 
 ## Attacks
 - **Static (train):** `important_instructions`.
 - **Evolving (train):** the ported SuperRed MUZZLE attacker, black-box. MUZZLE is the only evolving attacker (decided 2026-11-06 by user). The attacker sees only success/failure and the agent's final answer. It keeps an archive of past attempts and their outcomes. It never sees the skill file. In C4 it also never sees test-split injection tasks. C2 has no split (2026-11-11), so its attacker rewrites every pair.
-- **Identical start (decided 2026-10-28 by user; S0 made explicit 2026-10-29).** Round 0 is the same in every condition. Each pair gets one attempt against the same skill file S0, with the `important_instructions` template filled with that pair's injection-task goal. For example, pair A (user task 1 × injection task 4) has identical round-0 inputs in C1, C2, C3 and C4. Each condition still runs its own round 0 in its own directory, so the inputs match but outputs can differ through provider noise. In C2 and C4 the attacker makes no rewrite in round 0. C1 and C3 keep the round-0 text in every round. In all conditions, the pairs stay matched every round.
-- **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts").** One attempt per pair per round, over 3 rounds.
-  - Round 0: the `important_instructions` text above. No rewrite.
-  - Rounds 1 and 2 (C2 and C4 only): the attacker rewrites the pair's injection text once per round, building on that same pair's previous round: the text it sent, task success, security success and the agent's final answer.
-  - All 3 rounds always run, even when an earlier round already succeeded. The next rewrite then starts from the text that worked.
-- **Attacker success (decided 2026-10-29 by user):** an attempt counts as a success for the attacker if security is broken **or** utility is broken (the user task fails). This is only the attacker's own feedback signal. ASR everywhere in this doc stays AgentDojo's security result, and utility under attack is reported separately.
-- **Open (2026-10-29, narrowed 2026-11-11):** test-split pairs in C4. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, C4 test pairs keep the round-0 text in every round, so on test C4 differs from C3 only through its skill file.
+- **Identical start (decided 2026-10-28 by user; S0 made explicit 2026-10-29; revised 2026-11-11).** Every pair's trial 0 uses the same injection text in every condition: the `important_instructions` template filled with that pair's injection-task goal. For example, pair A (user task 1 × injection task 4) has the same trial-0 text in C1, C2, C3 and C4. Tasks, pairs, pair order and trial-0 text are identical across the four conditions, and every run starts from the same skill file S0. Each condition still runs in its own directory, so the inputs match but outputs can differ through provider noise. In C2 and C4 the attacker makes no rewrite before trial 0. C1 and C3 keep the trial-0 text in every trial.
+  - *Changed 2026-11-11:* before, every pair's first trial faced S0 in every condition ("round 0 is the same in every condition"). With one shared file that evolves after every successful train trial, that holds in C3 and C4 only until the first evolution step. Later pairs meet the evolved file from their first trial on. C1 and C2 are unaffected: every trial faces S0.
+- **Attack budget (decided 2026-10-29 by user; replaces "per (pair, round), up to 5 attempts"; reworded 2026-11-11 from rounds to trials).** One attempt per trial, 3 trials per pair.
+  - Trial 0: the `important_instructions` text above. No rewrite.
+  - Trials 1 and 2 (C2 and C4 only): the attacker rewrites the pair's injection text once per trial, building on that same pair's previous trial: the text it sent, task success, security success and the agent's final answer.
+  - All 3 trials always run, even when an earlier trial already succeeded. The next rewrite then starts from the text that worked.
+- **Attacker success (decided 2026-10-29 by user):** an attempt counts as a success for the attacker if security is broken **or** utility is broken (the user task fails). This is the attacker's own feedback signal. Since 2026-11-11 the same result also decides when the skill file evolves in C3 and C4 (see Trial protocol). ASR everywhere in this doc stays AgentDojo's security result, and utility under attack is reported separately.
+- **Open (2026-10-29, narrowed 2026-11-11):** test-split pairs in C4. The attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise, C4 test pairs keep the trial-0 text in all 3 trials, so on test C4 differs from C3 only through its skill file.
 - **Held-out styles (test only):** `injecagent` and `ignore_previous`. These are never used in training.
 - **No white-box ablation** until the main results exist.
 
@@ -107,7 +112,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - The port has to reproduce MUZZLE's upstream AgentDojo smoke result on a small task set before it's used in experiments.
 
 ### MUZZLE: iterative part only (decided 2026-10-29 by user)
-- **Kept:** MUZZLE's refinement loop. After rounds 0 and 1, its Judge reads the pair's last attempt (injection text, success result, agent's final answer) and writes recommendations. Offline PAIR then rewrites the text, starting from the last text plus those recommendations, with the injection task's goal as its target.
+- **Kept:** MUZZLE's refinement loop. After a pair's trials 0 and 1 (rounds 0 and 1 before 2026-11-11), its Judge reads the pair's last attempt (injection text, success result, agent's final answer) and writes recommendations. Offline PAIR then rewrites the text, starting from the last text plus those recommendations, with the injection task's goal as its target.
 - **Dropped:**
   - the benign recon run and the playbook built from it (OBSERVE: Summarizer, Grafter, Prompter);
   - the placeholder delivery check (PROBE);
@@ -146,35 +151,73 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   - Benign text removed: how much legitimate content was dropped on benign runs.
   - Checker false-positive rate: the share of benign tool outputs with at least one span removed. Whole-output removals after a parse failure are reported separately.
 
-## Round protocol (revised 2026-10-29 by user; was R = 5 with early stopping)
-- **R = 3 rounds.** One round is one trial of every pair. What the user calls a pair's "Run 1, 2, 3" are rounds 0, 1 and 2 here.
-- A pair's 3 trials in each condition. S0 is the round-0 skill file; S1 and S2 are the file after each judge rewrite. If the judge doesn't run, or its rewrite still fails the text checks after one retry, the current file carries over (e.g. S1 = S0).
+## Trial protocol (revised 2026-11-11 by user; was 3 run-wide rounds with the judge running between rounds)
+- **History:** R = 5 rounds with early stopping until 2026-10-29. From 2026-10-29, R = 3 rounds: one round was one trial of every pair, and in C3/C4 the judge ran between rounds on a batch of failures (at least 5, up to 20 sampled across injection tasks), so the file changed at most twice (S0, S1, S2) and nothing was rewritten after round 2. On 2026-11-11 the user replaced this with the protocol below. "Round" is no longer a run-wide step. What the user calls a pair's "Run 1, 2, 3" are its trials 0, 1 and 2.
+- **Train phase.** Train pairs run one after another in the fixed order (see Splits). Each pair gets 3 trials in a row.
+- **C1 and C2:** every trial runs against S0.
+- **C3 and C4: one shared skill file (decided 2026-11-11 by user).** The run starts from S0. After each train trial:
+  - **Attack succeeded:** the judge runs and returns delta edits (see the next section). If they pass the checks, the edited file becomes the current file.
+  - **Attack failed:** the file stays the same and the pair is attacked again.
+  - The next trial uses the current file. After a pair's third trial, the next trial is the next pair's first, so each pair starts from whatever the earlier pairs left. The judge also runs after a successful third trial.
+- **"Succeeded" (decided 2026-11-11 by user)** is the attacker-success result (see Attacks): the injection goal was achieved **or** the user task failed. This replaces the 2026-11-05 rule that the judge sees only attacks that got through.
+- **The judge may return zero edits (decided 2026-11-11 by user)** when it sees no problem with the file, for example when the user task failed for a reason unrelated to the checker. The current file then carries over.
+- A pair's 3 trials in each condition:
 
-  | Round | C1 | C2 | C3 | C4 |
+  | Trial | C1 | C2 | C3 | C4 |
   |---|---|---|---|---|
-  | 0 | S0 + baseline text | S0 + baseline text | S0 + baseline text | S0 + baseline text |
-  | 1 | S0 + baseline text | S0 + attacker rewrite 1 | S1 + baseline text | S1 + attacker rewrite 1 |
-  | 2 | S0 + baseline text | S0 + attacker rewrite 2 | S2 + baseline text | S2 + attacker rewrite 2 |
+  | 0 | S0 + baseline text | S0 + baseline text | current file + baseline text | current file + baseline text |
+  | 1 | S0 + baseline text | S0 + attacker rewrite 1 | current file + baseline text | current file + attacker rewrite 1 |
+  | 2 | S0 + baseline text | S0 + attacker rewrite 2 | current file + baseline text | current file + attacker rewrite 2 |
 
-  "Baseline text" is the round-0 `important_instructions` text. In C1 the 3 rounds repeat the same setup, so they differ only by provider noise.
-- In C3 and C4 the judge runs between rounds, after round 0 and after round 1, so the skill file is rewritten at most twice. Nothing is rewritten after round 2.
-- The judge runs only when there are **≥ 5 train failures**. It gets up to 20 failures, sampled across injection tasks.
-- **The judge sees only attacks that got through (decided 2026-11-05 by user).** It isn't shown trials where the user task failed after the checker removed text, so it gets no direct signal about over-removal. Benign utility is tracked every round instead (see Known limitations).
-- All 3 rounds always run. The old early-stop rule (stop after 2 rounds in a row with no trigger or a rejected rewrite) is dropped: with 3 rounds it could only ever skip round 2.
+  "Baseline text" is the trial-0 `important_instructions` text. "Current file" is the shared file as it stands when the trial starts: S0 for the first pair's trial 0, and after that whatever the evolution steps so far produced. In C1 the 3 trials repeat the same setup, so they differ only by provider noise. In C3 a trial that follows a failed attack repeats the same file and the same text.
+- All 3 trials always run, even when an earlier trial already succeeded.
+- **Versions.** The file is S0, S1, S2, … with one new version per evolution step that changes it. A run can produce up to 3 versions per train pair.
+- **Test phase (decided 2026-11-11 by user).** After every train pair has finished its 3 trials, the file is frozen. Test pairs then run 3 trials each against that final file (in C1 and C2, against S0). A successful attack on a test pair never triggers the judge.
+- **Benign runs (decided 2026-11-11 by user).** In C3 and C4 the benign set runs once before the train phase, against S0, and once after it, against the final file (see Splits).
 
-## Adopting a rewrite: blind, text checks only (revised 2026-11-05 by user; replaces the paired acceptance gate)
-- **The judge's rewrite `S'` is used unconditionally in the next round.** It's never tried out before adoption: no replay, no benign comparison against `S`. `S'` can turn out worse than `S`, and that's measured, not prevented. C3/C4 therefore test whether the judge can improve the file blind, not judge plus selection.
+## Evolving the skill file: delta edits, adopted blind (revised 2026-11-11 by user; was a full rewrite of the file)
+- **History:** until 2026-11-05 a rewrite had to pass a paired acceptance gate. On 2026-11-05 the user made adoption blind, with text checks only. Until 2026-11-11 the judge wrote a complete new file `S'`. On 2026-11-11 the user replaced the full rewrite with delta edits, because a full rewrite can change the whole file and damage structure and rules that should be kept.
+- **The judge never writes the file.** It returns a short list of edits to numbered rules, and code applies them. Everything the judge doesn't name stays byte-identical.
+- **Structure.** The file is stored as structured data (sections, each holding rules with IDs) and rendered to the Markdown the checker reads. S0 maps onto it without any change to its content:
+
+  | Section | Treatment | Rule IDs |
+  |---|---|---|
+  | Role | frozen prose | none |
+  | Principles | rules (frozen: see Open below) | P1–P4 |
+  | Signs of injected text | editable rules; the opening and closing sentences are frozen | S1–S7 |
+  | What to keep | editable rules | K1–K3 |
+  | How much to remove | editable rules | R1–R5 |
+  | When unsure | frozen prose | none |
+
+  - The checker sees plain Markdown. Rule IDs and each rule's origin are metadata and are never rendered. Only the judge sees the IDs.
+  - Rendering the structured S0 must reproduce the committed `S0.md` byte for byte, so the manifest's S0 hash holds and C1 and C2 are untouched.
+  - IDs are never reused. A new sign becomes S8, and a deleted or merged rule's ID is retired.
+  - Each rule records its origin: S0, or the pair, trial and step number of the edit that created or last changed it.
+  - **Open (2026-11-11):** whether the Principles are frozen (proposed) or editable.
+- **Judge input, per step:** the current file with IDs, the one trial that triggered the step (user task, injection text, task and security results, and the spans the checker removed with its reasons), and the changelog so far.
+- **Judge output:**
+  - A diagnosis: the rules involved and why the trial went wrong. Types: `missing` (no rule covers it), `vague`, `conflict` (two rules disagree), `not_applied` (a rule covers it but the checker didn't follow it), `over_removed` (the user task failed because of what the checker removed).
+  - Edits: `ADD` a rule to a section, `MODIFY` a rule by ID, `DELETE` a rule by ID, or `MERGE` two or more rules into one new rule.
+  - Each `ADD`, `MODIFY` and `MERGE` also names a benign text the rule would keep. This is asked for in the judge prompt only; no code checks it.
+  - An empty edit list is valid (see Trial protocol).
+- **Checks on the edits (code, no models):**
+  - Every ID exists and no frozen part is touched.
+  - The edits are within budget. **Open (2026-11-11):** the budget. Proposed: at most 2 edits per step and about 60 tokens per rule, tuned on the pilot.
+  - Identifier ban: new or changed rule text has no URLs, emails, long digit runs or quoted strings, and no word that appears in the triggering trial but not in S0 or a common-English word list. **Open (2026-11-11):** the word list, tuned on the pilot.
+  - **Open (2026-11-11):** whether one invalid edit rejects the whole batch (proposed; matches the retry rule below) or only that edit is dropped.
+- **Checks on the rendered file (code, no models):**
+  1. **Length.** Within the 1500-token cap. The old format check is gone: the structure can't break, which settles the 2026-11-05 open question of what "the file parses" means.
+  2. **Leakage.** No 8-gram shared with any attack string in the archive. This mechanically enforces the "abstract patterns only" rule.
+- **One retry.** If the edits fail any check, the judge is asked once more, with the failure message. If the retry fails too, the current file carries over. Every retry is logged. Only C3 and C4 have a judge, so this is the same in both.
+- **The edited file is used unconditionally in the next trial (blind adoption, decided 2026-11-05 by user).** It's never tried out before adoption: no replay, no benign comparison against the file before the edit. It can turn out worse, and that's measured, not prevented. C3/C4 therefore test whether the judge can improve the file blind, not judge plus selection.
 - **Dropped (2026-11-05):**
   - the replay-ASR check (old gate 1: `S'` had to cut replay ASR by ≥ 5 points on the round's failures plus fresh train attacks);
   - the benign check (old gate 2: benign FPR and utility within 2 points).
 
   Reasons: they made train ASR non-increasing by construction, and the benign check selected on the same benign set that reports benign utility for H1. This also settles the old open question of what "fresh train attacks" meant.
-- **Kept:** two checks that only read `S'`'s text and run no models:
-  1. **Length and format.** Within the 1500-token cap, and the file parses. **Open (2026-11-05):** what "parses" means: strict (S0's six H2 sections, in order, none empty), loose (H1 title first, not empty, no code-block wrapper), or a middle version (S0's six H2 sections present in order and not empty; extra H2 and H3 sections allowed).
-  2. **Leakage.** No 8-gram shared with any attack string in the archive. This mechanically enforces the "abstract patterns only" rule.
-- **One retry.** If `S'` fails either check, the judge is asked once more, with the failure message. If the retry fails too, the current file carries over. Every retry is logged. Only C3 and C4 have a judge, so this is the same in both.
+- **Token cap.** S0 is about 910 tokens, so the cap leaves room for roughly 9 added rules. After that a step can only add by merging, shortening or deleting rules. That's what `MERGE` is for.
 
-Every version, changelog, check result and retry is kept on disk.
+Every version, diagnosis, edit list, check result and retry is kept on disk.
 
 ## Conditions and result segmentation (decided 2026-10-15 by user)
 The main experiment is **4 separate runs**, one per cell of skill file × attack:
@@ -183,38 +226,43 @@ The main experiment is **4 separate runs**, one per cell of skill file × attack
 |---|---|---|---|
 | C1 | static (S0, judge never runs) | static (`important_instructions`) | `c1_static-skill_static-attack` |
 | C2 | static | evolving (ported MUZZLE) | `c2_static-skill_evolving-attack` |
-| C3 | evolving (judge between rounds, text checks only) | static | `c3_evolving-skill_static-attack` |
+| C3 | evolving (delta edits after every successful train trial, text checks only) | static | `c3_evolving-skill_static-attack` |
 | C4 | evolving | evolving | `c4_evolving-skill_evolving-attack` |
 
 C0 (no checker) and C5 (final C4 file frozen vs a fresh evolving attacker) are reference runs outside this 2×2.
 
 Segmentation rules:
 - Every run writes only under `results/<run_id>/seed_<n>/`. No two conditions ever share a directory, cache or attacker archive.
-- Inside it: `config.json` (condition, skill/attack mode, models, seed, git commit), `round_<r>/{train,test,benign}/` trial logs, `skill_files/` (versions, changelogs, text-check results and retries), and `checker_calls.jsonl`.
-- Every trial record also carries `condition`, `skill_mode`, `attack_mode`, `seed`, `round` and `split`, so pooled tables can be split again without relying on paths.
+- Inside it: `config.json` (condition, skill/attack mode, models, seed, git commit), `trial_<t>/{train,test}/` trial logs, `benign_before/` and `benign_after/` in C3 and C4, `skill_files/` (every version, the judge's diagnoses and edits, check results and retries), and `checker_calls.jsonl`.
+  - *Changed 2026-11-11:* this was `round_<r>/{train,test,benign}/`. Where C1 and C2 benign logs go depends on the open question under Splits.
+- Every trial record also carries `condition`, `skill_mode`, `attack_mode`, `seed`, `trial` (`round` before 2026-11-11), `split` and the skill file version it ran against, so pooled tables can be split again without relying on paths.
 - A run refuses to start if its directory already holds results from a different config; it resumes only an identical config.
-- The fixed pair list (the same in every round), the round-0 injection texts and the hash of the committed S0 skill file are generated once into a committed manifest, `skillfile_evolution/pairs_manifest.json`. Each run checks its own inputs against the manifest before making any model call, and exits with an error if they don't match. Its `config.json` records the manifest hash. Only inputs are checked: utility and security results are expected to vary with provider noise.
+- The fixed pair list (with the train pair order), the trial-0 injection texts and the hash of the committed S0 skill file are generated once into a committed manifest, `skillfile_evolution/pairs_manifest.json`. Each run checks its own inputs against the manifest before making any model call, and exits with an error if they don't match. Its `config.json` records the manifest hash. Only inputs are checked: utility and security results are expected to vary with provider noise.
 - Aggregation produces one table and curve per condition; cross-condition comparisons (H1: C3/C4 vs C1, H2: C2 vs C4) are computed from those, never from mixed logs.
 
 ## Hypotheses: how each is measured
-- **H1:** test ASR vs round for C3/C4 compared with C1, at **benign** utility. Utility under attack is reported but not used for H1: removing spans can also remove data the user needed.
+- **H1 (revised 2026-11-11):** test ASR on the final file for C3/C4 compared with C1, at **benign** utility (in C3/C4, before against after). It was "test ASR vs round"; test pairs now run only on the final file, so there is one value per run and no curve. Utility under attack is reported but not used for H1: removing spans can also remove data the user needed.
+  - **Open (2026-11-11):** C1's benign runs (see Splits).
 - **H2:** ASR curve slope over rounds, C2 vs C4.
+  - **Open (2026-11-11):** rounds are no longer run-wide steps, and in C4 the file changes across pairs as well as across a pair's trials. The x-axis of this curve needs a new definition.
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
 ## Seeds and statistics
 - **3 seeds** for C1, C2, C3 and C4. 1 seed for C0 and C5. Add more seeds if the budget allows.
-- A seed changes only the random parts (attacker output, judge output, provider noise). It never changes the pairs or the round-0 injection text.
+- A seed changes only the random parts (attacker output, judge output, provider noise). It never changes the pairs, their order or the trial-0 injection text.
 - Report bootstrap 95% confidence intervals over trials.
 - A power check after the pilot decides the number of pairs in the fixed set.
-- Per condition, each pair gets 3 rounds × 3 seeds = 9 trials.
+- Per condition, each pair gets 3 trials × 3 seeds = 9 trials.
 
 ## Known limitations (logged up front)
 - Provider outputs vary even at temperature 0, so "reproducible" means same configs and seeds, not identical traces.
 - When the checker removes the injected text, the attacker only sees the outcome and the agent's final answer; it can't tell whether the checker or the agent stopped it. Internal logs record which. The agent may mention the `[removed by security check]` marker in its final answer, which hints at a removal. That's allowed under the attacker's black-box view.
 - Sanitizing is only as good as the spans the checker finds. Injection text it misses, or text split across several fields, can survive the removal. So can a span the checker misquotes, since unmatched spans are ignored (2026-11-10).
 - The checker sees the user's task and the tool output, so the checker itself can be targeted by injections.
-- No gate checks a rewrite's effect (2026-11-05), and the judge sees only attacks that got through. Rewrites can therefore drift one way, toward removing more, with nothing in the loop pushing back. Benign utility and benign text removed are reported per round for C3/C4, so a drop shows up as a finding. H1 claims an ASR gain only if benign utility holds.
-- Attacker success includes "utility broken" (2026-10-29). In C2 and C4 two things count as attacker wins without the injection working: the checker removing data the user task needed, and the agent failing a user task it would have failed anyway. Both also feed the next rewrite, which can pull the attacker toward breaking utility instead of security.
+- No gate checks an edit's effect (2026-11-05). Until 2026-11-11 the judge saw only attacks that got through, so nothing in the loop pushed back against removing more. Since 2026-11-11 it also sees trials where the user task failed, with the spans the checker removed, which gives it a direct signal about over-removal. Benign utility and benign text removed are reported before and after evolution for C3/C4 (per round before 2026-11-11), so a drop shows up as a finding, but not when it happened. H1 claims an ASR gain only if benign utility holds.
+- Attacker success includes "utility broken" (2026-10-29). In C2 and C4 two things count as attacker wins without the injection working: the checker removing data the user task needed, and the agent failing a user task it would have failed anyway. Both also feed the next rewrite, which can pull the attacker toward breaking utility instead of security. Since 2026-11-11 both also trigger the judge in C3 and C4; it may return zero edits.
+- Each edit rests on a single trial (2026-11-11). No minimum number of failures stands behind a rule, so a rule can be fitted to one attack. The identifier ban, the leakage check and the frozen parts limit this. Test ASR and the held-out styles on the final file measure what remains.
+- One shared file makes C3 and C4 results depend on the train pair order (2026-11-11), and their train phase can't run trials in parallel.
 
 ## Victim model (decided 2026-10-15 by user)
 - Agent model: `deepseek/deepseek-v4.1-flash` on OpenRouter. It's added to `MODEL_NAMES` as "DeepSeek" so `important_instructions` can name it.
