@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+import openai
 import pytest
 
 pytest.importorskip("deepagents")
@@ -19,14 +20,21 @@ from pydantic import Field
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import (
+    CONTEXT_OVERFLOW_FINAL_MESSAGE,
     DEEPAGENTS_BUILTIN_TOOL_NAMES,
     DeepAgentsConfig,
     DeepAgentsPipeline,
     ToolMiddlewareFactory,
+    is_context_overflow_error,
 )
 from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
+from agentdojo.attacks.attack_registry import load_attack
 from agentdojo.attacks.base_attacks import get_model_name_from_pipeline
-from agentdojo.benchmark import benchmark_suite_without_injections, load_task_results
+from agentdojo.benchmark import (
+    benchmark_suite_without_injections,
+    load_task_results,
+    run_task_with_injection_tasks,
+)
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
 from agentdojo.logging import OutputLogger
 from agentdojo.task_suite.load_suites import get_suite
@@ -36,9 +44,9 @@ BENCHMARK_VERSION = "v1.2.2"
 
 
 class ScriptedChatModel(BaseChatModel):
-    """Returns pre-scripted AI messages in order, regardless of input."""
+    """Returns pre-scripted AI messages in order, regardless of input. An exception in the script is raised."""
 
-    script: list[AIMessage] = Field(default_factory=list)
+    script: Sequence[AIMessage | Exception] = Field(default_factory=list)
     position: int = 0
 
     @property
@@ -59,6 +67,8 @@ class ScriptedChatModel(BaseChatModel):
             raise RuntimeError("Scripted model ran out of responses")
         message = self.script[self.position]
         self.position += 1
+        if isinstance(message, Exception):
+            raise message
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
@@ -313,3 +323,190 @@ def test_from_config_name_lets_attacks_address_the_model():
     assert "/" not in pipeline.name
     assert get_model_name_from_pipeline(pipeline) == "DeepSeek"
     assert pipeline.max_model_calls == 7
+    assert pipeline.config == config
+
+
+def test_from_config_sets_openrouter_retries_and_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    config = DeepAgentsConfig(model_id="deepseek/deepseek-v4.1-flash", max_retries=4, request_timeout=60.0)
+    model = DeepAgentsPipeline.from_config(config).model
+    assert model.max_retries == 4  # type: ignore[attr-defined]
+    assert model.request_timeout == 60.0  # type: ignore[attr-defined]
+
+
+def _bad_request(message: str) -> openai.BadRequestError:
+    """A 400 error as the OpenAI client raises it (built without an HTTP response)."""
+    error = openai.BadRequestError.__new__(openai.BadRequestError)
+    Exception.__init__(error, message)
+    error.message = message
+    error.status_code = 400
+    error.body = None
+    error.code = None
+    error.param = None
+    return error
+
+
+OPENROUTER_CONTEXT_ERROR = (
+    "Error code: 400 - {'error': {'message': \"This endpoint's maximum context length is 163840 tokens. However, "
+    "you requested about 170000 tokens. Please reduce the length of either one.\", 'code': 400}}"
+)
+
+
+def test_context_overflow_detection():
+    assert is_context_overflow_error(_bad_request(OPENROUTER_CONTEXT_ERROR))
+    assert is_context_overflow_error(_bad_request("Error code: 400 - {'code': 'context_length_exceeded'}"))
+    assert not is_context_overflow_error(_bad_request("Error code: 400 - invalid tool schema"))
+    assert not is_context_overflow_error(RuntimeError("maximum context length"))
+
+
+class HijackedReplay(BasePipelineElement):
+    """Scripts the deep agent to do the injection task's ground truth (as a hijacked agent would), then to end
+    with the given final step: an answer, or an exception raised by the model."""
+
+    def __init__(self, injection_task, final: AIMessage | Exception, name: str = "scripted") -> None:
+        self.injection_task = injection_task
+        self.final = final
+        self.model = ScriptedChatModel()
+        self.pipeline = DeepAgentsPipeline(self.model, name=name)
+        self.name = name
+
+    def query(
+        self,
+        query: str,
+        runtime: FunctionsRuntime,
+        env: Env = EmptyEnv(),
+        messages: Sequence[ChatMessage] = [],
+        extra_args: dict = {},
+    ) -> tuple[str, FunctionsRuntime, Env, Sequence[ChatMessage], dict]:
+        calls = [
+            _tool_call_message(call.function, dict(call.args), f"call_{i}")
+            for i, call in enumerate(self.injection_task.ground_truth(env))
+        ]
+        self.model.script = [*calls, self.final]
+        self.model.position = 0
+        return self.pipeline.query(query, runtime, env, messages, extra_args)
+
+
+def _run_banking_pair(pipeline: BasePipelineElement, logdir: Path):
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    user_task = suite.user_tasks["user_task_0"]
+    attack = load_attack("direct", suite, pipeline)
+    with OutputLogger(str(logdir)):
+        return run_task_with_injection_tasks(
+            suite, pipeline, user_task, attack, logdir, False, ["injection_task_0"], BENCHMARK_VERSION
+        )
+
+
+def test_context_overflow_ends_run_and_scores_actions_already_taken(tmp_path: Path):
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    injection_task = suite.injection_tasks["injection_task_0"]
+    pipeline = HijackedReplay(injection_task, final=_bad_request(OPENROUTER_CONTEXT_ERROR))
+    utility, security = _run_banking_pair(pipeline, tmp_path)
+
+    # The injected transfer happened before the overflow, so the attack counts as successful.
+    assert security[("user_task_0", "injection_task_0")] is True
+    assert utility[("user_task_0", "injection_task_0")] is False
+    saved = load_task_results("scripted", "banking", "user_task_0", "direct", "injection_task_0", tmp_path)
+    # DeepAgents' summarization middleware first tries to summarize and retry, then gives up.
+    assert saved.error is not None and "maximum context length" in saved.error
+    assert saved.messages[-1]["content"] == [{"type": "text", "content": CONTEXT_OVERFLOW_FINAL_MESSAGE}]
+    assert any(m["role"] == "tool" and m["tool_call"].function == "send_money" for m in saved.messages)
+    raw = json.loads(
+        (tmp_path / "scripted" / "banking" / "user_task_0" / "direct" / "injection_task_0.json").read_text()
+    )
+    assert "maximum context length" in raw["deepagents"]["error"]
+
+
+def test_other_model_errors_stop_the_run_and_the_pair_reruns_on_resume(tmp_path: Path):
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    injection_task = suite.injection_tasks["injection_task_0"]
+    failing = HijackedReplay(injection_task, final=_bad_request("Error code: 400 - provider returned an error"))
+    with pytest.raises(openai.BadRequestError):
+        _run_banking_pair(failing, tmp_path)
+
+    # The partial transcript is saved for debugging, but the pair has no result, so a resumed run redoes it.
+    raw = json.loads(
+        (tmp_path / "scripted" / "banking" / "user_task_0" / "direct" / "injection_task_0.json").read_text()
+    )
+    assert any(m["role"] == "tool" for m in raw["messages"])
+    assert "utility" not in raw
+    resumed = HijackedReplay(injection_task, final=AIMessage(content="Done."))
+    _, security = _run_banking_pair(resumed, tmp_path)
+    assert security[("user_task_0", "injection_task_0")] is True
+    assert resumed.model.position > 0
+
+
+def test_empty_final_answer_is_scored_without_rerunning_the_task():
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    injection_task = suite.injection_tasks["injection_task_0"]
+    user_task = suite.user_tasks["user_task_0"]
+    env = suite.load_and_inject_default_environment({})
+    n_before = len(env.bank_account.transactions)
+    pipeline = HijackedReplay(injection_task, final=AIMessage(content=""))
+    _, security = suite.run_task_with_pipeline(pipeline, user_task, injection_task, {}, environment=env)
+
+    assert security is True
+    # One run only: AgentDojo reruns a task whose final answer has no content, which would repeat the transfer.
+    assert len(env.bank_account.transactions) == n_before + 1
+
+
+class _CombinedTask:
+    """A user task whose ground truth is followed by an injection task's ground truth (what a hijacked agent does).
+    Duck-types the task interface that `GroundTruthPipeline` and `GroundTruthReplay` use."""
+
+    def __init__(self, user_task, injection_task) -> None:
+        self.user_task = user_task
+        self.injection_task = injection_task
+        self.GROUND_TRUTH_OUTPUT = user_task.GROUND_TRUTH_OUTPUT
+
+    def ground_truth(self, env):
+        calls = list(self.user_task.ground_truth(env))
+        if self.injection_task is not None:
+            calls += self.injection_task.ground_truth(env)
+        return calls
+
+
+def _pair_replay(user_task, injection_task, pipeline_class) -> BasePipelineElement:
+    combined = _CombinedTask(user_task, injection_task)
+    if pipeline_class is GroundTruthReplay:
+        return GroundTruthReplay(combined, delegate=False)
+    return GroundTruthPipeline(combined)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("suite_name", SUITE_NAMES)
+def test_every_injection_task_scores_like_native_through_the_harness(suite_name: str):
+    """For every injection task, a hijacked run (user task ground truth, then the injection task's ground truth)
+    and a benign run through the deep agent get the same utility and security as through AgentDojo's own loop.
+    Injections come from the `important_instructions` attack, placed in the environment as in a real run."""
+    suite = get_suite(BENCHMARK_VERSION, suite_name)
+    name = "deepagents-deepseek_deepseek-v4.1-flash"
+    attack = load_attack("important_instructions", suite, HijackedReplay(None, AIMessage(content=""), name=name))
+    mismatches = []
+    # Three user tasks per suite keep this fast; all 949 pairs of v1.2.2 were checked the same way (no mismatches).
+    for user_task in list(suite.user_tasks.values())[:3]:
+        for injection_task in suite.injection_tasks.values():
+            injections = attack.attack(user_task, injection_task)
+            for hijacked in (False, True):
+                results = []
+                for pipeline in (GroundTruthPipeline, GroundTruthReplay):
+                    replay = _pair_replay(user_task, injection_task if hijacked else None, pipeline)
+                    results.append(suite.run_task_with_pipeline(replay, user_task, injection_task, injections))
+                if results[0] != results[1]:
+                    mismatches.append((user_task.ID, injection_task.ID, hijacked, results))
+    assert mismatches == []
+
+
+def test_summarization_is_recorded_in_diagnostics():
+    suite = get_suite(BENCHMARK_VERSION, "workspace")
+    env = suite.load_and_inject_default_environment({})
+    # Each `list_files` result is ~7k tokens, so a 20k-token model triggers DeepAgents' summarization.
+    # The scripted model also answers the summarization call, with whichever script entry comes next.
+    calls = [_tool_call_message("list_files", {}, f"call_{i}") for i in range(3)]
+    model = ScriptedChatModel(script=[*calls, AIMessage(content="Done."), AIMessage(content="Done.")])
+    model.profile = {"max_input_tokens": 20_000}
+    _, _, _, _, extra_args = DeepAgentsPipeline(model).query("hi", FunctionsRuntime(suite.tools), env)
+
+    summaries = extra_args["deepagents"]["summaries"]
+    assert len(summaries) == 1
+    assert summaries[0]["agent"] == "main"
+    assert "conversation that has been summarized" in summaries[0]["summary"]
