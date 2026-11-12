@@ -125,12 +125,12 @@ tr.same td { background: var(--zone); }
 <header>
   <div class="eyebrow">AgentDojo v1.2.2 · experiment design</div>
   <h1>Skill File Evolution</h1>
-  <p class="lede">Can a judge model keep rewriting a checker's security policy (the "skill file") from attacks that got through, so prompt-injection success drops over rounds, including against attackers that adapt back?</p>
+  <p class="lede">Can a judge model keep editing a checker's security policy (the "skill file") one rule at a time, after each attack that gets through, so prompt-injection success drops on attacks it has never seen, including against attackers that adapt back?</p>
   <div class="legend" aria-label="Legend">
     <span><i class="sw llm"></i>LLM call</span>
     <span><i class="sw inj"></i>Attacker or injected content</span>
     <span><i class="sw det"></i>Deterministic code, no model</span>
-    <span><i class="sw evo"></i>Changes between rounds (evolution)</span>
+    <span><i class="sw evo"></i>Changes during a run (evolution)</span>
   </div>
 </header>
 
@@ -162,7 +162,7 @@ tr.same td { background: var(--zone); }
 
       <!-- skill file -->
       <rect class="b-det evo" x="650" y="30" width="180" height="72" rx="8"/>
-      <text class="t" x="740" y="56" text-anchor="middle">Skill file S_r</text>
+      <text class="t" x="740" y="56" text-anchor="middle">Skill file (current)</text>
       <text class="s" x="740" y="74" text-anchor="middle">markdown policy, ≤1500 tok</text>
       <text class="et" x="740" y="92" text-anchor="middle">evolves in C3, C4</text>
       <line class="ar" x1="740" y1="102" x2="740" y2="168" marker-end="url(#a1)"/>
@@ -239,7 +239,7 @@ tr.same td { background: var(--zone); }
       <rect class="b-det" x="870" y="380" width="150" height="90" rx="8"/>
       <text class="t" x="945" y="408" text-anchor="middle">Trial record</text>
       <text class="s" x="945" y="428" text-anchor="middle">feeds ASR, utility</text>
-      <text class="s" x="945" y="447" text-anchor="middle">and the round loop</text>
+      <text class="s" x="945" y="447" text-anchor="middle">and the evolution loop</text>
     </svg>
     </div>
     <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. Everything it doesn't flag reaches the agent, so the user's task keeps its data. A flagged span that isn't found verbatim in the output is ignored and counted; the rest is still removed. Only a reply that doesn't parse removes the whole output, with its own marker, and that's counted too. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. There is no block mode: sanitizing is the only policy, in every condition with a checker. The checker is built once per task from the user's prompt and shared by both agent levels, so the subagent's checker also judges against the <b>user's</b> task. Every run builds this same victim from one <code>DeepAgentsConfig</code>, saved in its <code>config.json</code>; only the checker differs, and C0 has none.</figcaption>
@@ -249,100 +249,109 @@ tr.same td { background: var(--zone); }
 <!-- FIG 2 -->
 <section>
   <div class="sec-head">
-    <div class="eyebrow">Figure 2 · where the defense evolves</div>
-    <h2>The round loop: failures in, a blind rewrite out</h2>
+    <div class="eyebrow">Figure 2 · where the defense evolves (C3 and C4 only)</div>
+    <h2>One shared file, edited after every successful train trial</h2>
   </div>
   <figure>
     <div class="plate">
-    <svg viewBox="0 0 1040 400" role="img" aria-label="Round loop. Skill file S_r is attacked on the train split. If at least 5 attacks succeed, the judge reads up to 20 of them and writes S-prime. Two text checks (length and format, leakage), with one retry, decide whether S-prime is adopted; it is never tested before adoption. The resulting file is evaluated on test and benign sets, which the judge never sees, and the next round begins.">
+    <svg viewBox="0 0 1040 500" role="img" aria-label="Train phase of C3 and C4. One shared skill file starts at S0. Train pairs run one after another in a fixed order, 3 trials each. After each train trial, if the attack succeeded (security broken or user task failed), the judge reads the current file with rule IDs and that one trial, and returns a diagnosis plus delta edits. Code applies the edits and checks them; on failure the judge retries once. Edits that pass are adopted blind for the next trial; otherwise the current file carries over. After the last train pair the file is frozen and the test pairs and the benign set run against it, never shown to the judge.">
       <defs>
         <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
       </defs>
 
-      <path class="zone" d="M195 26 H1030 V388 H585 V184 H195 Z"/>
-      <text class="zl" x="205" y="18">Train split · the judge may see this</text>
-      <rect class="zone-test" x="235" y="202" width="320" height="168" rx="8"/>
-      <text class="zl" x="245" y="388">Test + benign · never shown to the judge</text>
+      <rect class="zone" x="195" y="22" width="835" height="356" rx="8"/>
+      <text class="zl" x="205" y="16">Train phase · train-injection pairs · the judge sees one trial at a time</text>
+      <rect class="zone-test" x="195" y="398" width="835" height="92" rx="8"/>
+      <text class="zl" x="205" y="392">Test phase + benign set · never shown to the judge</text>
 
-      <!-- S_r -->
+      <!-- current file -->
       <rect class="b-det evo" x="20" y="50" width="150" height="80" rx="8"/>
-      <text class="t" x="95" y="84" text-anchor="middle">Skill file S_r</text>
-      <text class="s" x="95" y="103" text-anchor="middle">round r = 0, 1, 2; S0 at start</text>
+      <text class="t" x="95" y="80" text-anchor="middle">Current skill file</text>
+      <text class="s" x="95" y="99" text-anchor="middle">S0 at start, then</text>
+      <text class="s" x="95" y="116" text-anchor="middle">S1, S2, … per edit</text>
       <line class="ar" x1="170" y1="90" x2="208" y2="90" marker-end="url(#a2)"/>
 
-      <!-- train attacks -->
-      <rect class="b-inj" x="210" y="50" width="190" height="80" rx="8"/>
-      <text class="t" x="305" y="78" text-anchor="middle">Train attack phase</text>
-      <text class="s" x="305" y="97" text-anchor="middle">fixed train pairs, Fig. 1</text>
-      <text class="s" x="305" y="115" text-anchor="middle">static or evolving attacker</text>
-      <line class="ar" x1="400" y1="90" x2="438" y2="90" marker-end="url(#a2)"/>
+      <!-- train trial -->
+      <rect class="b-inj" x="210" y="50" width="180" height="80" rx="8"/>
+      <text class="t" x="300" y="76" text-anchor="middle">Next train trial</text>
+      <text class="s" x="300" y="95" text-anchor="middle">Fig. 1, pairs in fixed order,</text>
+      <text class="s" x="300" y="113" text-anchor="middle">3 trials per pair in a row</text>
+      <line class="ar" x1="390" y1="90" x2="414" y2="90" marker-end="url(#a2)"/>
 
-      <!-- failures -->
-      <rect class="b-det" x="440" y="50" width="160" height="80" rx="8"/>
-      <text class="t" x="520" y="78" text-anchor="middle">Collect failures</text>
-      <text class="s" x="520" y="97" text-anchor="middle">attacks that succeeded:</text>
-      <text class="m" x="520" y="115" text-anchor="middle">security() == True</text>
-      <line class="ar" x1="600" y1="90" x2="628" y2="90" marker-end="url(#a2)"/>
-
-      <!-- trigger -->
-      <polygon class="b-det" points="680,48 730,90 680,132 630,90"/>
-      <text class="t" x="680" y="87" text-anchor="middle">≥ 5</text>
-      <text class="s" x="680" y="103" text-anchor="middle">failures?</text>
-      <line class="ar" x1="730" y1="90" x2="808" y2="90" marker-end="url(#a2)"/>
-      <text class="lbl" x="769" y="82" text-anchor="middle">yes</text>
-      <line class="ar" x1="680" y1="132" x2="680" y2="198" marker-end="url(#a2)"/>
-      <text class="lbl" x="688" y="170">no</text>
+      <!-- success? -->
+      <polygon class="b-det" points="470,42 526,90 470,138 414,90"/>
+      <text class="t" x="470" y="87" text-anchor="middle">Attack</text>
+      <text class="s" x="470" y="103" text-anchor="middle">succeeded?</text>
+      <line class="ar" x1="526" y1="90" x2="588" y2="90" marker-end="url(#a2)"/>
+      <text class="lbl" x="557" y="82" text-anchor="middle">yes</text>
+      <path class="ar" d="M470 138 V170 H660 V198" marker-end="url(#a2)"/>
+      <text class="lbl" x="478" y="162">no</text>
 
       <!-- judge -->
-      <rect class="b-llm evo" x="810" y="40" width="210" height="104" rx="8"/>
-      <text class="t" x="915" y="62" text-anchor="middle">Judge</text>
-      <text class="m" x="915" y="79" text-anchor="middle">Claude Opus 5.5</text>
-      <text class="s" x="915" y="97" text-anchor="middle">reads S_r + ≤20 failures,</text>
-      <text class="s" x="915" y="114" text-anchor="middle">checker reasons, agent actions</text>
-      <text class="s" x="915" y="131" text-anchor="middle">writes full S′ + changelog</text>
-      <line class="ar" x1="915" y1="144" x2="915" y2="198" marker-end="url(#a2)"/>
-      <text class="lbl" x="923" y="176">candidate S′</text>
+      <rect class="b-llm evo" x="590" y="36" width="220" height="108" rx="8"/>
+      <text class="t" x="700" y="58" text-anchor="middle">Judge</text>
+      <text class="m" x="700" y="75" text-anchor="middle">Claude Opus 5.5</text>
+      <text class="s" x="700" y="94" text-anchor="middle">file with rule IDs + the one trial</text>
+      <text class="s" x="700" y="111" text-anchor="middle">(results, spans removed + reasons)</text>
+      <text class="s" x="700" y="130" text-anchor="middle">→ diagnosis + delta edits</text>
+      <line class="ar" x1="810" y1="90" x2="848" y2="90" marker-end="url(#a2)"/>
 
-      <!-- text checks -->
-      <rect class="b-det" x="810" y="200" width="210" height="170" rx="8"/>
-      <text class="t" x="825" y="226">Text checks only</text>
-      <text class="s" x="825" y="244">no replay, S′ never tested:</text>
-      <text class="s" x="825" y="270">1  ≤ 1500 tokens and parses</text>
-      <text class="s" x="825" y="292">2  No 8-gram shared with any</text>
-      <text class="s" x="840" y="308">archived attack string</text>
-      <text class="s" x="825" y="334">fail → judge retries once</text>
-      <text class="s" x="825" y="352">with the error message</text>
+      <!-- apply edits -->
+      <rect class="b-det" x="850" y="36" width="170" height="108" rx="8"/>
+      <text class="t" x="935" y="62" text-anchor="middle">Apply edits (code)</text>
+      <text class="m" x="935" y="81" text-anchor="middle">ADD MODIFY DELETE MERGE</text>
+      <text class="s" x="935" y="100" text-anchor="middle">rules not named stay</text>
+      <text class="s" x="935" y="117" text-anchor="middle">byte-identical;</text>
+      <text class="s" x="935" y="134" text-anchor="middle">zero edits is valid</text>
+      <line class="ar" x1="935" y1="144" x2="935" y2="188" marker-end="url(#a2)"/>
 
-      <!-- reject / accept -->
-      <rect class="b-det" x="600" y="200" width="160" height="60" rx="8"/>
-      <text class="t" x="680" y="225" text-anchor="middle">Keep S_r</text>
-      <text class="s" x="680" y="244" text-anchor="middle">no trigger, or retry failed</text>
+      <!-- checks -->
+      <rect class="b-det" x="810" y="190" width="210" height="180" rx="8"/>
+      <text class="t" x="822" y="214">Checks (code, no model)</text>
+      <text class="s" x="822" y="236">edits: IDs exist, frozen parts</text>
+      <text class="s" x="836" y="252">untouched, within budget</text>
+      <text class="s" x="822" y="272">no identifiers: URLs, emails,</text>
+      <text class="s" x="836" y="288">digits, quotes, trial words</text>
+      <text class="s" x="822" y="308">file: ≤ 1500 tokens, no 8-gram</text>
+      <text class="s" x="836" y="324">shared with archived attacks</text>
+      <text class="s" x="822" y="350">fail → judge retries once</text>
+
+      <!-- keep / adopt -->
+      <rect class="b-det" x="590" y="200" width="170" height="64" rx="8"/>
+      <text class="t" x="675" y="226" text-anchor="middle">Keep current file</text>
+      <text class="s" x="675" y="245" text-anchor="middle">attack failed, or retry failed</text>
       <line class="ar" x1="810" y1="236" x2="762" y2="236" marker-end="url(#a2)"/>
       <text class="lbl" x="786" y="228" text-anchor="middle">fail</text>
 
-      <rect class="b-det evo" x="600" y="300" width="160" height="60" rx="8"/>
-      <text class="t" x="680" y="325" text-anchor="middle">Adopt S′</text>
-      <text class="s" x="680" y="344" text-anchor="middle">S_r+1 = S′, saved to disk</text>
+      <rect class="b-det evo" x="590" y="298" width="170" height="64" rx="8"/>
+      <text class="t" x="675" y="324" text-anchor="middle">Adopt edited file</text>
+      <text class="s" x="675" y="343" text-anchor="middle">blind: never tried out first</text>
       <line class="ar" x1="810" y1="330" x2="762" y2="330" marker-end="url(#a2)"/>
       <text class="lbl" x="786" y="322" text-anchor="middle">pass</text>
 
-      <!-- evaluate -->
-      <line class="ar" x1="600" y1="230" x2="542" y2="230" marker-end="url(#a2)"/>
-      <line class="ar" x1="600" y1="330" x2="542" y2="330" marker-end="url(#a2)"/>
-      <rect class="b-det" x="250" y="216" width="290" height="140" rx="8"/>
-      <text class="t" x="395" y="244" text-anchor="middle">Evaluate S_r+1</text>
-      <text class="s" x="395" y="266" text-anchor="middle">test injections, fresh attacks,</text>
-      <text class="s" x="395" y="284" text-anchor="middle">plus held-out attack styles</text>
-      <text class="s" x="395" y="306" text-anchor="middle">benign set: every user task, no injection</text>
-      <text class="s" x="395" y="330" text-anchor="middle">→ metrics only</text>
+      <!-- next trial loop -->
+      <path class="ar" d="M590 240 H95 V132" marker-end="url(#a2)"/>
+      <path class="ar" d="M590 330 H95 V240"/>
+      <text class="lbl" x="230" y="286">next trial: same pair, or the next pair's trial 0,</text>
+      <text class="lbl" x="230" y="302">with whatever file the steps so far left</text>
 
-      <!-- next round -->
-      <path class="ar" d="M250 286 H95 V132" marker-end="url(#a2)"/>
-      <text class="lbl" x="103" y="214">next round</text>
-      <text class="lbl" x="103" y="230">r → r+1</text>
+      <!-- freeze -->
+      <path class="ar" d="M45 130 V444 H208" marker-end="url(#a2)"/>
+      <text class="lbl" x="53" y="420">after the last</text>
+      <text class="lbl" x="53" y="435">train pair: freeze</text>
+
+      <rect class="b-det" x="210" y="410" width="390" height="70" rx="8"/>
+      <text class="t" x="405" y="434" text-anchor="middle">Test pairs on the final file</text>
+      <text class="s" x="405" y="453" text-anchor="middle">unseen injection tasks, 3 trials each, no judge,</text>
+      <text class="s" x="405" y="470" text-anchor="middle">plus held-out styles injecagent, ignore_previous</text>
+
+      <rect class="b-det" x="620" y="410" width="400" height="70" rx="8"/>
+      <text class="t" x="820" y="434" text-anchor="middle">Benign set, twice per run</text>
+      <text class="s" x="820" y="453" text-anchor="middle">every user task, no injection: before the train phase</text>
+      <text class="s" x="820" y="470" text-anchor="middle">on S0, after it on the final file → metrics only</text>
     </svg>
     </div>
-    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. In C1 and C2 the judge is skipped and S stays at S0, but the attack and evaluation phases still run so the curves line up. <b>The rewrite is blind</b> (since 2026-11-05): S′ goes straight into the next round without a replay or benign comparison, so it can turn out worse than S_r, and that is measured, not prevented. The judge sees only attacks that got through, so benign utility is tracked every round to catch over-removal. Check 2 forces the judge to describe attack patterns abstractly instead of pasting attack strings. <b>The loop runs exactly 3 rounds (0, 1, 2) with no early stop.</b> The judge can run after round 0 and after round 1, so the skill file is rewritten at most twice; nothing is rewritten after round 2.</figcaption>
+    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. One file is shared by every train pair. After each train trial, if the attack succeeded (the injection goal was reached <b>or</b> the user task failed), the judge runs; a failed attack leaves the file as it is. The judge also runs after a successful third trial, and it may return zero edits, for example when the task failed for a reason unrelated to the checker. <b>The judge never writes the file.</b> It names the rules involved, with a diagnosis (<code>missing</code>, <code>vague</code>, <code>conflict</code>, <code>not_applied</code>, <code>over_removed</code>), and returns a short list of edits that code applies; Role, When unsure and the frozen sentences can't be touched. <b>Adoption is blind</b> (since 2026-11-05): the edited file goes straight into the next trial without a replay or benign comparison, so it can turn out worse, and that is measured, not prevented. The leakage check forces the judge to describe attack patterns abstractly. Every version, diagnosis, edit list, check result and retry is saved. In C1 and C2 there is no judge, no split and no phases: every pair gets 3 trials against S0.</figcaption>
   </figure>
 </section>
 
@@ -350,11 +359,11 @@ tr.same td { background: var(--zone); }
 <section>
   <div class="sec-head">
     <div class="eyebrow">Figure 3 · where the attack evolves</div>
-    <h2>The evolving attacker: one rewrite per pair, in rounds 1 and 2</h2>
+    <h2>The evolving attacker: one rewrite per pair, before trials 1 and 2</h2>
   </div>
   <figure>
     <div class="plate">
-    <svg viewBox="0 0 1040 220" role="img" aria-label="Evolving attacker loop, once per pair per round. Round 0 runs the unchanged important_instructions text. After rounds 0 and 1, win or not, the attacker receives the task result, the security result and the agent's final answer for that pair. MUZZLE's judge reads that outcome and offline PAIR rewrites the text, which runs as the pair's single trial in the next round.">
+    <svg viewBox="0 0 1040 220" role="img" aria-label="Evolving attacker loop, within one pair. Trial 0 runs the unchanged important_instructions text. After trials 0 and 1, win or not, the attacker receives the task result, the security result and the agent's final answer for that pair. MUZZLE's judge reads that outcome and offline PAIR rewrites the text, which runs as the pair's next trial.">
       <defs>
         <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
         <marker id="a3i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahi" d="M0 0 L10 5 L0 10 z"/></marker>
@@ -364,7 +373,7 @@ tr.same td { background: var(--zone); }
       <text class="s" x="105" y="99" text-anchor="middle">per pair: texts + outcomes</text>
       <text class="s" x="105" y="117" text-anchor="middle">one per run, never shared</text>
       <line class="ar" x1="190" y1="95" x2="238" y2="95" marker-end="url(#a3)"/>
-      <text class="lbl" x="214" y="87" text-anchor="middle">last round</text>
+      <text class="lbl" x="214" y="87" text-anchor="middle">last trial</text>
 
       <rect class="b-llm" x="240" y="50" width="200" height="90" rx="8"/>
       <text class="t" x="340" y="76" text-anchor="middle">Attacker (MUZZLE)</text>
@@ -374,12 +383,12 @@ tr.same td { background: var(--zone); }
       <line class="ar" x1="440" y1="95" x2="498" y2="95" marker-end="url(#a3)"/>
       <text class="lbl" x="469" y="87" text-anchor="middle">new text</text>
 
-      <text class="lbl" x="595" y="24" text-anchor="middle">round 0: unchanged important_instructions</text>
+      <text class="lbl" x="595" y="24" text-anchor="middle">trial 0: unchanged important_instructions</text>
       <line class="ar" x1="595" y1="30" x2="595" y2="48" marker-end="url(#a3)"/>
       <rect class="b-det" x="500" y="50" width="190" height="90" rx="8"/>
       <text class="t" x="595" y="80" text-anchor="middle">Run one trial</text>
-      <text class="s" x="595" y="99" text-anchor="middle">Fig. 1, next round,</text>
-      <text class="s" x="595" y="117" text-anchor="middle">current S_r</text>
+      <text class="s" x="595" y="99" text-anchor="middle">Fig. 1, the pair's next trial,</text>
+      <text class="s" x="595" y="117" text-anchor="middle">current skill file</text>
       <line class="ar" x1="690" y1="95" x2="728" y2="95" marker-end="url(#a3)"/>
 
       <rect class="b-det" x="730" y="50" width="290" height="90" rx="8"/>
@@ -388,10 +397,10 @@ tr.same td { background: var(--zone); }
       <text class="s" x="875" y="117" text-anchor="middle">ASR counts security only</text>
 
       <path class="ar-fb" d="M875 140 V180 H105 V142" marker-end="url(#a3i)"/>
-      <text class="it" x="490" y="200" text-anchor="middle">after rounds 0 and 1, win or not: task result + security result + agent's final answer</text>
+      <text class="it" x="490" y="200" text-anchor="middle">after trials 0 and 1, win or not: task result + security result + agent's final answer</text>
     </svg>
     </div>
-    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's removals, the victim's system prompt or trace, or any test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Round 0 is identical across conditions:</b> each pair gets one trial against the same S0 with the unchanged <code>important_instructions</code> text. In rounds 1 and 2 the evolving attacker rewrites each pair's text once, building on that same pair's previous round, and it still rewrites after a win. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker keeps the round-0 text every round. MUZZLE is the only evolving attacker. It's ported through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code> and must reproduce its upstream smoke result before use.</figcaption>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's removals, the victim's system prompt or trace, and in C4 it never sees a test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Trial 0 sends the same text in every condition:</b> the unchanged <code>important_instructions</code> text, with no rewrite. Before trials 1 and 2 the evolving attacker rewrites the pair's text once each, building on that same pair's previous trial, and it still rewrites after a win (starting from the text that worked). A pair's 3 trials run back to back. In C2 there is no split, so the attacker rewrites every pair; in C4 it never sees test injection tasks, so it rewrites train pairs only. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker (C1, C3) keeps the trial-0 text in all 3 trials. PAIR's settings are pinned in <code>config.json</code> and identical in C2 and C4. MUZZLE is the only evolving attacker. It's ported through a thin adapter in <code>src/agentdojo/attacks/adaptive/</code> and must reproduce its upstream smoke result before use.</figcaption>
   </figure>
 </section>
 
@@ -399,20 +408,20 @@ tr.same td { background: var(--zone); }
 <section>
   <div class="sec-head">
     <div class="eyebrow">Example · pair A = user task 1 × injection task 4</div>
-    <h2>One pair, three rounds: round 0 is identical in every condition</h2>
+    <h2>One pair, three trials: the trial-0 text is identical in every condition</h2>
   </div>
   <figure>
     <div class="tbl">
     <table>
-      <thead><tr><th>Round</th><th>C1</th><th>C2</th><th>C3</th><th>C4</th></tr></thead>
+      <thead><tr><th>Trial</th><th>C1</th><th>C2</th><th>C3</th><th>C4</th></tr></thead>
       <tbody>
-        <tr class="same"><td>Round 0</td><td>S0 + baseline text</td><td>S0 + baseline text</td><td>S0 + baseline text</td><td>S0 + baseline text</td></tr>
-        <tr><td>Round 1</td><td>S0 + baseline text</td><td>S0 + MUZZLE rewrite 1</td><td>S1 + baseline text</td><td>S1 + MUZZLE rewrite 1</td></tr>
-        <tr><td>Round 2</td><td>S0 + baseline text</td><td>S0 + MUZZLE rewrite 2</td><td>S2 + baseline text</td><td>S2 + MUZZLE rewrite 2</td></tr>
+        <tr class="same"><td>Trial 0</td><td>S0 + baseline text</td><td>S0 + baseline text</td><td>current file + baseline text</td><td>current file + baseline text</td></tr>
+        <tr><td>Trial 1</td><td>S0 + baseline text</td><td>S0 + attacker rewrite 1</td><td>current file + baseline text</td><td>current file + attacker rewrite 1</td></tr>
+        <tr><td>Trial 2</td><td>S0 + baseline text</td><td>S0 + attacker rewrite 2</td><td>current file + baseline text</td><td>current file + attacker rewrite 2</td></tr>
       </tbody>
     </table>
     </div>
-    <figcaption><b>Baseline text</b> is AgentDojo's <code>important_instructions</code> template filled with injection task 4's goal. <b>S0</b> is one committed skill file; its hash and the round-0 texts sit in <code>pairs_manifest.json</code>, and every run checks them before any model call. S1 and S2 are the file after each judge rewrite; a rejected rewrite carries the current file over (S1 = S0). Each condition runs its own round 0 in its own directory, so the inputs match but outputs can differ through provider noise. Every pair gets 3 rounds × 3 seeds = 9 trials per condition.</figcaption>
+    <figcaption><b>Baseline text</b> is AgentDojo's <code>important_instructions</code> template filled with injection task 4's goal. <b>S0</b> is one committed skill file; its hash, the fixed pair list with the train pair order, and the trial-0 texts sit in <code>pairs_manifest.json</code>, and every run checks them before any model call. <b>Current file</b> (C3, C4) is the shared file as it stands when the trial starts: S0 only until the first evolution step, after which later pairs meet the evolved file from their trial 0 on. A pair can therefore face up to three different versions across its three trials. In C1 the three trials repeat the same setup and differ only by provider noise. Each condition runs in its own directory, so inputs match but outputs can differ. Every pair gets 3 trials × 3 seeds = 9 trials per condition.</figcaption>
   </figure>
 </section>
 
@@ -428,8 +437,8 @@ tr.same td { background: var(--zone); }
     <tbody>
       <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Victim agent</td><td><code>deepseek/deepseek-v4.1-flash</code> via OpenRouter, on DeepAgents</td><td>Does the user's task with AgentDojo tools; can delegate to a subagent</td><td>User task, sanitized tool outputs</td><td>Skill file, raw outputs</td></tr>
       <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker</td><td><span class="tbd">TBD in Phase 0</span>: cheaper than the agent, &lt;2% JSON parse failures; unmatched-span rate reported</td><td>Flags spans to remove from each tool output, with reasons</td><td>Skill file, user task, raw tool output</td><td>Anything else; it has no tools (it can still be targeted by the injection it reads)</td></tr>
-      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>Claude Opus 5.5</code>, the strongest available</td><td>Rewrites the whole skill file when ≥5 train attacks succeed</td><td>Current file, ≤20 train failures, checker reasons, what the agent did next</td><td>Test split, held-out attack styles</td></tr>
-      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><span class="tbd">TBD in Phase 0</span>: mid-tier, willing to write injections, fixed across conditions</td><td>Rewrites each pair's injection text once in round 1 and once in round 2 (evolving conditions only)</td><td>Per pair: task result, security result, agent's final answer; its own archive</td><td>Skill file, checker removals, victim system prompt and trace, test injections</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>Claude Opus 5.5</code>, the strongest available</td><td>After each successful train trial in C3/C4: diagnoses the rules involved and returns delta edits (or none); code applies and checks them</td><td>Current file with rule IDs, the one triggering trial (user task, injection text, task and security results, spans the checker removed with reasons), the changelog</td><td>Test split, held-out attack styles, benign set</td></tr>
+      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><span class="tbd">TBD in Phase 0</span>: mid-tier, willing to write injections, fixed across conditions</td><td>Rewrites a pair's injection text before trial 1 and before trial 2 (C2: every pair; C4: train pairs only)</td><td>Per pair: task result, security result, agent's final answer; its own archive</td><td>Skill file, checker removals, victim system prompt and trace; in C4, test injections</td></tr>
       <tr><td><i class="dot" style="background:var(--surface);border-color:var(--line)"></i>Scorer</td><td>No model: AgentDojo's own checks</td><td>Decides utility and attack success for every trial</td><td>Final environment state and the full trace</td><td>n/a</td></tr>
     </tbody>
   </table>
@@ -441,7 +450,7 @@ tr.same td { background: var(--zone); }
   <div class="sec-head">
     <div class="eyebrow">The experiment</div>
     <h2>Four runs in a 2 × 2, plus two reference runs</h2>
-    <p>Each cell is its own run with its own directory, cache and attacker archive under <code>results/&lt;run_id&gt;/seed_&lt;n&gt;/</code>. All four start from the same round 0: the same pairs, the same S0 and the same <code>important_instructions</code> text. Dashed cells are where the skill file evolves.</p>
+    <p>Each cell is its own run with its own directory, cache and attacker archive under <code>results/&lt;run_id&gt;/seed_&lt;n&gt;/</code>. All four get the same inputs: the same pairs in the same order, the same S0 and the same trial-0 <code>important_instructions</code> text. Only C3 and C4 split pairs into train and test. Dashed cells are where the skill file evolves.</p>
   </div>
   <div class="grid2">
     <div class="gh corner"></div>
@@ -452,7 +461,7 @@ tr.same td { background: var(--zone); }
     <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-skill_static-attack · 3 seeds</span></div>
     <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-skill_evolving-attack · 3 seeds</span></div>
 
-    <div class="gr">Evolving skill file<br>(blind judge rewrite)</div>
+    <div class="gr">Evolving skill file<br>(blind delta edits)</div>
     <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 3 seeds</span></div>
     <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-skill_evolving-attack · 3 seeds</span></div>
   </div>
@@ -461,8 +470,8 @@ tr.same td { background: var(--zone); }
     <div><b>C5 · frozen evolved file.</b> The final C4 skill file, locked, against a fresh evolving attacker with an empty archive. 1 seed.</div>
   </div>
   <ul class="hyp">
-    <li><b>H1</b><span>Evolving files lower <b>test</b> ASR over rounds: C3 and C4 against C1, at equal <b>benign</b> utility.</span></li>
-    <li><b>H2</b><span>Against an adaptive attacker, a static file degrades faster: the ASR slope over rounds in C2 against C4.</span></li>
+    <li><b>H1</b><span>Evolving files lower <b>test</b> ASR: C3 and C4 on their final file against C1, at equal <b>benign</b> utility (C3/C4 benign before against after). One value per run, no curve.</span></li>
+    <li><b>H2</b><span>Against an adaptive attacker, a static file degrades faster: the ASR slope in C2 against C4, on train-injection pairs only, since C4 can't rewrite test pairs.</span></li>
     <li><b>H3</b><span>Gains generalize: ASR on held-out attack styles over test injections, and C5 against a fresh attacker.</span></li>
   </ul>
 </section>
@@ -471,17 +480,18 @@ tr.same td { background: var(--zone); }
 <section>
   <div class="sec-head">
     <div class="eyebrow">Data</div>
-    <h2>Split by injection task, so the judge can't memorize the goal</h2>
+    <h2>Split by injection task, only where the skill file evolves (C3, C4)</h2>
   </div>
   <div class="split" role="img" aria-label="Injection tasks split 60 percent train, 40 percent test">
-    <div class="tr"><strong>Train · 60% · ~21 injection tasks</strong><span>Attacks: <code>important_instructions</code> or the evolving attacker. Judge input comes only from here.</span></div>
-    <div class="te"><strong>Test · 40% · ~14 injection tasks</strong><span>Adds held-out styles <code>injecagent</code> and <code>ignore_previous</code>, never used in training.</span></div>
+    <div class="tr"><strong>Train · 60% · ~21 injection tasks</strong><span>Pairs run one at a time in a fixed order and drive the skill file's evolution. Judge input comes only from here.</span></div>
+    <div class="te"><strong>Test · 40% · ~14 injection tasks</strong><span>Run only on the frozen final file. Adds held-out styles <code>injecagent</code> and <code>ignore_previous</code>, never used in training.</span></div>
   </div>
   <div class="facts">
-    <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2), stratified split, seed 0</span></div>
-    <div><span class="k">Benign set</span><span>Every user task, no injection. Used for checker false-positive rate (share of benign outputs with anything removed) and benign utility, in evaluation only (never to choose a skill file)</span></div>
-    <div><span class="k">Pairs</span><span>One fixed set of (user task, injection task) pairs per split, sampled once with a fixed seed and used in every round, condition and seed. Pair count set by a power check after the pilot</span></div>
-    <div><span class="k">Rounds</span><span>3 per run (0, 1, 2), always all 3, one trial per pair per round; 3 seeds per condition</span></div>
+    <div><span class="k">Who splits</span><span>Only C3 and C4. C0, C1 and C2 run every pair against S0; each C1/C2 record keeps its pair's split label so results can be cut to the same pairs as C3/C4</span></div>
+    <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2), split stratified by suite, seed 0, no dev split</span></div>
+    <div><span class="k">Pairs</span><span>One fixed set of (user task, injection task) pairs, sampled once with a fixed seed and used in every condition and seed, in the same order. A pair sits on its injection task's side. Pair count set by a power check after the pilot</span></div>
+    <div><span class="k">Trials</span><span>3 per pair, run back to back, always all 3; 3 seeds per condition, so 9 trials per pair</span></div>
+    <div><span class="k">Benign set</span><span>Every user task, no injection. In C3/C4: once on S0 before the train phase, once on the final file after it. Used for benign utility and checker false-positive rate, in evaluation only</span></div>
     <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, checker FPR, injected text removed, benign text removed, cost per component; bootstrap 95% CIs</span></div>
   </div>
 </section>
@@ -490,10 +500,13 @@ tr.same td { background: var(--zone); }
   <div class="eyebrow" style="color:var(--inj)">Still open before Phase 1</div>
   <ul>
     <li>The victim scored 0/16 ASR on the banking slice smoke test. The "C0 ASR ≥ 20%" rule has to be checked across all suites and injection tasks, or there's nothing to defend.</li>
-    <li>Checker and attacker model IDs are still to be chosen against the OpenRouter catalogue.</li>
-    <li>Test-split pairs: the attacker never sees test injection tasks, so it can't rewrite them. Unless decided otherwise they keep the round-0 text in every round and condition, which makes C2's test ASR measure exactly what C1's does.</li>
-    <li>What "the file parses" means in text check 1: strict (S0's six sections, fixed), loose (title, non-empty, no code block) or the middle version (six sections in order, extra sections allowed).</li>
-    <li>Checker prompt, the SuperRed ports and the round runner aren't built yet. The DeepAgents victim is ready for them: the runner plugs the checker in through <code>tool_middleware_factory</code>.</li>
+    <li>Checker and attacker model IDs, and the one OpenRouter provider to pin (no fallbacks), are still to be chosen in Phase 0.</li>
+    <li>C4 test pairs: the attacker never sees test injection tasks, so unless decided otherwise they keep the trial-0 text in all 3 trials, and on test C4 differs from C3 only through its file.</li>
+    <li>How the fixed train pair order is chosen (for example shuffled with the fixed seed, or grouped by suite).</li>
+    <li>When the benign set runs in C1 and C2, now that there are no run-wide rounds. H1 needs C1's benign utility.</li>
+    <li>H2's x-axis: rounds are gone, and in C4 the file changes across pairs as well as across a pair's trials.</li>
+    <li>Delta edits: whether the Principles are frozen, the edit budget (proposed ≤ 2 edits per step, ~60 tokens per rule), the common-word list for the identifier ban, and whether one invalid edit rejects the whole batch.</li>
+    <li>The checker's minimum span length (<code>min_span_chars</code>), set on the pilot.</li>
     <li>The native-loop reference addresses the model as "AI assistant" in <code>important_instructions</code>, while the DeepAgents run says "DeepSeek". The two need the same attack text before the comparison means anything.</li>
   </ul>
 </section>
