@@ -145,6 +145,20 @@ class DeepAgentsConfig(BaseModel):
     errors. A request that still fails stops the benchmark; the pair has no result saved, so it reruns on resume."""
     request_timeout: float | None = 300.0
     """Seconds before an OpenRouter request is abandoned (and retried)."""
+    provider_order: list[str] | None = None
+    """OpenRouter providers to serve the model, in order of preference (e.g. `["deepinfra"]`). OpenRouter otherwise
+    routes each request to whichever provider it picks, and providers of one model id can differ (quantisation,
+    tool-call parsing), so results would mix backends. Set this for experiment runs (with `allow_fallbacks=False`)."""
+    allow_fallbacks: bool = True
+    """Whether OpenRouter may use a provider outside `provider_order` when those are unavailable. Only applies when
+    `provider_order` is set."""
+    seed: int | None = None
+    """Sampling seed sent with every request. Not every provider honours it."""
+
+    def openrouter_extra_body(self) -> dict[str, Any] | None:
+        if self.provider_order is None:
+            return None
+        return {"provider": {"order": list(self.provider_order), "allow_fallbacks": self.allow_fallbacks}}
 
     @property
     def pipeline_name(self) -> str:
@@ -202,7 +216,8 @@ def agentdojo_function_to_langchain_tool(
     )
 
 
-def _is_agentdojo_tool(tool: BaseTool | dict | None) -> bool:
+def is_agentdojo_tool(tool: BaseTool | dict | None) -> bool:
+    """Whether `tool` is an AgentDojo environment tool (as opposed to a DeepAgents built-in such as `task`)."""
     return isinstance(tool, BaseTool) and bool((tool.metadata or {}).get(_AGENTDOJO_TOOL_METADATA_KEY))
 
 
@@ -222,6 +237,20 @@ class _Transcript:
     rejected_hidden_tool_calls: int = 0
     # Conversation summaries DeepAgents' summarization middleware put in place of older messages, by message id.
     summaries: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Token usage reported by the provider, summed per agent, plus the model names that served the calls
+    usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    served_models: set[str] = field(default_factory=set)
+
+    def add_usage(self, agent: str, message: AIMessage) -> None:
+        counts = self.usage.setdefault(agent, {"model_calls": 0, "input_tokens": 0, "output_tokens": 0})
+        counts["model_calls"] += 1
+        usage = message.usage_metadata
+        if usage is not None:
+            counts["input_tokens"] += usage.get("input_tokens", 0)
+            counts["output_tokens"] += usage.get("output_tokens", 0)
+        model_name = message.response_metadata.get("model_name")
+        if isinstance(model_name, str):
+            self.served_models.add(model_name)
 
 
 class _TranscriptRecorder(AgentMiddleware):
@@ -249,6 +278,7 @@ class _TranscriptRecorder(AgentMiddleware):
         for message in response.result:
             if isinstance(message, AIMessage):
                 self.transcript.events.append(_TranscriptEvent(agent=self.agent, message=message))
+                self.transcript.add_usage(self.agent, message)
         return response
 
     def wrap_tool_call(
@@ -258,7 +288,7 @@ class _TranscriptRecorder(AgentMiddleware):
         tool_message = _tool_message_from_result(result)
         if tool_message is not None:
             if (
-                _is_agentdojo_tool(request.tool)
+                is_agentdojo_tool(request.tool)
                 and len(_message_text(tool_message)) > DEEPAGENTS_EVICTION_THRESHOLD_CHARS
             ):
                 self.transcript.oversized_tool_outputs += 1
@@ -295,7 +325,7 @@ class _ToolVisibility(AgentMiddleware):
     def _is_hidden(self, tool: BaseTool | dict) -> bool:
         return (
             self.hide_filesystem_tools
-            and not _is_agentdojo_tool(tool)
+            and not is_agentdojo_tool(tool)
             and _tool_name(tool) in DEEPAGENTS_FILESYSTEM_TOOL_NAMES
         )
 
@@ -429,9 +459,11 @@ class DeepAgentsPipeline(BasePipelineElement):
                 temperature=config.temperature,
                 max_retries=config.max_retries,
                 timeout=config.request_timeout,
+                seed=config.seed,
+                extra_body=config.openrouter_extra_body(),
             )
         if config.tool_output_format == "json":
-            tool_output_formatter = partial(tool_result_to_str, dump_fn=json.dumps)
+            tool_output_formatter = partial(tool_result_to_str, dump_fn=partial(json.dumps, default=str))
         else:
             tool_output_formatter = tool_result_to_str
         system_prompt = (
@@ -573,6 +605,10 @@ class DeepAgentsPipeline(BasePipelineElement):
             # profile) or the provider reports an overflow. The agent then sees the summary instead of those
             # messages, and the summarizing model call is not in the trace.
             "summaries": list(transcript.summaries.values()),
+            # Victim token usage per agent (as reported by the provider), for cost accounting. The checker's own
+            # calls are not included.
+            "usage": transcript.usage,
+            "served_models": sorted(transcript.served_models),
             "config": self.config.model_dump() if self.config is not None else None,
         }
 
