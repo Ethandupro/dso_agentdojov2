@@ -199,6 +199,13 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   - Each rule records its origin: S0, or the pair, trial and step number of the edit that created or last changed it.
   - **Open (2026-11-11):** whether the Principles are frozen (proposed) or editable.
 - **Judge input, per step:** the current file with IDs, the one trial that triggered the step (user task, injection text, task and security results, and the spans the checker removed with its reasons), and the changelog so far.
+- **Trial history digest (added 2026-11-13 by user).** The judge also gets a compact log of recent train trials, both successful and failed attacks, so it can spot patterns across attacks instead of fitting a rule to one trial, see which rules are blocking attacks so it doesn't weaken them, and see whether removal is creeping up.
+  - Built by code from the trial records and `checker_calls.jsonl`, never written by a model.
+  - Holds the last N train trials of this run before the triggering one, balanced between successes and failures where possible. **Open (2026-11-13):** N. Proposed: 20, tuned on the pilot.
+  - Per trial: pair, trial number, skill file version it ran against, outcome (injection goal achieved / user task failed / attack blocked), the injection text, the spans the checker removed with its reasons, and how much of the injection survived (`injection_survival`).
+  - Not included: raw tool outputs and the agent's full answer (size), test-split trials and the benign set. Test pairs only run after the file is frozen; the benign set is what H1 reports utility on, so showing it to the judge would select on the measurement.
+  - Same format and the same N in C3 and C4, so the H2 comparison still isolates the attacker.
+  - The identifier ban and the 8-gram leakage check apply unchanged; the injection texts in the digest are already in the attack archive the leakage check uses.
 - **Judge output:**
   - A diagnosis: the rules involved and why the trial went wrong. Types: `missing` (no rule covers it), `vague`, `conflict` (two rules disagree), `not_applied` (a rule covers it but the checker didn't follow it), `over_removed` (the user task failed because of what the checker removed).
   - Edits: `ADD` a rule to a section, `MODIFY` a rule by ID, `DELETE` a rule by ID, or `MERGE` two or more rules into one new rule.
@@ -221,7 +228,7 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
   Reasons: they made train ASR non-increasing by construction, and the benign check selected on the same benign set that reports benign utility for H1. This also settles the old open question of what "fresh train attacks" meant.
 - **Token cap.** S0 is about 910 tokens, so the cap leaves room for roughly 9 added rules. After that a step can only add by merging, shortening or deleting rules. That's what `MERGE` is for.
 
-Every version, diagnosis, edit list, check result and retry is kept on disk.
+Every version, diagnosis, trial history digest, edit list, check result and retry is kept on disk.
 
 ## Conditions and result segmentation (decided 2026-10-15 by user)
 The main experiment is **4 separate runs**, one per cell of skill file × attack:
@@ -237,7 +244,7 @@ C0 (no checker) and C5 (final C4 file frozen vs a fresh evolving attacker) are r
 
 Segmentation rules:
 - Every run writes only under `results/<run_id>/seed_<n>/`. No two conditions ever share a directory, cache or attacker archive.
-- Inside it: `config.json` (condition, skill/attack mode, models, seed, git commit), `trial_<t>/{train,test}/` trial logs, `benign_before/` and `benign_after/` in C3 and C4, `skill_files/` (every version, the judge's diagnoses and edits, check results and retries), and `checker_calls.jsonl`.
+- Inside it: `config.json` (condition, skill/attack mode, models, seed, git commit), `trial_<t>/{train,test}/` trial logs, `benign_before/` and `benign_after/` in C3 and C4, `skill_files/` (every version, the judge's diagnoses and edits, the trial history digest it was given, check results and retries), and `checker_calls.jsonl`.
   - *Changed 2026-11-11:* this was `round_<r>/{train,test,benign}/`. Where C1 and C2 benign logs go depends on the open question under Splits.
 - Every trial record also carries `condition`, `skill_mode`, `attack_mode`, `seed`, `trial` (`round` before 2026-11-11), `split` and the skill file version it ran against, so pooled tables can be split again without relying on paths.
 - A run refuses to start if its directory already holds results from a different config; it resumes only an identical config.
@@ -266,7 +273,7 @@ Segmentation rules:
 - The checker sees the user's task and the tool output, so the checker itself can be targeted by injections.
 - No gate checks an edit's effect (2026-11-05). Until 2026-11-11 the judge saw only attacks that got through, so nothing in the loop pushed back against removing more. Since 2026-11-11 it also sees trials where the user task failed, with the spans the checker removed, which gives it a direct signal about over-removal. Benign utility and benign text removed are reported before and after evolution for C3/C4 (per round before 2026-11-11), so a drop shows up as a finding, but not when it happened. H1 claims an ASR gain only if benign utility holds.
 - Attacker success includes "utility broken" (2026-10-29). In C2 and C4 two things count as attacker wins without the injection working: the checker removing data the user task needed, and the agent failing a user task it would have failed anyway. Both also feed the next rewrite, which can pull the attacker toward breaking utility instead of security. Since 2026-11-11 both also trigger the judge in C3 and C4; it may return zero edits.
-- Each edit rests on a single trial (2026-11-11). No minimum number of failures stands behind a rule, so a rule can be fitted to one attack. The identifier ban, the leakage check and the frozen parts limit this. Test ASR and the held-out styles on the final file measure what remains.
+- Each edit is triggered by a single trial (2026-11-11). No minimum number of failures stands behind a rule, so a rule can be fitted to one attack. The trial history digest (2026-11-13), the identifier ban, the leakage check and the frozen parts limit this. Test ASR and the held-out styles on the final file measure what remains.
 - One shared file makes C3 and C4 results depend on the train pair order (2026-11-11), and their train phase can't run trials in parallel.
 
 ## Victim model (decided 2026-10-15 by user)
