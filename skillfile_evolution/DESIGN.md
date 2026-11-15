@@ -283,3 +283,9 @@ Segmentation rules:
   - DeepAgents: benign utility 15/16, utility under attack 12/16, ASR 0/16
 - **Open:** 0% ASR on this slice. The "C0 ASR ≥ 20%" rule needs checking across all injection tasks and suites before Phase 1.
 - **Open (2026-10-22):** the native-loop sanity run doesn't send the same attack text. Through `--model openai-compatible` its pipeline name is `openai-compatible`, so `important_instructions` addresses the model as "AI assistant", while the DeepAgents run says "DeepSeek". The native reference needs a pipeline name containing `deepseek-v4.1-flash` before its numbers are compared.
+- **Phase 0 C0 pilot plan (proposed 2026-11-15, not run yet).** `python -m agentdojo.scripts.c0_pilot plan` prints the benchmark commands and `... summarize` reports ASR with Wilson 95% intervals, per suite and per injection task, plus utility, errors, tokens and cost. No model calls are made by the script itself.
+  - Stage 1: 4 user tasks per suite (seed 0) × every injection task = 140 attacked pairs covering all 35 injection tasks, plus the 16 benign runs. The attack run also asks the agent to do each injection task directly, which shows whether a low ASR comes from resisting the attack or from not managing the task at all.
+  - Decision rule: keep the victim if the lower end of the 95% interval is ≥ 20%; swap if the upper end is < 20%; otherwise run stage 2, the full 949-pair matrix (`--per-suite 0`).
+  - Pin one OpenRouter provider with no fallbacks (`--provider ... --no-provider-fallbacks`); it becomes the experiment provider if the victim is kept.
+  - Fallback victims if swapped: Qwen3.5-27B, then Qwen3-32B (published AgentDojo ASR about 26% and 30%). Each must be added to `MODEL_NAMES` first.
+  - Cost estimate at OpenRouter prices on 2026-11-15 (DeepInfra $0.14/M in, $0.42/M out): stage 1 under $2, full matrix under $15, assuming up to about 50k input tokens per pair.
