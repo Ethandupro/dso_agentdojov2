@@ -127,13 +127,16 @@ def local_checker_fn(
     failure rate then measures nothing, but unmatched spans (text the checker did not copy exactly) still can occur.
     `enable_thinking` is sent as `chat_template_kwargs` (Qwen3/3.5, Gemma 4); `None` leaves the server default.
     """
+    extra_body: dict[str, Any] = dict(model_kwargs.pop("extra_body", None) or {})
     if json_schema:
-        model_kwargs.setdefault(
+        extra_body.setdefault(
             "response_format",
             {"type": "json_schema", "json_schema": {"name": "checker_reply", "schema": CHECKER_REPLY_SCHEMA}},
         )
     if enable_thinking is not None:
-        model_kwargs.setdefault("extra_body", {"chat_template_kwargs": {"enable_thinking": enable_thinking}})
+        extra_body.setdefault("chat_template_kwargs", {"enable_thinking": enable_thinking})
+    if extra_body:
+        model_kwargs["extra_body"] = extra_body
     return chat_model_checker_fn(make_local_chat_model(model_id, base_url, temperature=temperature, **model_kwargs))
 
 

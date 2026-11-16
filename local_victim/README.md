@@ -19,7 +19,8 @@ Both clear the C0 rule (ASR >= 20%) in the literature, but only the pilot on thi
 default; the published numbers are non-thinking, so the server turns thinking off by default and the benchmark is
 run with `--no-thinking` (sent per request, so it is in every request even if the server default changes).
 
-Serving: one full BF16 copy per GPU behind one endpoint (`--data-parallel-size 2`). That is simpler and faster than
+Serving the victim alone (`serve_vllm.sh` defaults): one full BF16 copy per GPU behind one endpoint
+(`--data-parallel-size 2`). The project setup below instead gives GPU 1 to the checker. That is simpler and faster than
 splitting one copy over both GPUs (tensor parallel 2), which only pays off for models above ~80 GB.
 
 Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template: download `examples/tool_chat_template_gemma4.jinja`
@@ -93,19 +94,33 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
-## A local checker next to the victim
+## The project setup: victim and checker together
 
-The checker can run on the VM too: `agentdojo.checker.middleware.local_checker_fn(model_id, base_url)` talks to a
-local server, constrains replies to the checker's JSON shape and turns thinking off. Give each model its own GPU:
+The project's models (`src/agentdojo/experiment_models.py`, decided 2026-11-16) are the victim `Qwen/Qwen3.5-27B`
+on GPU 0 (port 8000) and the checker `Qwen/Qwen3.5-9B` on GPU 1 (port 8001, half the GPU, so an attacker model can
+use the rest later). Both run without thinking. Start both and wait until they answer:
 
 ```bash
-# victim on GPU 0, checker on GPU 1
-CUDA_VISIBLE_DEVICES=0 DP=1 PORT=8000 bash local_victim/serve_vllm.sh
-CUDA_VISIBLE_DEVICES=1 DP=1 PORT=8001 MODEL=Qwen/Qwen3.5-9B GPU_MEM=0.5 bash local_victim/serve_vllm.sh
+cd ~/dso_agentdojov2
+bash local_victim/serve_all.sh          # logs in ~/vllm_logs; `bash local_victim/serve_all.sh stop` stops both
 ```
 
-`GPU_MEM` is the share of the GPU the server may take, so a second server (for example the attacker) can use the
-rest of GPU 1 on another port.
+With `--harness deepagents` and no `--model-id`, the benchmark uses that victim; `--checker` adds that checker with
+the skill file S0. So the pilot's two conditions are:
+
+```bash
+# C0: no checker
+uv run python -m agentdojo.scripts.benchmark --harness deepagents \
+  -s banking -ut user_task_0 --attack important_instructions --logdir runs/pilot-c0
+# C1: checker with S0 (checker calls logged to runs/pilot-c1/checker_calls.jsonl)
+uv run python -m agentdojo.scripts.benchmark --harness deepagents --checker \
+  -s banking -ut user_task_0 --attack important_instructions --logdir runs/pilot-c1
+```
+
+Runs with the checker are saved under a name that includes the checker model and a hash of the skill file, so they
+never reuse results from runs without it or with another skill file. Other choices: `--checker-model-id`,
+`--checker-base-url` (`openrouter` for OpenRouter), `--skill-file`. The CLI log has no per-trial injection texts,
+so its checker log does not record `injection_survival`; the experiment runner will.
 
 ## Things to know
 

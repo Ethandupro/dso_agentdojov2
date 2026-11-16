@@ -19,6 +19,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 from pydantic import Field
 
+from agentdojo import experiment_models
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import (
     CONTEXT_OVERFLOW_FINAL_MESSAGE,
@@ -623,3 +624,34 @@ def test_cli_passes_local_server_to_the_victim_config(monkeypatch: pytest.Monkey
     assert captured[-1].base_url == "http://localhost:8000/v1" and captured[-1].enable_thinking is False
     result = CliRunner().invoke(benchmark_script.main, [*args, "--no-thinking"])
     assert isinstance(result.exception, ValueError)
+
+
+def test_cli_defaults_to_the_project_victim_and_checker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: list[tuple[DeepAgentsConfig, Any]] = []
+
+    def fake_from_config(config: DeepAgentsConfig, **kwargs: Any) -> DeepAgentsPipeline:
+        captured.append((config, kwargs.get("tool_middleware_factory")))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(DeepAgentsPipeline, "from_config", staticmethod(fake_from_config))
+    args = ["-s", "banking", "-ut", "user_task_0", "--harness", "deepagents", "--logdir", str(tmp_path)]
+    CliRunner().invoke(benchmark_script.main, args)
+    config, factory = captured[-1]
+    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "Qwen/Qwen3.5-27B"
+    assert config.base_url == experiment_models.VICTIM_BASE_URL
+    assert config.enable_thinking is False
+    assert factory is None
+
+    CliRunner().invoke(benchmark_script.main, [*args, "--checker"])
+    config, factory = captured[-1]
+    assert config.model_id == "Qwen/Qwen3.5-27B"
+    assert factory is not None
+    (checker,) = factory("the user's task")
+    assert checker.skill_file == experiment_models.DEFAULT_SKILL_FILE.read_text()
+
+
+def test_checker_runs_get_their_own_trace_directory():
+    s0 = experiment_models.DEFAULT_SKILL_FILE.read_text()
+    suffix = benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0)
+    assert suffix.startswith("-checker-Qwen_Qwen3.5-9B-skill-")
+    assert suffix != benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0 + "\nnew rule")

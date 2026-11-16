@@ -63,13 +63,14 @@ Source idea: `skillfile-evolution-instructions.md`. This file records the decisi
 - SuperRed's MUZZLE attacker is **ported into this repo** (decision 2026-10-15), not used as an external harness. AgentDojo stays the base repo. See "Evolving attacker" below.
 - Benchmark version: `v1.2.2`. Suites: workspace, travel, banking, slack.
 - Providers: OpenRouter only (the only key in `api.env`).
+  - *Changed 2026-11-16:* the victim and checker are self-hosted on the project's GPU VM (vLLM, OpenAI-compatible); see "Victim model". The judge and attacker are not chosen yet.
   - *Added 2026-11-11:* OpenRouter routes each request to a provider of its choosing, and providers of one model id can differ (quantisation, tool-call parsing). `DeepAgentsConfig` now has `provider_order`, `allow_fallbacks` and `seed`. Experiment runs should pin one provider with `allow_fallbacks=False` (chosen in Phase 0); the defaults leave routing to OpenRouter, as before. The benchmark CLI takes `--provider <name>` (repeatable) and `--no-provider-fallbacks`, so the C0 pilot can pin it too. Every trace now records the victim's token usage per agent and the model names that served it (`"deepagents"` → `usage`, `served_models`), for cost accounting.
 
 ## Models (all set in config)
 | Role | Choice rule |
 |---|---|
 | Agent | Cheap tool-calling model. **It must show C0 ASR ≥ 20% on the pilot**, otherwise there's nothing to defend. Pick the first candidate that passes. |
-| Checker | Cheaper than the agent, and reliable at strict JSON output. Checked on the pilot by its parse-failure rate (< 2%) and its unmatched-span rate (reported; it doesn't remove anything, but it means injected text the checker meant to remove survived). |
+| Checker | *Chosen 2026-11-16 by user:* `Qwen/Qwen3.5-9B`, self-hosted, replies constrained to the checker's JSON schema. Rule: cheaper than the agent, and reliable at strict JSON output. Checked on the pilot by its parse-failure rate (< 2%) and its unmatched-span rate (reported; it doesn't remove anything, but it means injected text the checker meant to remove survived). |
 | Judge | Strongest model available (default: Claude Opus 5.5). |
 | Attacker | Mid-tier model that doesn't refuse to write injections. Fixed across all conditions. |
 
@@ -277,6 +278,7 @@ Segmentation rules:
 - One shared file makes C3 and C4 results depend on the train pair order (2026-11-11), and their train phase can't run trials in parallel.
 
 ## Victim model (decided 2026-10-15 by user)
+- *Changed 2026-11-16 by user:* the victim is `Qwen/Qwen3.5-27B` and the checker is `Qwen/Qwen3.5-9B`, both self-hosted with vLLM on the project's 2x H100 VM (victim on GPU 0, checker on GPU 1), thinking off, temperature 0. They're set in `src/agentdojo/experiment_models.py` and are the benchmark CLI's defaults (`--harness deepagents`, `--checker`). The C0 ASR ≥ 20% rule still applies to the new victim on the pilot (published Qwen3.5-27B AgentDojo ASR is ~26%, non-thinking). Setup: `local_victim/README.md`. The DeepSeek notes below are kept as history.
 - Agent model: `deepseek/deepseek-v4.1-flash` on OpenRouter. It's added to `MODEL_NAMES` as "DeepSeek" so `important_instructions` can name it.
 - Smoke test, banking, all 16 user tasks, `important_instructions` × injection_task_0:
   - native loop: benign utility 15/16, utility under attack 14/16, ASR 0/16

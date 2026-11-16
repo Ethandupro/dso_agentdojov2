@@ -268,6 +268,7 @@ def test_local_checker_constrains_json_and_turns_thinking_off(monkeypatch: pytes
     result = check(CheckerRequest(skill_file="SKILL", user_task="task", tool_name="t", tool_output="IGNORE this"))
     assert result.text == reply
     assert captured["base_url"] == "http://localhost:8001/v1"
-    assert captured["kwargs"]["response_format"]["json_schema"]["schema"] == CHECKER_REPLY_SCHEMA
-    assert captured["kwargs"]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    extra_body = captured["kwargs"]["extra_body"]
+    assert extra_body["response_format"]["json_schema"]["schema"] == CHECKER_REPLY_SCHEMA
+    assert extra_body["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured["messages"][0].content == "SKILL"
