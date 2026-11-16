@@ -273,6 +273,7 @@ Segmentation rules:
 - **3 seeds** for C1, C2, C3 and C4. 1 seed for C0 and C5. Add more seeds if the budget allows.
 - A seed changes only the random parts (attacker output, judge output, provider noise). It never changes the pairs, their order or the trial-0 injection text.
 - Report bootstrap 95% confidence intervals over trials.
+  - *Changed 2026-11-16 by user:* the intervals are bootstrapped over **injection tasks** (a cluster bootstrap: injection tasks are drawn with replacement, keeping all their trials), not over single trials, because trials of one injection task are correlated and C3/C4 split by injection task. Benign utility is clustered by user task. 10,000 resamples, seed 0. Built in `src/agentdojo/runner/stats.py`; every run writes `summary.json` and a self-contained `report.html` (`python -m agentdojo.runner.report <run dir>` re-renders it, also mid-run). With 14 test injection tasks, test-phase intervals are wide.
 - A power check after the pilot decides the number of pairs in the fixed set.
 - Per condition, each pair gets 3 trials × 3 seeds = 9 trials. *Changed 2026-11-16 by user:* 3 trials per pair, in one run.
 
