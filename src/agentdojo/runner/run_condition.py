@@ -27,6 +27,7 @@ from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
 from agentdojo.runner.plugins import FixedSkillFile, NoChecker, SkillFileSource, StaticAttacker
+from agentdojo.runner.report import write_report
 from agentdojo.runner.run import ConfigMismatchError, Runner, quick_summary, run_dir_for
 
 SUPPORTED_CONDITIONS = ("C0", "C1")
@@ -172,9 +173,11 @@ def main(
     except ConfigMismatchError as e:
         raise click.ClickException(str(e)) from e
     except KeyboardInterrupt:
-        click.echo("Interrupted. Run the same command again to resume from the last finished unit.", err=True)
+        click.echo(f"Interrupted. Partial report: {write_report(runner.run_dir)}", err=True)
+        click.echo("Run the same command again to resume from the last finished unit.", err=True)
         sys.exit(130)
     click.echo(json.dumps(quick_summary(records), indent=2))
+    click.echo(f"report: {write_report(runner.run_dir)}")
 
 
 if __name__ == "__main__":
