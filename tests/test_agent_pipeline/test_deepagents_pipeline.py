@@ -349,6 +349,34 @@ def test_from_config_pins_openrouter_provider_and_seed(monkeypatch: pytest.Monke
     assert model.seed == 3  # type: ignore[attr-defined]
 
 
+def test_from_config_uses_a_local_server(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_LLM_API_KEY", raising=False)
+    config = DeepAgentsConfig(
+        model_id="Qwen/Qwen3.5-27B", base_url="http://localhost:8000/v1", enable_thinking=False, seed=1
+    )
+    pipeline = DeepAgentsPipeline.from_config(config)
+    model = pipeline.model
+    assert str(model.openai_api_base) == "http://localhost:8000/v1"  # type: ignore[attr-defined]
+    assert model.model_name == "Qwen/Qwen3.5-27B"  # type: ignore[attr-defined]
+    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}  # type: ignore[attr-defined]
+    assert model.seed == 1  # type: ignore[attr-defined]
+    # Separate trace directory from OpenRouter runs of the same model, and attacks can address the model.
+    assert pipeline.name == "deepagents-local-Qwen_Qwen3.5-27B"
+    assert get_model_name_from_pipeline(pipeline) == "Qwen"
+    no_thinking_flag = DeepAgentsPipeline.from_config(
+        DeepAgentsConfig(model_id="Qwen/Qwen3-32B", base_url="http://localhost:8000/v1")
+    ).model
+    assert no_thinking_flag.extra_body is None  # type: ignore[attr-defined]
+
+
+def test_config_rejects_openrouter_options_with_a_local_server():
+    with pytest.raises(ValueError, match="provider_order"):
+        DeepAgentsConfig(model_id="m", base_url="http://localhost:8000/v1", provider_order=["deepinfra"])
+    with pytest.raises(ValueError, match="enable_thinking"):
+        DeepAgentsConfig(model_id="m", enable_thinking=False)
+
+
 def test_token_usage_is_recorded_per_agent():
     suite = get_suite(BENCHMARK_VERSION, "banking")
     call = {"name": "get_balance", "args": {}, "id": "call_0", "type": "tool_call"}
@@ -576,3 +604,18 @@ def test_cli_passes_provider_pinning_to_the_victim_config(monkeypatch: pytest.Mo
     assert captured[-1].provider_order == ["deepinfra"] and captured[-1].allow_fallbacks is False
     CliRunner().invoke(benchmark_script.main, args)
     assert captured[-1].provider_order is None
+
+
+def test_cli_passes_local_server_to_the_victim_config(monkeypatch: pytest.MonkeyPatch):
+    captured: list[DeepAgentsConfig] = []
+
+    def fake_from_config(config: DeepAgentsConfig, **kwargs: Any) -> DeepAgentsPipeline:
+        captured.append(config)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(DeepAgentsPipeline, "from_config", staticmethod(fake_from_config))
+    args = ["-s", "banking", "-ut", "user_task_0", "--harness", "deepagents", "--model-id", "Qwen/Qwen3.5-27B"]
+    CliRunner().invoke(benchmark_script.main, [*args, "--base-url", "http://localhost:8000/v1", "--no-thinking"])
+    assert captured[-1].base_url == "http://localhost:8000/v1" and captured[-1].enable_thinking is False
+    result = CliRunner().invoke(benchmark_script.main, [*args, "--no-thinking"])
+    assert isinstance(result.exception, ValueError)

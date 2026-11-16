@@ -44,6 +44,8 @@ def benchmark_suite(
     harness: str = "native",
     providers: tuple[str, ...] = (),
     provider_fallbacks: bool = True,
+    base_url: str | None = None,
+    enable_thinking: bool | None = None,
 ) -> SuiteResults:
     if not load_dotenv(".env"):
         warnings.warn("No .env file found")
@@ -51,7 +53,7 @@ def benchmark_suite(
     print(f"Running benchmark for suite: '{suite.name}'")
     print(f"Using harness: '{harness}'")
     if harness == "deepagents":
-        print(f"Using model: '{model_id}' (OpenRouter)")
+        print(f"Using model: '{model_id}' ({base_url or 'OpenRouter'})")
     else:
         print(f"Using model: '{model}'")
     if attack is not None:
@@ -63,7 +65,9 @@ def benchmark_suite(
 
     if harness == "deepagents":
         if model_id is None:
-            raise ValueError("--model-id (an OpenRouter model id) is required with --harness deepagents")
+            raise ValueError(
+                "--model-id (an OpenRouter or local-server model id) is required with --harness deepagents"
+            )
         if defense is not None:
             raise ValueError("--defense is not supported with --harness deepagents")
         deepagents_pipeline = importlib.import_module(DEEPAGENTS_MODULE)
@@ -75,6 +79,8 @@ def benchmark_suite(
                 tool_output_format=tool_output_format,
                 provider_order=list(providers) or None,
                 allow_fallbacks=provider_fallbacks,
+                base_url=base_url,
+                enable_thinking=enable_thinking,
             )
         )
     else:
@@ -172,6 +178,21 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     is_flag=True,
     default=False,
     help="With `--provider`: fail instead of falling back to other providers.",
+)
+@click.option(
+    "--base-url",
+    type=str,
+    default=None,
+    help="With `--harness deepagents`: base URL of a self-hosted OpenAI-compatible server (vLLM, SGLang), e.g. "
+    "`http://localhost:8000/v1`, used instead of OpenRouter. `--model-id` is then the served model name; the API key "
+    "is read from `LOCAL_LLM_API_KEY`. Traces go under `deepagents-local-<model id>`.",
+)
+@click.option(
+    "--thinking/--no-thinking",
+    "enable_thinking",
+    default=None,
+    help="With `--base-url`: turn the model's thinking mode on or off via `chat_template_kwargs` (Qwen3/3.5). "
+    "Unset, the server's default is used.",
 )
 @click.option(
     "--benchmark-version",
@@ -282,9 +303,15 @@ def main(
     harness: str = "native",
     providers: tuple[str, ...] = (),
     no_provider_fallbacks: bool = False,
+    base_url: str | None = None,
+    enable_thinking: bool | None = None,
 ):
     if no_provider_fallbacks and not providers:
         raise ValueError("--no-provider-fallbacks needs --provider")
+    if base_url is not None and providers:
+        raise ValueError("--provider is an OpenRouter option and cannot be used with --base-url")
+    if enable_thinking is not None and base_url is None:
+        raise ValueError("--thinking/--no-thinking needs --base-url")
     for module in modules_to_load:
         importlib.import_module(module)
 
@@ -318,6 +345,8 @@ def main(
                 harness=harness,
                 providers=providers,
                 provider_fallbacks=not no_provider_fallbacks,
+                base_url=base_url,
+                enable_thinking=enable_thinking,
             )
         combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
         for suite_name, result in results.items():
@@ -359,6 +388,8 @@ def main(
             harness=harness,
             providers=providers,
             provider_fallbacks=not no_provider_fallbacks,
+            base_url=base_url,
+            enable_thinking=enable_thinking,
         )
         results = p.map(run_suite, suites)
 
