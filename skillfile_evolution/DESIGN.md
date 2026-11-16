@@ -231,6 +231,11 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
 Every version, diagnosis, trial history digest, edit list, check result and retry is kept on disk.
 
+*Implemented 2026-11-16 in `src/agentdojo/skillfile/`* (structured file, edits, checks, judge prompt, digest, retry, on-disk records; offline tests with a scripted judge; not yet wired into a runner). The open items above are settings of `EditPolicy`, defaulting to the proposals: Principles frozen, 2 edits per step, 60 tokens per rule, whole batch rejected, digest of 20. Two choices the text above left unstated are also proposals until the user confirms them:
+- **Open (2026-11-16):** token counting. Proposed: the checker model's own tokenizer, through the vLLM server's `/tokenize` endpoint (`vllm_token_counter`), since the cap exists for the checker's context.
+- **Open (2026-11-16):** the leakage archive in C3, where no attacker keeps one. Proposed: every injection text the run's train trials have used so far, in both C3 and C4.
+- Found while building: four S0 rules (S4, S6, K2, K3) are already longer than about 60 tokens, so under the proposed budget the judge can only shorten or delete them, not reword them at the same length. The common-word list is still empty, which makes the identifier ban strict: any word from the triggering trial that is not in S0 is refused.
+
 ## Conditions and result segmentation (decided 2026-10-15 by user)
 The main experiment is **4 separate runs**, one per cell of skill file × attack:
 
