@@ -4,6 +4,9 @@
     "**/experimental/**",
     "src/agentdojo/agent_pipeline/deepagents_pipeline.py",
     "src/agentdojo/checker/middleware.py",
+    "src/agentdojo/runner/run.py",
+    "src/agentdojo/runner/run_condition.py",
+    "tests/test_runner/test_run.py",
     "tests/test_checker/test_checker_middleware.py",
     "tests/test_agent_pipeline/test_deepagents_pipeline.py"
   ]
