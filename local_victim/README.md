@@ -93,6 +93,20 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
+## A local checker next to the victim
+
+The checker can run on the VM too: `agentdojo.checker.middleware.local_checker_fn(model_id, base_url)` talks to a
+local server, constrains replies to the checker's JSON shape and turns thinking off. Give each model its own GPU:
+
+```bash
+# victim on GPU 0, checker on GPU 1
+CUDA_VISIBLE_DEVICES=0 DP=1 PORT=8000 bash local_victim/serve_vllm.sh
+CUDA_VISIBLE_DEVICES=1 DP=1 PORT=8001 MODEL=Qwen/Qwen3.5-9B GPU_MEM=0.5 bash local_victim/serve_vllm.sh
+```
+
+`GPU_MEM` is the share of the GPU the server may take, so a second server (for example the attacker) can use the
+rest of GPU 1 on another port.
+
 ## Things to know
 
 - Determinism: temperature 0 on vLLM is greedy, but batching several requests can still change outputs slightly.
