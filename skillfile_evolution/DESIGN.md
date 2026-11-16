@@ -81,8 +81,9 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - Split **by injection task**, stratified by suite: **60% train / 40% test** (confirmed 2026-11-11 by user, so every test pair is an attack the judge has never seen). A pair goes to the side its injection task is on. There's no dev split: with ~35 injection tasks there isn't enough data for three splits, and nothing gets tuned on dev anyway. Train holds ~21 injection tasks, test ~14.
 - A user task can appear in both splits. What's held out is the injection, and the judge only ever sees train injections.
 - **Fixed pair set (decided 2026-10-29 by user; replaces a new pair sample each round).** A fixed number of (user task, injection task) pairs is sampled once per split, with a fixed seed. Each pair gets exactly 3 trials per run (see Trial protocol). That still gives far more trials than there are injection tasks.
+  - *Changed 2026-11-16 by user:* no sampling. Every run uses all 949 pairs of v1.2.2 (workspace 560, banking 144, travel 140, slack 105). C3 and C4 split them by injection task as below; C0, C1 and C2 run all of them.
   - *Revised 2026-11-11 by user:* a pair's 3 trials run one after another, not one per run-wide round.
-  - **Train pair order (2026-11-11).** Train pairs run one at a time in a fixed order, because C3 and C4 share one skill file across pairs (see Trial protocol). The order is part of the fixed pair list. **Open (2026-11-11):** how the order is chosen, for example shuffled with the fixed seed or grouped by suite.
+  - **Train pair order (2026-11-11).** Train pairs run one at a time in a fixed order, because C3 and C4 share one skill file across pairs (see Trial protocol). The order is part of the fixed pair list. *Decided 2026-11-16 by user:* train pairs are shuffled with the fixed seed, so suites are mixed rather than grouped. Test pairs are shuffled the same way and run after all train pairs. C0, C1 and C2 run the same sequence (train-labelled pairs first).
 - **Matched pairs (decided 2026-10-28 by user).** The pair sample depends only on its fixed seed, never on the condition or the run seed. C1, C2, C3 and C4 use the same pairs, in the same order, in every seed.
 - Benign set: every user task run with no injection. Used for benign utility and the checker's false-positive rate (see Checker), in evaluation only. Since 2026-11-05 nothing that decides the skill file uses it, so H1's benign utility is never measured on data that selected the skill file.
   - **When it runs (decided 2026-11-11 by user):** in C3 and C4, twice per run: once against S0 before the train phase ("before") and once against the final evolved file after it ("after").
@@ -255,6 +256,7 @@ Segmentation rules:
 - Every trial record also carries `condition`, `skill_mode`, `attack_mode`, `seed`, `trial` (`round` before 2026-11-11), `split` and the skill file version it ran against, so pooled tables can be split again without relying on paths.
 - A run refuses to start if its directory already holds results from a different config; it resumes only an identical config.
 - The fixed pair list (with the train pair order), the trial-0 injection texts and the hash of the committed S0 skill file are generated once into a committed manifest, `skillfile_evolution/pairs_manifest.json`. Each run checks its own inputs against the manifest before making any model call, and exits with an error if they don't match. Its `config.json` records the manifest hash. Only inputs are checked: utility and security results are expected to vary with provider noise.
+  - *Built 2026-11-16:* `python -m agentdojo.runner.build_manifest` writes it (`--check` compares the committed file with a fresh build). Split seed 0: 21 train / 14 test injection tasks (banking 6/3, slack 3/2, travel 4/3, workspace 8/6; per-suite counts by largest remainder of 60%), 559 train and 390 test pairs. Trial-0 texts address the victim as "Qwen" (from `Qwen/Qwen3.5-27B`), so the manifest has to be rebuilt if the victim changes.
 - Aggregation produces one table and curve per condition; cross-condition comparisons (H1: C3/C4 vs C1, H2: C2 vs C4) are computed from those, never from mixed logs.
 
 ## Hypotheses: how each is measured
@@ -266,11 +268,12 @@ Segmentation rules:
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
 ## Seeds and statistics
+- *Changed 2026-11-16 by user:* **one run per condition** (C1, C2, C3, C4, plus the C0 reference). The "3 seeds" are the 3 trials each pair gets inside that run, not 3 separate runs. The text below about seeds is kept as history; a run's seed (default 0) only sets the judge's and attacker's sampling seeds.
 - **3 seeds** for C1, C2, C3 and C4. 1 seed for C0 and C5. Add more seeds if the budget allows.
 - A seed changes only the random parts (attacker output, judge output, provider noise). It never changes the pairs, their order or the trial-0 injection text.
 - Report bootstrap 95% confidence intervals over trials.
 - A power check after the pilot decides the number of pairs in the fixed set.
-- Per condition, each pair gets 3 trials × 3 seeds = 9 trials.
+- Per condition, each pair gets 3 trials × 3 seeds = 9 trials. *Changed 2026-11-16 by user:* 3 trials per pair, in one run.
 
 ## Known limitations (logged up front)
 - Provider outputs vary even at temperature 0, so "reproducible" means same configs and seeds, not identical traces.
