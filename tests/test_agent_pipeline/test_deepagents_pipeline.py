@@ -368,6 +368,10 @@ def test_from_config_uses_a_local_server(monkeypatch: pytest.MonkeyPatch):
         DeepAgentsConfig(model_id="Qwen/Qwen3-32B", base_url="http://localhost:8000/v1")
     ).model
     assert no_thinking_flag.extra_body is None  # type: ignore[attr-defined]
+    gemma = DeepAgentsPipeline.from_config(
+        DeepAgentsConfig(model_id="google/gemma-4-26B-A4B-it", base_url="http://localhost:8000/v1")
+    )
+    assert get_model_name_from_pipeline(gemma) == "Gemma"
 
 
 def test_config_rejects_openrouter_options_with_a_local_server():

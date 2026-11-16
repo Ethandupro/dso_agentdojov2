@@ -13,6 +13,7 @@ not used (the `deepagents` extra needs Python >= 3.11).
 | --- | --- | --- | --- | --- |
 | `Qwen/Qwen3.5-27B` (default) | ~54 GB | yes, ~30 GB left for KV cache | `qwen3_coder` | ~26% (banking ~52%) |
 | `Qwen/Qwen3-32B` | ~65 GB | yes, ~20 GB left | `hermes` | ~30% (important_instructions) |
+| `google/gemma-4-26B-A4B-it` | ~52 GB (MoE, ~4B active) | yes | `gemma4` | none published for AgentDojo |
 
 Both clear the C0 rule (ASR >= 20%) in the literature, but only the pilot on this setup counts. Both models think by
 default; the published numbers are non-thinking, so the server turns thinking off by default and the benchmark is
@@ -20,6 +21,11 @@ run with `--no-thinking` (sent per request, so it is in every request even if th
 
 Serving: one full BF16 copy per GPU behind one endpoint (`--data-parallel-size 2`). That is simpler and faster than
 splitting one copy over both GPUs (tensor parallel 2), which only pays off for models above ~80 GB.
+
+Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template: download `examples/tool_chat_template_gemma4.jinja`
+from the vLLM GitHub repository at the tag of your installed version and start the server with
+`MODEL=google/gemma-4-26B-A4B-it EXTRA_ARGS="--chat-template /path/to/tool_chat_template_gemma4.jinja"`. Gemma 4 does
+not think unless asked, so `--no-thinking` only makes that explicit.
 
 ## 1. Install (once, as your normal user)
 

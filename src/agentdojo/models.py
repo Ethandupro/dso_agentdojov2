@@ -121,6 +121,7 @@ MODEL_NAMES = {
     "Qwen3-32B": "Qwen",
     "qwen3.5-27b": "Qwen",
     "qwen3-32b": "Qwen",
+    "gemma-4": "Gemma",
     "local": "Local model",
     "vllm_parsed": "Local model",
     "openai-compatible": "AI assistant",

@@ -19,9 +19,12 @@ TP=${TP:-1}
 GPU_MEM=${GPU_MEM:-0.90}
 
 case "$MODEL" in
-  *Qwen3.5*|*Qwen3.6*) TOOL_PARSER=${TOOL_PARSER:-qwen3_coder}; MAX_LEN=${MAX_LEN:-131072} ;;
-  *Qwen3-*)            TOOL_PARSER=${TOOL_PARSER:-hermes};      MAX_LEN=${MAX_LEN:-32768} ;;
-  *) : "${TOOL_PARSER:?set TOOL_PARSER for $MODEL}"; MAX_LEN=${MAX_LEN:-32768} ;;
+  *Qwen3.5*|*Qwen3.6*) TOOL_PARSER=${TOOL_PARSER:-qwen3_coder}; REASONING_PARSER=${REASONING_PARSER:-qwen3}; MAX_LEN=${MAX_LEN:-131072} ;;
+  *Qwen3-*)            TOOL_PARSER=${TOOL_PARSER:-hermes};      REASONING_PARSER=${REASONING_PARSER:-qwen3}; MAX_LEN=${MAX_LEN:-32768} ;;
+  # Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template (pass it with
+  # EXTRA_ARGS="--chat-template /path/to/tool_chat_template_gemma4.jinja", see local_victim/README.md).
+  *gemma-4*)           TOOL_PARSER=${TOOL_PARSER:-gemma4};      REASONING_PARSER=${REASONING_PARSER:-gemma4}; MAX_LEN=${MAX_LEN:-131072} ;;
+  *) : "${TOOL_PARSER:?set TOOL_PARSER for $MODEL}"; : "${REASONING_PARSER:?set REASONING_PARSER for $MODEL}"; MAX_LEN=${MAX_LEN:-32768} ;;
 esac
 
 if [ ! -x "$VENV/bin/vllm" ]; then
@@ -33,7 +36,7 @@ fi
 mkdir -p "${LOG_DIR:-$HOME/vllm_logs}"
 INFO="${LOG_DIR:-$HOME/vllm_logs}/server_$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
-  echo "model=$MODEL port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER"
+  echo "model=$MODEL port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER reasoning_parser=$REASONING_PARSER extra=${EXTRA_ARGS:-}"
   "$VENV/bin/python" -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 } | tee "$INFO"
@@ -45,7 +48,7 @@ INFO="${LOG_DIR:-$HOME/vllm_logs}/server_$(date -u +%Y%m%dT%H%M%SZ).txt"
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization "$GPU_MEM" \
   --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" \
-  --reasoning-parser qwen3 \
+  --reasoning-parser "$REASONING_PARSER" \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
   --generation-config vllm \
   ${EXTRA_ARGS:-} 2>&1 | tee -a "$INFO"
