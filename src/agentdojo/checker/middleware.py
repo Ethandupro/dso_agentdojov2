@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -27,6 +28,7 @@ from agentdojo.agent_pipeline.deepagents_pipeline import (
     AgentDojoToolArtifact,
     ToolMiddlewareFactory,
     is_agentdojo_tool,
+    make_local_chat_model,
     make_openrouter_chat_model,
 )
 from agentdojo.checker.span_removal import injection_survival, sanitize_output
@@ -66,9 +68,27 @@ Reply with JSON only, in this shape: {{"remove": [{{"span": "<exact text from th
 Copy each span exactly as it appears in the tool output. Return {{"remove": []}} if nothing should be removed."""
 
 
-def openrouter_checker_fn(model_id: str, temperature: float | None = 0.0, **model_kwargs: Any) -> CheckerFn:
-    """A checker backed by an OpenRouter model. The skill file is its system prompt."""
-    model = make_openrouter_chat_model(model_id, temperature=temperature, **model_kwargs)
+CHECKER_REPLY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "remove": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"span": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["span", "reason"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["remove"],
+    "additionalProperties": False,
+}
+"""The checker reply shape, for servers that can constrain decoding to a JSON schema (vLLM, SGLang)."""
+
+
+def chat_model_checker_fn(model: BaseChatModel) -> CheckerFn:
+    """A checker backed by any LangChain chat model. The skill file is its system prompt."""
 
     def check(request: CheckerRequest) -> CheckerReply:
         response = model.invoke(
@@ -86,6 +106,38 @@ def openrouter_checker_fn(model_id: str, temperature: float | None = 0.0, **mode
         return CheckerReply(text=text, input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
 
     return check
+
+
+def openrouter_checker_fn(model_id: str, temperature: float | None = 0.0, **model_kwargs: Any) -> CheckerFn:
+    """A checker backed by an OpenRouter model. The skill file is its system prompt."""
+    return chat_model_checker_fn(make_openrouter_chat_model(model_id, temperature=temperature, **model_kwargs))
+
+
+def local_checker_fn(
+    model_id: str,
+    base_url: str,
+    temperature: float | None = 0.0,
+    json_schema: bool = True,
+    enable_thinking: bool | None = False,
+    **model_kwargs: Any,
+) -> CheckerFn:
+    """A checker backed by a self-hosted OpenAI-compatible server (vLLM, SGLang). The skill file is its system prompt.
+
+    With `json_schema`, the server constrains decoding to `CHECKER_REPLY_SCHEMA`, so replies always parse; the parse
+    failure rate then measures nothing, but unmatched spans (text the checker did not copy exactly) still can occur.
+    `enable_thinking` is sent as `chat_template_kwargs` (Qwen3/3.5, Gemma 4); `None` leaves the server default.
+    """
+    extra_body: dict[str, Any] = dict(model_kwargs.pop("extra_body", None) or {})
+    if json_schema:
+        extra_body.setdefault(
+            "response_format",
+            {"type": "json_schema", "json_schema": {"name": "checker_reply", "schema": CHECKER_REPLY_SCHEMA}},
+        )
+    if enable_thinking is not None:
+        extra_body.setdefault("chat_template_kwargs", {"enable_thinking": enable_thinking})
+    if extra_body:
+        model_kwargs["extra_body"] = extra_body
+    return chat_model_checker_fn(make_local_chat_model(model_id, base_url, temperature=temperature, **model_kwargs))
 
 
 class SanitizingChecker(AgentMiddleware):

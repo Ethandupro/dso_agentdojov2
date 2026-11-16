@@ -39,7 +39,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from agentdojo.agent_pipeline.agent_pipeline import load_system_message
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -129,7 +129,16 @@ class DeepAgentsConfig(BaseModel):
     """
 
     model_id: str
-    """OpenRouter model id, e.g. `deepseek/deepseek-v4.1-flash`."""
+    """OpenRouter model id, e.g. `deepseek/deepseek-v4.1-flash`, or the model name a local server serves when
+    `base_url` is set (e.g. `Qwen/Qwen3.5-27B` for vLLM)."""
+    base_url: str | None = None
+    """Base URL of a self-hosted OpenAI-compatible server (vLLM, SGLang), e.g. `http://localhost:8000/v1`. Unset, the
+    model is served by OpenRouter. The API key is read from `LOCAL_LLM_API_KEY` (any non-empty value if the server
+    has no key, e.g. vLLM started without `--api-key`)."""
+    enable_thinking: bool | None = None
+    """Sent as `chat_template_kwargs.enable_thinking` to a local server (Qwen3 / Qwen3.5 chat templates think by
+    default; published AgentDojo numbers for these models are non-thinking). Unset, the server's default is used.
+    Only applies with `base_url`."""
     temperature: float | None = 0.0
     max_model_calls: int = 30
     """Per-agent limit on model calls in one run (main agent and each subagent run separately)."""
@@ -155,17 +164,35 @@ class DeepAgentsConfig(BaseModel):
     seed: int | None = None
     """Sampling seed sent with every request. Not every provider honours it."""
 
+    @model_validator(mode="after")
+    def _check_backend_options(self) -> "DeepAgentsConfig":
+        if self.base_url is not None and self.provider_order is not None:
+            raise ValueError("provider_order is an OpenRouter setting and cannot be used with base_url")
+        if self.base_url is None and self.enable_thinking is not None:
+            raise ValueError("enable_thinking is only supported with base_url (a local server)")
+        return self
+
     def openrouter_extra_body(self) -> dict[str, Any] | None:
         if self.provider_order is None:
             return None
         return {"provider": {"order": list(self.provider_order), "allow_fallbacks": self.allow_fallbacks}}
 
+    def extra_body(self) -> dict[str, Any] | None:
+        """Extra request body fields for the configured backend."""
+        if self.base_url is None:
+            return self.openrouter_extra_body()
+        if self.enable_thinking is None:
+            return None
+        return {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
+
     @property
     def pipeline_name(self) -> str:
         """Contains the model id, so attacks can address the model (see `agentdojo.models.MODEL_NAMES`). `/` is
         replaced because AgentDojo saves traces under `<logdir>/<pipeline name with / replaced>/` but looks
-        them up under the raw name, so a `/` would make finished tasks look unfinished."""
-        return f"deepagents-{self.model_id.replace('/', '_')}"
+        them up under the raw name, so a `/` would make finished tasks look unfinished. Local-server runs get a
+        `local-` prefix so their traces never mix with OpenRouter runs of the same model id."""
+        prefix = "deepagents-local-" if self.base_url is not None else "deepagents-"
+        return prefix + self.model_id.replace("/", "_")
 
 
 def make_openrouter_chat_model(model: str, temperature: float | None = 0.0, **kwargs: Any) -> ChatOpenAI:
@@ -177,6 +204,15 @@ def make_openrouter_chat_model(model: str, temperature: float | None = 0.0, **kw
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY is not set")
     return ChatOpenAI(model=model, base_url=OPENROUTER_BASE_URL, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
+
+
+def make_local_chat_model(model: str, base_url: str, temperature: float | None = 0.0, **kwargs: Any) -> ChatOpenAI:
+    """Builds a LangChain chat model for a self-hosted OpenAI-compatible server (vLLM, SGLang).
+
+    Reads the API key from `LOCAL_LLM_API_KEY`; servers started without a key accept any value.
+    """
+    api_key = os.environ.get("LOCAL_LLM_API_KEY") or "EMPTY"
+    return ChatOpenAI(model=model, base_url=base_url, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -452,16 +488,19 @@ class DeepAgentsPipeline(BasePipelineElement):
         tool_middleware_factory: ToolMiddlewareFactory | None = None,
         model: BaseChatModel | None = None,
     ) -> "DeepAgentsPipeline":
-        """Builds the pipeline for a run. `model` replaces the OpenRouter model built from `config` (for tests)."""
+        """Builds the pipeline for a run. `model` replaces the OpenRouter or local-server model built from `config` (for tests)."""
         if model is None:
-            model = make_openrouter_chat_model(
-                config.model_id,
-                temperature=config.temperature,
-                max_retries=config.max_retries,
-                timeout=config.request_timeout,
-                seed=config.seed,
-                extra_body=config.openrouter_extra_body(),
-            )
+            model_kwargs: dict[str, Any] = {
+                "temperature": config.temperature,
+                "max_retries": config.max_retries,
+                "timeout": config.request_timeout,
+                "seed": config.seed,
+                "extra_body": config.extra_body(),
+            }
+            if config.base_url is None:
+                model = make_openrouter_chat_model(config.model_id, **model_kwargs)
+            else:
+                model = make_local_chat_model(config.model_id, config.base_url, **model_kwargs)
         if config.tool_output_format == "json":
             tool_output_formatter = partial(tool_result_to_str, dump_fn=partial(json.dumps, default=str))
         else:

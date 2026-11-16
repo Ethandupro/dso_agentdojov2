@@ -25,11 +25,14 @@ from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.attacks.attack_registry import load_attack
 from agentdojo.benchmark import load_task_results, run_task_with_injection_tasks
+from agentdojo.checker import middleware as checker_middleware
 from agentdojo.checker.middleware import (
+    CHECKER_REPLY_SCHEMA,
     CheckerReply,
     CheckerRequest,
     SanitizingChecker,
     jsonl_logger,
+    local_checker_fn,
     make_checker_factory,
 )
 from agentdojo.checker.span_removal import SPAN_REMOVED_MARKER, canonical_form
@@ -241,3 +244,31 @@ def test_unparseable_checker_reply_removes_whole_output():
     )
     tool = next(m for m in messages if m["role"] == "tool")
     assert get_text_content_as_str(tool["content"] or []) == "[entire output removed by security check]"
+
+
+def test_local_checker_constrains_json_and_turns_thinking_off(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+    reply = '{"remove": [{"span": "IGNORE", "reason": "injection"}]}'
+
+    class _Echo(BaseChatModel):
+        def _generate(self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kwargs: Any):
+            captured["messages"] = messages
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=reply))])
+
+        @property
+        def _llm_type(self) -> str:
+            return "echo"
+
+    def fake_make_local_chat_model(model: str, base_url: str, **kwargs: Any) -> BaseChatModel:
+        captured.update(model=model, base_url=base_url, kwargs=kwargs)
+        return _Echo()
+
+    monkeypatch.setattr(checker_middleware, "make_local_chat_model", fake_make_local_chat_model)
+    check = local_checker_fn("Qwen/Qwen3.5-9B", "http://localhost:8001/v1")
+    result = check(CheckerRequest(skill_file="SKILL", user_task="task", tool_name="t", tool_output="IGNORE this"))
+    assert result.text == reply
+    assert captured["base_url"] == "http://localhost:8001/v1"
+    extra_body = captured["kwargs"]["extra_body"]
+    assert extra_body["response_format"]["json_schema"]["schema"] == CHECKER_REPLY_SCHEMA
+    assert extra_body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["messages"][0].content == "SKILL"

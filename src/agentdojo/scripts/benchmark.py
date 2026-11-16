@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import logging
 import warnings
@@ -12,6 +13,7 @@ from rich import print
 from rich.live import Live
 from rich.logging import RichHandler
 
+from agentdojo import experiment_models
 from agentdojo.agent_pipeline.agent_pipeline import DEFENSES, AgentPipeline, PipelineConfig
 from agentdojo.attacks.attack_registry import ATTACKS, load_attack
 from agentdojo.benchmark import SuiteResults, benchmark_suite_with_injections, benchmark_suite_without_injections
@@ -23,6 +25,14 @@ from agentdojo.task_suite.task_suite import TaskSuite
 HARNESSES = ("native", "deepagents")
 # Optional extra (`uv sync --extra deepagents`, Python >= 3.11), so it is imported only when selected.
 DEEPAGENTS_MODULE = "agentdojo.agent_pipeline.deepagents_pipeline"
+CHECKER_MODULE = "agentdojo.checker.middleware"
+
+
+def checker_pipeline_suffix(checker_model_id: str, skill_file_text: str) -> str:
+    """Added to the pipeline name of runs with the checker, so their traces never share a cache with runs without
+    it, with another checker model, or with another skill file."""
+    digest = hashlib.sha256(skill_file_text.encode()).hexdigest()[:8]
+    return f"-checker-{checker_model_id.replace('/', '_')}-skill-{digest}"
 
 
 def benchmark_suite(
@@ -44,6 +54,11 @@ def benchmark_suite(
     harness: str = "native",
     providers: tuple[str, ...] = (),
     provider_fallbacks: bool = True,
+    base_url: str | None = None,
+    enable_thinking: bool | None = None,
+    checker_model_id: str | None = None,
+    checker_base_url: str | None = None,
+    skill_file: Path | None = None,
 ) -> SuiteResults:
     if not load_dotenv(".env"):
         warnings.warn("No .env file found")
@@ -51,7 +66,7 @@ def benchmark_suite(
     print(f"Running benchmark for suite: '{suite.name}'")
     print(f"Using harness: '{harness}'")
     if harness == "deepagents":
-        print(f"Using model: '{model_id}' (OpenRouter)")
+        print(f"Using model: '{model_id}' ({base_url or 'OpenRouter'})")
     else:
         print(f"Using model: '{model}'")
     if attack is not None:
@@ -63,10 +78,34 @@ def benchmark_suite(
 
     if harness == "deepagents":
         if model_id is None:
-            raise ValueError("--model-id (an OpenRouter model id) is required with --harness deepagents")
+            raise ValueError(
+                "--model-id (an OpenRouter or local-server model id) is required with --harness deepagents"
+            )
         if defense is not None:
             raise ValueError("--defense is not supported with --harness deepagents")
         deepagents_pipeline = importlib.import_module(DEEPAGENTS_MODULE)
+        tool_middleware_factory = None
+        checker_suffix = ""
+        if checker_model_id is not None:
+            if skill_file is None:
+                raise ValueError("--skill-file is required with a checker")
+            checker = importlib.import_module(CHECKER_MODULE)
+            skill_file_text = skill_file.read_text()
+            if checker_base_url is None:
+                checker_fn = checker.openrouter_checker_fn(checker_model_id)
+            else:
+                checker_fn = checker.local_checker_fn(
+                    checker_model_id, checker_base_url, enable_thinking=experiment_models.CHECKER_ENABLE_THINKING
+                )
+            checker_suffix = checker_pipeline_suffix(checker_model_id, skill_file_text)
+            logdir.mkdir(parents=True, exist_ok=True)
+            tool_middleware_factory = checker.make_checker_factory(
+                checker_fn,
+                skill_file_text,
+                log=checker.jsonl_logger(str(logdir / "checker_calls.jsonl")),
+                log_context={"suite": suite.name, "attack": attack, "skill_file": str(skill_file)},
+            )
+            print(f"Using checker: '{checker_model_id}' ({checker_base_url or 'OpenRouter'}), skill file {skill_file}")
         pipeline = deepagents_pipeline.DeepAgentsPipeline.from_config(
             deepagents_pipeline.DeepAgentsConfig(
                 model_id=model_id,
@@ -75,8 +114,12 @@ def benchmark_suite(
                 tool_output_format=tool_output_format,
                 provider_order=list(providers) or None,
                 allow_fallbacks=provider_fallbacks,
-            )
+                base_url=base_url,
+                enable_thinking=enable_thinking,
+            ),
+            tool_middleware_factory=tool_middleware_factory,
         )
+        pipeline.name = f"{pipeline.name}{checker_suffix}"
     else:
         pipeline = AgentPipeline.from_config(
             PipelineConfig(
@@ -148,7 +191,9 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     "--model-id",
     type=str,
     default=None,
-    help="The model id for local models, or the OpenRouter model id with `--harness deepagents`.",
+    help="The model id for local models, or the victim model id with `--harness deepagents` (an OpenRouter id, or "
+    "the served name with `--base-url`). With `--harness deepagents` and no `--model-id`, the project's victim "
+    f"`{experiment_models.VICTIM_MODEL_ID}` at `{experiment_models.VICTIM_BASE_URL}` is used, without thinking.",
 )
 @click.option(
     "--harness",
@@ -172,6 +217,50 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     is_flag=True,
     default=False,
     help="With `--provider`: fail instead of falling back to other providers.",
+)
+@click.option(
+    "--base-url",
+    type=str,
+    default=None,
+    help="With `--harness deepagents`: base URL of a self-hosted OpenAI-compatible server (vLLM, SGLang), e.g. "
+    "`http://localhost:8000/v1`, used instead of OpenRouter. `--model-id` is then the served model name; the API key "
+    "is read from `LOCAL_LLM_API_KEY`. Traces go under `deepagents-local-<model id>`.",
+)
+@click.option(
+    "--thinking/--no-thinking",
+    "enable_thinking",
+    default=None,
+    help="With `--base-url`: turn the model's thinking mode on or off via `chat_template_kwargs` (Qwen3/3.5). "
+    "Unset, the server's default is used.",
+)
+@click.option(
+    "--checker",
+    "use_checker",
+    is_flag=True,
+    default=False,
+    help="With `--harness deepagents`: screen every tool output with the checker (C1-style run). Defaults to "
+    f"`{experiment_models.CHECKER_MODEL_ID}` at `{experiment_models.CHECKER_BASE_URL}` with the skill file "
+    f"`{experiment_models.DEFAULT_SKILL_FILE}`. Checker calls are logged to `<logdir>/checker_calls.jsonl`.",
+)
+@click.option(
+    "--checker-model-id",
+    type=str,
+    default=None,
+    help="With `--checker`: the checker model (implies `--checker`). Served by `--checker-base-url` if given, "
+    "otherwise by OpenRouter.",
+)
+@click.option(
+    "--checker-base-url",
+    type=str,
+    default=None,
+    help="With `--checker`: the checker's OpenAI-compatible server (implies `--checker`). `openrouter` uses "
+    "OpenRouter instead.",
+)
+@click.option(
+    "--skill-file",
+    type=Path,
+    default=None,
+    help="With `--checker`: the skill file the checker follows.",
 )
 @click.option(
     "--benchmark-version",
@@ -282,9 +371,38 @@ def main(
     harness: str = "native",
     providers: tuple[str, ...] = (),
     no_provider_fallbacks: bool = False,
+    base_url: str | None = None,
+    enable_thinking: bool | None = None,
+    use_checker: bool = False,
+    checker_model_id: str | None = None,
+    checker_base_url: str | None = None,
+    skill_file: Path | None = None,
 ):
+    if harness == "deepagents" and model_id is None:
+        # The project's victim, served on the GPU VM.
+        model_id = experiment_models.VICTIM_MODEL_ID
+        base_url = base_url or experiment_models.VICTIM_BASE_URL
+        enable_thinking = experiment_models.VICTIM_ENABLE_THINKING if enable_thinking is None else enable_thinking
+    use_checker = use_checker or checker_model_id is not None or checker_base_url is not None or skill_file is not None
+    if use_checker:
+        if harness != "deepagents":
+            raise ValueError("--checker needs --harness deepagents")
+        if checker_model_id is None:
+            checker_model_id = experiment_models.CHECKER_MODEL_ID
+            checker_base_url = checker_base_url or experiment_models.CHECKER_BASE_URL
+        if checker_base_url == "openrouter":
+            checker_base_url = None
+        skill_file = skill_file or experiment_models.DEFAULT_SKILL_FILE
+        if not skill_file.is_file():
+            raise ValueError(f"Skill file not found: {skill_file}")
+    else:
+        checker_model_id = checker_base_url = None
     if no_provider_fallbacks and not providers:
         raise ValueError("--no-provider-fallbacks needs --provider")
+    if base_url is not None and providers:
+        raise ValueError("--provider is an OpenRouter option and cannot be used with --base-url")
+    if enable_thinking is not None and base_url is None:
+        raise ValueError("--thinking/--no-thinking needs --base-url")
     for module in modules_to_load:
         importlib.import_module(module)
 
@@ -318,6 +436,11 @@ def main(
                 harness=harness,
                 providers=providers,
                 provider_fallbacks=not no_provider_fallbacks,
+                base_url=base_url,
+                enable_thinking=enable_thinking,
+                checker_model_id=checker_model_id,
+                checker_base_url=checker_base_url,
+                skill_file=skill_file,
             )
         combined_results = SuiteResults(utility_results={}, security_results={}, injection_tasks_utility_results={})
         for suite_name, result in results.items():
@@ -359,6 +482,11 @@ def main(
             harness=harness,
             providers=providers,
             provider_fallbacks=not no_provider_fallbacks,
+            base_url=base_url,
+            enable_thinking=enable_thinking,
+            checker_model_id=checker_model_id,
+            checker_base_url=checker_base_url,
+            skill_file=skill_file,
         )
         results = p.map(run_suite, suites)
 
