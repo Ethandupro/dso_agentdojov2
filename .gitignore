@@ -392,3 +392,6 @@ notebooks/plots/
 
 runs/
 .claude
+
+# Experiment runner output (agentdojo.runner.run_condition)
+/results/
