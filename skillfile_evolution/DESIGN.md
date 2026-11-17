@@ -114,6 +114,13 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 - The attack logic itself is copied as faithfully as possible, apart from the parts listed below.
 - Licensing: MIT. MUZZLE also bundles Apache-2.0 code (upstream MUZZLE) and MIT code (PAIR); its `NOTICE` and `LICENSES/` files are copied alongside.
 - The port has to reproduce MUZZLE's upstream AgentDojo smoke result on a small task set before it's used in experiments.
+  - **Open (2026-11-17):** upstream's AgentDojo smoke (`smoke/agentdojo_read_muzzle.py`) uses a scripted victim and only checks that the text reaches the agent, through the OBSERVE → PROBE → ATTACK phases this port drops (see below). It can't be reproduced as written. Proposed instead: the byte-identity tests on the copied files, plus a short live run (about 5 pairs of C2) with the real attacker model.
+- *Implemented 2026-11-17:* `src/agentdojo/attacks/adaptive/muzzle/`.
+  - `vendor/` holds upstream's Judge (`judge.py`, `judge.yaml`, `json_utils.py`, `constants.py`) and offline PAIR (`pair/`), copied from `RoldSI/superred-modules` @ `efc0e53`. Only the import lines differ. `UPSTREAM.json` pins each file's upstream hash, and a test checks it.
+  - `llm.py` replaces SuperRed's `LLMClient` and `BudgetExhaustedError` with the OpenAI SDK, OpenRouter by default (key from `OPENROUTER_API_KEY`).
+  - `attacker.py`: `MuzzleAttacker` is the runner's `Attacker`. It keeps a run-wide archive of every text it handed out, with the feedback, the Judge's evaluation, PAIR's score and the model usage, and saves it in the checkpoint. `config()` gives the `attacker` block of `config.json`: settings, upstream pin, prompt hashes and the deviations below.
+  - The upstream licence files (MIT, NOTICE, Apache-2.0 for MUZZLE, MIT for PAIR) and its `ASSUMPTIONS.md` are in `upstream_licenses/`.
+  - Not done yet: wiring it into `run_condition` for C2/C4 (runner PR 5), and choosing the attacker model.
 
 ### MUZZLE: iterative part only (decided 2026-10-29 by user)
 - **Kept:** MUZZLE's refinement loop. After a pair's trials 0 and 1 (rounds 0 and 1 before 2026-11-11), its Judge reads the pair's last attempt (injection text, success result, agent's final answer) and writes recommendations. Offline PAIR then rewrites the text, starting from the last text plus those recommendations, with the injection task's goal as its target.
@@ -137,6 +144,12 @@ Exact model IDs are confirmed against the OpenRouter catalogue during Phase 0.
 
   The Judge and PAIR system prompts stay byte-identical, so the Judge's web-agent wording ("UI element") is kept.
 - PAIR's settings (streams, iterations) are pinned in `config.json` and identical in C2 and C4.
+  - *Defaults (2026-11-17):* the SuperRed port's: 3 streams × 4 iterations (upstream MUZZLE: 5 × 30). A rewrite then makes at most 1 + 3 × 12 = 37 attacker-model calls (Judge, then attacker, stand-in victim and PAIR judge per proposal), fewer when a proposal scores 10. **Open:** whether to lower them for cost; C2 rewrites 2 × 949 pairs.
+- *Choices made in the port (2026-11-17), also listed in `DEVIATIONS` in `attacker.py`:*
+  - PAIR's target instruction is the injection task's `GOAL` (upstream: the Prompter's instruction, which came from the dropped OBSERVE phase).
+  - The Judge's transcript is the final answer as one assistant message. Its `attack_method` is upstream's empty no-vessel value, since placement never changes.
+  - Each rewrite starts from the previous trial's text, passed as upstream's reflection (`most_recent_working_payload` plus the Judge's recommendations), whether that trial succeeded or not.
+  - If PAIR produces no parseable proposal, the text falls back to the goal itself, as upstream does.
 
 ## Checker (sanitize only)
 - **History:** on 2026-10-15 the user chose sanitize as the main mode, with block mode (whole output replaced by a placeholder) as a comparison run, while an earlier draft of this section still described allow/block verdicts. On 2026-11-01 the user made sanitize the only mode and dropped block mode. On 2026-11-10 the user decided that an unmatched span drops only that span, not the whole output.

@@ -99,7 +99,12 @@ packages = ["src/agentdojo"]
 
 [tool.ruff]
 line-length = 120
-exclude = ["**/experimental", "**/notebooks"]
+exclude = [
+    "**/experimental",
+    "**/notebooks",
+    # Copied from upstream and kept byte-identical (see its UPSTREAM.json), so not reformatted or linted here.
+    "src/agentdojo/attacks/adaptive/muzzle/vendor",
+]
 # include = ["src/", "examples/", "scripts/", "tests/"]
 
 [tool.ruff.lint]
