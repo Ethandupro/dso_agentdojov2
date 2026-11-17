@@ -14,6 +14,7 @@ pytest.importorskip("deepagents")
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
+from agentdojo.runner.compare import write_comparison
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.config import RunConfig
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, Pair
@@ -184,6 +185,18 @@ def test_c0_has_no_checker_and_is_hijacked(tmp_path: Path):
         trace = json.loads((runner.run_dir / r["trace"]).read_text())
         tool_texts = [str(m["content"]) for m in trace["messages"] if m["role"] == "tool"]
         assert any(INJECTION_START in text for text in tool_texts)
+
+
+def test_compare_reads_real_run_output(tmp_path: Path):
+    # C0 and C1 smoke runs side by side: the checker with S0 removes the one hijack C0 has among the first 4 pairs.
+    make_runner(tmp_path, "C0", limit=4).run()
+    make_runner(tmp_path, "C1", limit=4).run()
+    out = write_comparison(tmp_path, tmp_path / "comparison.html", limit=4)
+    result = json.loads(out.with_suffix(".json").read_text())
+    asr = result["c0_vs_c1"]["asr"]
+    assert asr["a"] > 0 and asr["b"] == 0 and asr["diff"] == asr["a"]
+    assert asr["n_a"] == asr["n_b"] == 12
+    assert result["h1"] == {} and result["h2"] is None
 
 
 def test_resume_after_stop_and_after_a_crash_between_writes(tmp_path: Path):

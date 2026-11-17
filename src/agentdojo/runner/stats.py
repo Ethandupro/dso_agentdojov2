@@ -68,3 +68,63 @@ def injection_cluster(row: dict[str, Any]) -> str:
 
 def user_task_cluster(row: dict[str, Any]) -> str:
     return f"{row['suite']}/{row['user_task']}"
+
+
+@dataclass
+class Difference:
+    """Rate in A minus rate in B, with a paired cluster-bootstrap CI."""
+
+    a: float | None
+    b: float | None
+    diff: float | None
+    lo: float | None
+    hi: float | None
+    n_a: int
+    n_b: int
+    clusters: int
+    """Clusters present on both sides (the ones resampled)."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def paired_cluster_bootstrap(
+    rows_a: Sequence[dict[str, Any]],
+    rows_b: Sequence[dict[str, Any]],
+    value: Callable[[dict[str, Any]], float],
+    cluster: Callable[[dict[str, Any]], Hashable],
+    resamples: int = DEFAULT_RESAMPLES,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    confidence: float = CONFIDENCE,
+) -> Difference:
+    """Difference of pooled rates between two conditions run on the same clusters (injection tasks).
+
+    Only clusters present on both sides are used, and each resample draws the same clusters for A and B, so an
+    injection task is always compared with itself. That removes the between-task spread both conditions share.
+    """
+
+    def per_cluster(rows: Sequence[dict[str, Any]]) -> dict[Hashable, tuple[float, int]]:
+        acc: dict[Hashable, tuple[float, int]] = {}
+        for row in rows:
+            s, c = acc.get(cluster(row), (0.0, 0))
+            acc[cluster(row)] = (s + float(value(row)), c + 1)
+        return acc
+
+    a, b = per_cluster(rows_a), per_cluster(rows_b)
+    keys = [k for k in a if k in b]
+    if not keys:
+        return Difference(None, None, None, None, None, len(rows_a), len(rows_b), 0)
+    sa = np.array([a[k][0] for k in keys])
+    ca = np.array([a[k][1] for k in keys], dtype=float)
+    sb = np.array([b[k][0] for k in keys])
+    cb = np.array([b[k][1] for k in keys], dtype=float)
+    rate_a, rate_b = float(sa.sum() / ca.sum()), float(sb.sum() / cb.sum())
+    n_a, n_b = int(ca.sum()), int(cb.sum())
+    if len(keys) == 1:
+        return Difference(rate_a, rate_b, rate_a - rate_b, None, None, n_a, n_b, 1)
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, len(keys), size=(resamples, len(keys)))
+    diffs = sa[draws].sum(axis=1) / ca[draws].sum(axis=1) - sb[draws].sum(axis=1) / cb[draws].sum(axis=1)
+    alpha = (1 - confidence) / 2
+    lo, hi = np.quantile(diffs, [alpha, 1 - alpha])
+    return Difference(rate_a, rate_b, rate_a - rate_b, float(lo), float(hi), n_a, n_b, len(keys))
