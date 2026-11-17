@@ -4,7 +4,7 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
 Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): victim on port 8000, checker on
-port 8001. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
+port 8002. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
 same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
 This version runs C0, C1 and C3. C3 also needs the judge's OpenRouter key (`OPENROUTER_API_KEY`, e.g. from

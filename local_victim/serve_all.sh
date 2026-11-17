@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Start the project's two model servers on the GPU VM and wait until both answer:
 #   victim  Qwen/Qwen3.5-27B on GPU 0, port 8000
-#   checker Qwen/Qwen3.5-9B  on GPU 1, port 8001 (half of GPU 1, so the attacker can use the rest later)
+#   checker Qwen/Qwen3.5-9B  on GPU 1, port 8002 (half of GPU 1, so the attacker can use the rest later)
+# Ports: VICTIM_PORT / CHECKER_PORT (8001 is taken by another user on the shared VM, so the checker uses 8002);
+# pass the same port to run_condition with --checker-base-url if you change it.
 # These match src/agentdojo/experiment_models.py, which the benchmark uses by default.
 #
 #   bash local_victim/serve_all.sh          # start both (logs in ~/vllm_logs)
@@ -29,17 +31,24 @@ start() {  # name gpu port model gpu_mem
     echo "$name already running on port $port"
     return
   fi
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    echo "port $port is already used by another program (not a vLLM server); pick a free one, e.g." >&2
+    echo "  ${name^^}_PORT=8003 bash local_victim/serve_all.sh   (and pass the same port to run_condition)" >&2
+    exit 1
+  fi
   CUDA_VISIBLE_DEVICES=$gpu DP=1 TP=1 PORT=$port MODEL=$model GPU_MEM=$mem LOG_DIR=$LOG_DIR \
     nohup bash "$HERE/serve_vllm.sh" >"$LOG_DIR/$name.log" 2>&1 &
   echo $! >"$LOG_DIR/$name.pid"
   echo "$name: $model on GPU $gpu, port $port (log: $LOG_DIR/$name.log)"
 }
 
-start victim 0 8000 "${VICTIM_MODEL:-Qwen/Qwen3.5-27B}" "${VICTIM_GPU_MEM:-0.90}"
-start checker 1 8001 "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
+VICTIM_PORT=${VICTIM_PORT:-8000}
+CHECKER_PORT=${CHECKER_PORT:-8002}
+start victim 0 "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.5-27B}" "${VICTIM_GPU_MEM:-0.90}"
+start checker 1 "$CHECKER_PORT" "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
 
 echo "waiting for both servers (the first start downloads ~75 GB of weights)..."
-for pair in victim:8000 checker:8001; do
+for pair in "victim:$VICTIM_PORT" "checker:$CHECKER_PORT"; do
   name=${pair%%:*} port=${pair##*:}
   until curl -sf "localhost:$port/v1/models" >/dev/null 2>&1; do
     if [ -f "$LOG_DIR/$name.pid" ] && ! kill -0 "$(cat "$LOG_DIR/$name.pid")" 2>/dev/null; then
