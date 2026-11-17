@@ -7,10 +7,10 @@ Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`):
 port 8002. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
 same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
-This version runs C0, C1 and C3. C3 also needs the judge's OpenRouter key (`OPENROUTER_API_KEY`, e.g. from
-`--env-file ~/api.env`, whose values win over variables already set in the shell); the key is never written to the
-run directory. C2 and C4 need the MUZZLE attacker and are
-wired in by a later PR.
+All five conditions run here. C2 and C4 also need the MUZZLE attacker's local vLLM server (started by
+`local_victim/serve_all.sh` next to the checker). C3 and C4 also need the judge's OpenRouter key (`OPENROUTER_API_KEY`,
+e.g. from `--env-file ~/api.env`, whose values win over variables already set in the shell); the key is never written
+to the run directory.
 """
 
 import json
@@ -27,12 +27,13 @@ from dotenv import load_dotenv
 
 from agentdojo import experiment_models
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepAgentsPipeline, ToolMiddlewareFactory
+from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
-from agentdojo.runner.plugins import FixedSkillFile, NoChecker, SkillFileSource, StaticAttacker
+from agentdojo.runner.plugins import Attacker, FixedSkillFile, NoChecker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import write_report
 from agentdojo.runner.run import ConfigMismatchError, Runner, quick_summary, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy
@@ -47,7 +48,6 @@ from agentdojo.skillfile.judge import (
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 
-SUPPORTED_CONDITIONS = ("C0", "C1", "C3")
 JUDGE_KEY_ENV = experiment_models.JUDGE_API_KEY_ENV
 
 
@@ -85,6 +85,11 @@ def check_judge(model: str) -> None:
         raise PreflightError(f"the judge model {model} did not answer on OpenRouter: {e}") from e
 
 
+def attacker_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
+    """MUZZLE on the local attacker server (decided 2026-11-17 by the user: no API)."""
+    return MuzzleSettings(attacker=AttackerModelConfig(model=model_id, base_url=base_url, api_key_env=None, seed=seed))
+
+
 @click.command()
 @click.option("--condition", type=click.Choice(sorted(CONDITIONS)), required=True)
 @click.option("--seed", type=int, default=0, show_default=True)
@@ -100,6 +105,8 @@ def check_judge(model: str) -> None:
 @click.option("--env-file", type=click.Path(path_type=Path), default=None, help="Loads API keys (judge, attacker).")
 @click.option("--judge-model", default=DEFAULT_JUDGE_MODEL, show_default=True, help="C3/C4 only.")
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
+@click.option("--attacker-model-id", default=experiment_models.ATTACKER_MODEL_ID, show_default=True, help="C2/C4.")
+@click.option("--attacker-base-url", default=experiment_models.ATTACKER_BASE_URL, show_default=True, help="C2/C4.")
 def main(
     condition: str,
     seed: int,
@@ -115,9 +122,9 @@ def main(
     env_file: Path | None,
     judge_model: str,
     digest_size: int,
+    attacker_model_id: str,
+    attacker_base_url: str,
 ) -> None:
-    if condition not in SUPPORTED_CONDITIONS:
-        raise click.UsageError(f"{condition} is not wired in yet; this version runs {', '.join(SUPPORTED_CONDITIONS)}")
     if env_file is not None:
         load_dotenv(env_file, override=True)
     cond = CONDITIONS[condition]
@@ -143,11 +150,17 @@ def main(
             served["checker"] = check_served("checker", checker_base_url, checker_model_id)
         if cond.evolving_skill:
             check_judge(judge_model)
+        muzzle_settings = None
+        if cond.attack_mode == "evolving":
+            served["attacker"] = check_served("attacker", attacker_base_url, attacker_model_id)
+            muzzle_settings = attacker_settings(attacker_model_id, attacker_base_url, seed)
     except PreflightError as e:
         raise click.ClickException(str(e)) from e
 
     s0_path = Path(manifest_data["s0_path"])
     policy = EditPolicy()
+    static = StaticAttacker(manifest_data)
+    attacker: Attacker = static if muzzle_settings is None else MuzzleAttacker(manifest_data, muzzle_settings)
     run_dir = run_dir_for(results_root, cond, seed, limit)
     config = RunConfig(
         condition=cond.name,
@@ -194,6 +207,7 @@ def main(
             if cond.evolving_skill
             else None
         ),
+        attacker=attacker.config() if isinstance(attacker, MuzzleAttacker) else None,
         served_models=served,
         code=git_state(),
         versions=package_versions(),
@@ -224,13 +238,12 @@ def main(
     def victim_factory(unit: Unit, factory: ToolMiddlewareFactory | None) -> DeepAgentsPipeline:
         return DeepAgentsPipeline.from_config(victim_config, tool_middleware_factory=factory)
 
-    static = StaticAttacker(manifest_data)
     runner = Runner(
         config=config,
         condition=cond,
         run_dir=run_dir,
         units=build_units(cond, manifest_data, trials_per_pair, limit),
-        attacker=static,
+        attacker=attacker,
         static_attacker=static,
         skill_file=skill_file,
         victim_factory=victim_factory,
