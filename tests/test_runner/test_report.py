@@ -34,6 +34,11 @@ def test_report_from_a_c1_run(tmp_path: Path):
     assert "<script src" not in page and "<link" not in page  # self-contained
     assert "&quot;run_id&quot;: &quot;c1_static-skill_static-attack&quot;" in page  # full config shown
     assert "<svg" in page and "Per injection task" in page
+    assert "Tokens by component" in page
+    by_component = summary["cost"]["by_component"]
+    assert by_component["attacked_trials"] == 12
+    assert by_component["components"]["checker"]["calls"] == summary["checker"]["calls"]
+    assert by_component["components"]["judge"]["calls"] == 0  # C1: no judge
 
 
 def test_partial_run_report_uses_only_checkpointed_units(tmp_path: Path):
