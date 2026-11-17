@@ -9,7 +9,7 @@ mix runs built from different manifests, pools the seeds of each condition, and 
 - H1: test-phase ASR on the final file in C3 and C4 against C1 on the same test pairs, with benign utility before
   and after evolution.
 - H2: C2 against C4 on train-split injection tasks only (C4's attacker never rewrites test pairs), overall and by
-  trial index 0/1/2 (the x-axis is open in DESIGN.md; trial index is the proposal).
+  position in the run (train pairs in run order, 10 bins; the main curve) and by trial index 0/1/2.
 - C0 against C1: what the checker with S0 adds.
 
 Differences are A minus B with 95% paired cluster-bootstrap intervals over injection tasks (benign: user tasks).
@@ -104,6 +104,40 @@ def _attacked_comparison(a: Sequence[Row], b: Sequence[Row]) -> dict[str, Any]:
     }
 
 
+H2_BINS = 10
+
+
+def position_bins(rows: Sequence[Row], bins: int = H2_BINS) -> list[list[str]]:
+    """Train pairs in run order, cut into `bins` near-equal groups (fewer when there are fewer pairs).
+
+    C2 and C4 run the train pairs in the same manifest order, so bin k holds the same pairs in both runs.
+    """
+    order: dict[str, int] = {}
+    for r in sorted(rows, key=lambda r: r["unit"]):
+        order.setdefault(r["pair"], len(order))
+    pairs = sorted(order, key=order.__getitem__)
+    k = min(bins, len(pairs))
+    return [pairs[len(pairs) * i // k : len(pairs) * (i + 1) // k] for i in range(k)]
+
+
+def _h2_by_position(c2: Sequence[Row], c4: Sequence[Row]) -> list[dict[str, Any]]:
+    out = []
+    for i, pairs in enumerate(position_bins(c4)):
+        members = set(pairs)
+        a = [r for r in c2 if r["pair"] in members]
+        b = [r for r in c4 if r["pair"] in members]
+        out.append(
+            {
+                "bin": i,
+                "pairs": len(pairs),
+                "asr": _diff(a, b, lambda r: r["security"]),
+                "c2_asr": _asr(a),
+                "c4_asr": _asr(b),
+            }
+        )
+    return out
+
+
 def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
     conditions = sorted({run["config"]["condition"] for run in runs})
     rows = {c: pooled(runs, c) for c in conditions}
@@ -158,6 +192,7 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
         trials = sorted({r["trial"] for r in c2_train + c4_train})
         result["h2"] = {
             "overall": _attacked_comparison(c2_train, c4_train),
+            "by_position": _h2_by_position(c2_train, c4_train),
             "by_trial": {
                 str(t): {
                     "asr": _diff(
@@ -272,13 +307,25 @@ def render_html(result: dict[str, Any]) -> str:
     out.append(
         "<h2>H2: static vs evolving skill file under the evolving attacker</h2>"
         "<p class='muted'>C2 minus C4 on train-split injection tasks only. A positive difference means the evolving "
-        "file (C4) holds up better against the adapting attacker. The x-axis is trial index 0/1/2 (proposal; open in "
-        "DESIGN.md).</p>"
+        "file (C4) holds up better against the adapting attacker. Main curve: position in the run (train pairs in run "
+        "order, cut into equal bins; the same pairs in each bin for C2 and C4), where the C4 file learns as it goes. "
+        "Second view: trial index 0/1/2, the attacker refining one pair.</p>"
     )
     if result["h2"] is None:
         out.append("<p>Not available yet: needs C2 and C4 results (MUZZLE).</p>")
     else:
         out.append(_comparison_table("C2 (train inj.)", "C4 (train phase)", result["h2"]["overall"]))
+        by_pos = result["h2"]["by_position"]
+        out.append(
+            _point_whisker_chart(
+                "ASR over the run (train pairs in run order)",
+                [f"{b['bin'] + 1}" for b in by_pos],
+                {"C2": [b["c2_asr"] for b in by_pos], "C4": [b["c4_asr"] for b in by_pos]},
+            )
+        )
+        out.append(TABLE_HEAD.format(a="C2", b="C4"))
+        out += [_diff_row(f"ASR, bin {b['bin'] + 1} ({b['pairs']} pairs)", b["asr"]) for b in by_pos]
+        out.append("</tbody></table>")
         by_trial = result["h2"]["by_trial"]
         out.append(TABLE_HEAD.format(a="C2", b="C4"))
         out += [_diff_row(f"ASR, trial {t}", v["asr"]) for t, v in by_trial.items()]

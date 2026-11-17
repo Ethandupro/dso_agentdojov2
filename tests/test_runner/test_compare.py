@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from agentdojo.runner.compare import RunMismatchError, compare, find_runs, main, write_comparison
+from agentdojo.runner.compare import RunMismatchError, compare, find_runs, main, position_bins, render_html, write_comparison
 from agentdojo.runner.conditions import CONDITIONS
 
 TRAIN_INJ = ["injection_task_1", "injection_task_2", "injection_task_3"]
@@ -23,6 +23,7 @@ def attacked(phase: str, split: str, inj: str, trial: int, security: bool, utili
         "suite": "banking",
         "user_task": "user_task_0",
         "injection_task": inj,
+        "pair": f"banking/user_task_0/{inj}",
         "trial": trial,
         "security": security,
         "utility": utility,
@@ -37,6 +38,7 @@ def benign(phase: str, user_task: str, utility: bool) -> dict[str, Any]:
         "suite": "banking",
         "user_task": user_task,
         "injection_task": None,
+        "pair": None,
         "trial": None,
         "security": None,
         "utility": utility,
@@ -95,9 +97,14 @@ def test_h1_h2_and_c0_vs_c1(tmp_path: Path):
     assert h2["overall"]["asr"]["n_a"] == h2["overall"]["asr"]["n_b"] == 9
     assert abs(h2["overall"]["asr"]["diff"] - 2 / 3) < 1e-9
     assert {t: v["asr"]["diff"] for t, v in h2["by_trial"].items()} == {"0": 0.0, "1": 1.0, "2": 1.0}
+    # By run position: 3 train pairs give 3 bins of one pair each; C2 always wins, C4 only on trial 0.
+    assert [(b["pairs"], b["c2_asr"]["value"]) for b in h2["by_position"]] == [(1, 1.0)] * 3
+    assert all(abs(b["asr"]["diff"] - 2 / 3) < 1e-9 for b in h2["by_position"])
 
     assert result["c0_vs_c1"]["asr"]["diff"] == 0.0 and result["c0_vs_c1"]["asr"]["clusters"] == 6
     assert result["missing"] == []
+    page = render_html(result)
+    assert "ASR over the run" in page and "bin 3 (1 pairs)" in page and "ASR by trial index" in page
 
 
 def test_missing_conditions_and_partial_runs(tmp_path: Path):
@@ -133,3 +140,11 @@ def test_refuses_mixed_manifests_and_filters_on_limit(tmp_path: Path):
     ok = CliRunner().invoke(main, [str(smoke), "--limit", "5"])
     assert ok.exit_code == 0, ok.output
     assert (smoke / "comparison-limit5.html").exists() and (smoke / "comparison-limit5.json").exists()
+
+
+def test_position_bins_follow_run_order():
+    rows = [{"unit": 100 - i, "pair": f"p{i}"} for i in range(25)]  # written in reverse unit order
+    bins = position_bins(rows)
+    assert [len(b) for b in bins] == [2, 3, 2, 3, 2, 3, 2, 3, 2, 3]
+    assert bins[0] == ["p24", "p23"] and bins[-1][-1] == "p0"
+    assert position_bins(rows[:3]) == [["p2"], ["p1"], ["p0"]]
