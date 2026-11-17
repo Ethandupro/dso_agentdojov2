@@ -4,11 +4,12 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
 Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): victim on port 8000, checker on
-port 8001. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
+port 8002. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
 same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
-This version runs C0, C1 and C3. C3 also needs the judge's API key (`ANTHROPIC_API_KEY`, e.g. from
-`--env-file ~/api.env`); the key is never written to the run directory. C2 and C4 need the MUZZLE attacker and are
+This version runs C0, C1 and C3. C3 also needs the judge's OpenRouter key (`OPENROUTER_API_KEY`, e.g. from
+`--env-file ~/api.env`, whose values win over variables already set in the shell); the key is never written to the
+run directory. C2 and C4 need the MUZZLE attacker and are
 wired in by a later PR.
 """
 
@@ -20,8 +21,8 @@ import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 
-import anthropic
 import click
+import openai
 from dotenv import load_dotenv
 
 from agentdojo import experiment_models
@@ -35,12 +36,19 @@ from agentdojo.runner.plugins import FixedSkillFile, NoChecker, SkillFileSource,
 from agentdojo.runner.report import write_report
 from agentdojo.runner.run import ConfigMismatchError, Runner, quick_summary, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy
-from agentdojo.skillfile.judge import DEFAULT_JUDGE_MODEL, JUDGE_SYSTEM_PROMPT, SkillFileEvolver, anthropic_judge_fn
+from agentdojo.skillfile.judge import (
+    DEFAULT_JUDGE_MAX_TOKENS,
+    DEFAULT_JUDGE_MODEL,
+    JUDGE_SYSTEM_PROMPT,
+    SkillFileEvolver,
+    openrouter_client,
+    openrouter_judge_fn,
+)
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 
 SUPPORTED_CONDITIONS = ("C0", "C1", "C3")
-JUDGE_KEY_ENV = "ANTHROPIC_API_KEY"
+JUDGE_KEY_ENV = experiment_models.JUDGE_API_KEY_ENV
 
 
 class PreflightError(Exception):
@@ -66,15 +74,15 @@ def check_served(role: str, base_url: str, model_id: str) -> list[str]:
 
 
 def check_judge(model: str) -> None:
-    """The judge's key is set and the API answers a one-token request."""
+    """The judge's key is set and OpenRouter answers a short request with that model."""
     if not os.environ.get(JUDGE_KEY_ENV):
         raise PreflightError(f"{JUDGE_KEY_ENV} is not set; pass --env-file with the judge's key")
     try:
-        anthropic.Anthropic(max_retries=2).messages.create(
-            model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}]
+        openrouter_client(max_retries=2).chat.completions.create(
+            model=model, max_tokens=16, messages=[{"role": "user", "content": "ping"}]
         )
-    except anthropic.APIError as e:
-        raise PreflightError(f"the judge model {model} did not answer: {e}") from e
+    except openai.APIError as e:
+        raise PreflightError(f"the judge model {model} did not answer on OpenRouter: {e}") from e
 
 
 @click.command()
@@ -111,7 +119,7 @@ def main(
     if condition not in SUPPORTED_CONDITIONS:
         raise click.UsageError(f"{condition} is not wired in yet; this version runs {', '.join(SUPPORTED_CONDITIONS)}")
     if env_file is not None:
-        load_dotenv(env_file)
+        load_dotenv(env_file, override=True)
     cond = CONDITIONS[condition]
 
     try:
@@ -170,10 +178,12 @@ def main(
         ),
         judge=(
             {
-                "provider": "anthropic",
+                "provider": "openrouter",
+                "base_url": experiment_models.JUDGE_BASE_URL,
                 "model": judge_model,
                 "api_key_env": JUDGE_KEY_ENV,
-                "max_tokens": 4096,
+                "max_tokens": DEFAULT_JUDGE_MAX_TOKENS,
+                "seed": seed,
                 "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPT),
                 "digest_size": digest_size,
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
@@ -194,7 +204,7 @@ def main(
     if cond.evolving_skill:
         evolver = SkillFileEvolver(
             load_skill_file(s0_path),
-            anthropic_judge_fn(judge_model),
+            openrouter_judge_fn(judge_model, seed=seed),
             run_dir / "skill_files",
             vllm_token_counter(checker_base_url, checker_model_id),
             policy=policy,

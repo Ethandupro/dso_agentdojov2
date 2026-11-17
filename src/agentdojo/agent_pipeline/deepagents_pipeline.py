@@ -44,6 +44,7 @@ from pydantic import BaseModel, model_validator
 from agentdojo.agent_pipeline.agent_pipeline import load_system_message
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.tool_execution import tool_result_to_str
+from agentdojo.experiment_models import OPENROUTER_BASE_URL
 from agentdojo.functions_runtime import (
     EmptyEnv,
     Env,
@@ -62,8 +63,6 @@ from agentdojo.types import (
     ChatUserMessage,
     text_content_block_from_string,
 )
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 DEEPAGENTS_BUILTIN_TOOL_NAMES = frozenset(
     {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task"}

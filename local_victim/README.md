@@ -97,7 +97,7 @@ one after another, so a single suite keeps only one request in flight.
 ## The project setup: victim and checker together
 
 The project's models (`src/agentdojo/experiment_models.py`, decided 2026-11-16) are the victim `Qwen/Qwen3.5-27B`
-on GPU 0 (port 8000) and the checker `Qwen/Qwen3.5-9B` on GPU 1 (port 8001, half the GPU, so an attacker model can
+on GPU 0 (port 8000) and the checker `Qwen/Qwen3.5-9B` on GPU 1 (port 8002, since 8001 is taken on the shared VM; half the GPU, so an attacker model can
 use the rest later). Both run without thinking. Start both and wait until they answer:
 
 ```bash
