@@ -16,6 +16,7 @@ pytest.importorskip("deepagents")
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.runner.conditions import CONDITIONS, build_units
 from agentdojo.runner.plugins import FixedSkillFile, StaticAttacker
+from agentdojo.runner.report import write_report
 from agentdojo.runner.run import Runner, run_dir_for
 from tests.test_attacks.test_muzzle import MANIFEST, ScriptedLLM, make_attacker
 from tests.test_checker.test_checker_middleware import reading_checker
@@ -55,6 +56,12 @@ def test_c2_trials_use_muzzle_rewrites_and_feed_back_outcomes(tmp_path: Path):
     state = json.loads((runner.run_dir / "state.json").read_text())
     assert [e["text"] for e in state["attacker"]["archive"]] == texts
     assert len(read_jsonl(runner.run_dir / "trials.jsonl")) == len(runner.units)
+
+    write_report(runner.run_dir)
+    summary = json.loads((runner.run_dir / "summary.json").read_text())
+    assert summary["attacker"]["rewrites"] == 2
+    assert summary["attacker"]["goal_fallbacks"] == sum(e["source"] == "goal_fallback" for e in attacker.archive)
+    assert "<h2>Attacker</h2>" in (runner.run_dir / "report.html").read_text()
 
 
 def test_c4_test_pairs_never_reach_muzzle(tmp_path: Path):
