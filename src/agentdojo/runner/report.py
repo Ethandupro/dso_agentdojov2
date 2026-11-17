@@ -20,6 +20,7 @@ from typing import Any
 
 import click
 
+from agentdojo.runner.cost import COMPONENT_LABELS, COMPONENTS, component_usage, cost_summary
 from agentdojo.runner.stats import (
     CONFIDENCE,
     DEFAULT_BOOTSTRAP_SEED,
@@ -197,7 +198,12 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "per_injection_task": per_injection,
         "checker": checker_metrics(records, lines),
         "skill_file": skill_file_metrics(records),
-        "cost": cost_metrics(records),
+        "cost": {
+            **cost_metrics(records),
+            "by_component": cost_summary(
+                component_usage(config, state, records, lines), sum(r["pair"] is not None for r in records)
+            ),
+        },
         "running_asr": [
             {"unit": r["unit"], "phase": r["phase"], "security": r["security"], "version": r["skill_version"]}
             for r in attacked
@@ -475,6 +481,26 @@ def render_html(summary: dict[str, Any]) -> str:
         out.append(f"<tr><td>Wall time, {_e(PHASE_LABELS.get(phase, phase))}</td><td>{shown}</td></tr>")
     out.append(f"<tr><td>Victim runs ended by an error (scored)</td><td>{cost['victim_errors']}</td></tr>")
     out.append("</tbody></table>")
+    by_component = cost.get("by_component")
+    if by_component:
+        out.append(
+            "<h3>Tokens by component</h3><table><thead><tr><th>Component</th><th>Model</th><th>Calls</th>"
+            "<th>Input tokens</th><th>Output tokens</th><th>Share of tokens</th></tr></thead><tbody>"
+        )
+        for name in COMPONENTS:
+            c = by_component["components"][name]
+            share = "n/a" if c["share_of_tokens"] is None else f"{c['share_of_tokens']:.1%}"
+            out.append(
+                f"<tr><td>{_e(COMPONENT_LABELS[name])}</td><td>{_e(c['model'] or '-')}</td><td>{c['calls']:,}</td>"
+                f"<td>{c['input_tokens']:,}</td><td>{c['output_tokens']:,}</td><td>{share}</td></tr>"
+            )
+        out.append("</tbody></table>")
+        overhead = by_component["defence_overhead"]
+        out.append(
+            "<p class='muted'>Defence overhead (checker + judge tokens as a share of victim tokens): "
+            + ("n/a" if overhead is None else f"{overhead:.1%}")
+            + ". Dollar figures need <code>python -m agentdojo.runner.cost RUN_DIR --prices prices.json</code>.</p>"
+        )
 
     # Per injection task.
     if summary["per_injection_task"]:

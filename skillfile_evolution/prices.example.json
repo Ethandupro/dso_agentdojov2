@@ -1,0 +1,4 @@
+{
+  "_comment": "USD per million tokens, per model id as it appears in config.json. Copy to prices.json and replace the nulls from the provider's pricing page (e.g. openrouter.ai/models). Self-hosted models (vLLM on the VM) have no per-token price; leave them out and read wall time in the report instead.",
+  "deepseek/deepseek-v4.1-flash": {"input": null, "output": null}
+}
