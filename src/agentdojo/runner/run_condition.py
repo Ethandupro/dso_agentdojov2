@@ -7,16 +7,20 @@ Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`):
 port 8001. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
 same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
-This version runs C0 and C1. C2 and C4 need the MUZZLE attacker, C3 and C4 the skill-file judge; they are wired in
-by later PRs.
+This version runs C0, C1 and C3. C3 also needs the judge's API key (`ANTHROPIC_API_KEY`, e.g. from
+`--env-file ~/api.env`); the key is never written to the run directory. C2 and C4 need the MUZZLE attacker and are
+wired in by a later PR.
 """
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 
+import anthropic
 import click
 from dotenv import load_dotenv
 
@@ -25,12 +29,18 @@ from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepA
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
+from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
 from agentdojo.runner.plugins import FixedSkillFile, NoChecker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import write_report
 from agentdojo.runner.run import ConfigMismatchError, Runner, quick_summary, run_dir_for
+from agentdojo.skillfile.checks import EditPolicy
+from agentdojo.skillfile.judge import DEFAULT_JUDGE_MODEL, JUDGE_SYSTEM_PROMPT, SkillFileEvolver, anthropic_judge_fn
+from agentdojo.skillfile.structure import load_skill_file
+from agentdojo.skillfile.tokens import vllm_token_counter
 
-SUPPORTED_CONDITIONS = ("C0", "C1")
+SUPPORTED_CONDITIONS = ("C0", "C1", "C3")
+JUDGE_KEY_ENV = "ANTHROPIC_API_KEY"
 
 
 class PreflightError(Exception):
@@ -55,6 +65,18 @@ def check_served(role: str, base_url: str, model_id: str) -> list[str]:
     return models
 
 
+def check_judge(model: str) -> None:
+    """The judge's key is set and the API answers a one-token request."""
+    if not os.environ.get(JUDGE_KEY_ENV):
+        raise PreflightError(f"{JUDGE_KEY_ENV} is not set; pass --env-file with the judge's key")
+    try:
+        anthropic.Anthropic(max_retries=2).messages.create(
+            model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}]
+        )
+    except anthropic.APIError as e:
+        raise PreflightError(f"the judge model {model} did not answer: {e}") from e
+
+
 @click.command()
 @click.option("--condition", type=click.Choice(sorted(CONDITIONS)), required=True)
 @click.option("--seed", type=int, default=0, show_default=True)
@@ -68,6 +90,8 @@ def check_served(role: str, base_url: str, model_id: str) -> list[str]:
 @click.option("--checker-base-url", default=experiment_models.CHECKER_BASE_URL, show_default=True)
 @click.option("--min-span-chars", type=int, default=0, show_default=True)
 @click.option("--env-file", type=click.Path(path_type=Path), default=None, help="Loads API keys (judge, attacker).")
+@click.option("--judge-model", default=DEFAULT_JUDGE_MODEL, show_default=True, help="C3/C4 only.")
+@click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
 def main(
     condition: str,
     seed: int,
@@ -81,6 +105,8 @@ def main(
     checker_base_url: str,
     min_span_chars: int,
     env_file: Path | None,
+    judge_model: str,
+    digest_size: int,
 ) -> None:
     if condition not in SUPPORTED_CONDITIONS:
         raise click.UsageError(f"{condition} is not wired in yet; this version runs {', '.join(SUPPORTED_CONDITIONS)}")
@@ -107,10 +133,14 @@ def main(
         served = {"victim": check_served("victim", victim_base_url, victim_model_id)}
         if cond.checker:
             served["checker"] = check_served("checker", checker_base_url, checker_model_id)
+        if cond.evolving_skill:
+            check_judge(judge_model)
     except PreflightError as e:
         raise click.ClickException(str(e)) from e
 
     s0_path = Path(manifest_data["s0_path"])
+    policy = EditPolicy()
+    run_dir = run_dir_for(results_root, cond, seed, limit)
     config = RunConfig(
         condition=cond.name,
         run_id=cond.run_id,
@@ -138,13 +168,43 @@ def main(
             if cond.checker
             else None
         ),
+        judge=(
+            {
+                "provider": "anthropic",
+                "model": judge_model,
+                "api_key_env": JUDGE_KEY_ENV,
+                "max_tokens": 4096,
+                "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPT),
+                "digest_size": digest_size,
+                "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
+                "common_words": len(policy.common_words),
+                "token_counter": f"vLLM /tokenize of {checker_model_id}",
+                "on_api_failure": "retry 5 times, then stop the run (resumable)",
+            }
+            if cond.evolving_skill
+            else None
+        ),
         served_models=served,
         code=git_state(),
         versions=package_versions(),
         created_at=now(),
     )
 
-    skill_file: SkillFileSource = FixedSkillFile(s0_path.read_text(encoding="utf-8")) if cond.checker else NoChecker()
+    skill_file: SkillFileSource
+    if cond.evolving_skill:
+        evolver = SkillFileEvolver(
+            load_skill_file(s0_path),
+            anthropic_judge_fn(judge_model),
+            run_dir / "skill_files",
+            vllm_token_counter(checker_base_url, checker_model_id),
+            policy=policy,
+            digest_size=digest_size,
+        )
+        skill_file = EvolvingSkillFile(evolver, manifest_data["benchmark_version"])
+    elif cond.checker:
+        skill_file = FixedSkillFile(s0_path.read_text(encoding="utf-8"))
+    else:
+        skill_file = NoChecker()
     checker_fn = (
         local_checker_fn(checker_model_id, checker_base_url, enable_thinking=experiment_models.CHECKER_ENABLE_THINKING)
         if cond.checker
@@ -158,7 +218,7 @@ def main(
     runner = Runner(
         config=config,
         condition=cond,
-        run_dir=run_dir_for(results_root, cond, seed, limit),
+        run_dir=run_dir,
         units=build_units(cond, manifest_data, trials_per_pair, limit),
         attacker=static,
         static_attacker=static,

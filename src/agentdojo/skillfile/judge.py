@@ -96,8 +96,10 @@ JudgeFn = Callable[[str, str], JudgeCall]
 """(system prompt, user message) -> the judge's reply."""
 
 
-def anthropic_judge_fn(model: str = DEFAULT_JUDGE_MODEL, max_tokens: int = 4096) -> JudgeFn:
-    client = anthropic.Anthropic()
+def anthropic_judge_fn(model: str = DEFAULT_JUDGE_MODEL, max_tokens: int = 4096, max_retries: int = 5) -> JudgeFn:
+    """The judge on the Anthropic API (key from `ANTHROPIC_API_KEY`). The client retries transient errors with
+    backoff; an error that outlasts the retries is raised, and the runner stops with its checkpoint intact."""
+    client = anthropic.Anthropic(max_retries=max_retries)
 
     def call(system: str, user: str) -> JudgeCall:
         response = client.messages.create(
@@ -308,6 +310,32 @@ class SkillFileEvolver:
     def freeze(self) -> None:
         """End of the train phase: the file no longer changes and test trials never reach the judge."""
         self.frozen = True
+
+    def state_dict(self) -> dict[str, Any]:
+        """Everything that changes during a run, for the runner's checkpoint."""
+        return {
+            "current": self.current.to_dict(),
+            "version": self.version,
+            "history": [asdict(r) for r in self.history],
+            "attack_archive": list(self.attack_archive),
+            "changelog": list(self.changelog),
+            "steps": self.steps,
+            "frozen": self.frozen,
+        }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        """Restores a checkpoint written by `state_dict` (resume). The version and step files already on disk are
+        kept; a step of a trial that did not finish is rewritten when that trial runs again."""
+        self.current = SkillFile.from_dict(state["current"])
+        self.version = state["version"]
+        self.history = [
+            TrialRecord(**{**r, "removed_spans": [RemovedSpan(**span) for span in r["removed_spans"]]})
+            for r in state["history"]
+        ]
+        self.attack_archive = list(state["attack_archive"])
+        self.changelog = list(state["changelog"])
+        self.steps = state["steps"]
+        self.frozen = state["frozen"]
 
     def record_trial(self, record: TrialRecord) -> StepResult | None:
         """Call after every trial. Runs an evolution step after a successful train trial (until `freeze`)."""

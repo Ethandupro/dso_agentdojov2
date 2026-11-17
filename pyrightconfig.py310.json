@@ -8,6 +8,7 @@
     "src/agentdojo/runner/run_condition.py",
     "tests/test_runner/test_run.py",
     "tests/test_runner/test_report.py",
+    "tests/test_runner/test_evolving.py",
     "tests/test_checker/test_checker_middleware.py",
     "tests/test_agent_pipeline/test_deepagents_pipeline.py"
   ]

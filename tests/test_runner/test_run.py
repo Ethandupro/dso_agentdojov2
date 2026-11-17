@@ -286,7 +286,7 @@ def test_c4_phases_freeze_and_keep_test_pairs_from_the_attacker(tmp_path: Path):
 
 def test_cli_preflight_and_unsupported_conditions(monkeypatch):
     monkeypatch.chdir(REPO_ROOT)
-    result = CliRunner().invoke(main, ["--condition", "C3"])
+    result = CliRunner().invoke(main, ["--condition", "C2"])
     assert result.exit_code != 0 and "not wired in yet" in result.output
     result = CliRunner().invoke(main, ["--condition", "C1", "--victim-base-url", "http://127.0.0.1:9/v1"])
     assert result.exit_code == 1 and "did not answer" in result.output
