@@ -1,0 +1,81 @@
+{
+  "repository": "https://github.com/RoldSI/superred-modules",
+  "commit": "efc0e53d42f1445e7d4ae73fa365eb3603419883",
+  "muzzle_upstream": "https://github.com/gsiros/muzzle @ ed611c0 (as pinned by the SuperRed port)",
+  "import_substitutions": [
+    [
+      "from superred.core.llm import LLMClient",
+      "from agentdojo.attacks.adaptive.muzzle.llm import LLMClient"
+    ],
+    [
+      "from superred.core.types.llm import BudgetExhaustedError",
+      "from agentdojo.attacks.adaptive.muzzle.llm import BudgetExhaustedError"
+    ],
+    [
+      "muzzle_optimizer.",
+      "agentdojo.attacks.adaptive.muzzle.vendor."
+    ]
+  ],
+  "files": {
+    "vendor/judge.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/judge.py",
+      "upstream_sha256": "4d1bcdb1057f996dff527d43f682efe6f8ca28afd0c3e681b2301fee763f5506"
+    },
+    "vendor/json_utils.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/json_utils.py",
+      "upstream_sha256": "19b2ec02e57ba2ecf997f8b98de78f299c14de62149eb089e27ef37179915fd4"
+    },
+    "vendor/constants.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/constants.py",
+      "upstream_sha256": "334a16a25dfd3c8b90f1a5087d232291057bd6d754875709ad6838e0bec772ff"
+    },
+    "vendor/pair/__init__.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/__init__.py",
+      "upstream_sha256": "4d9756aee520ccdf4dc6bad06c38d18cdf966c677db2c009803cb639f0389c1d"
+    },
+    "vendor/pair/attacker.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/attacker.py",
+      "upstream_sha256": "cb53b702151af6a77ecf6cdd90a514ffbd62935cd52491b9c93d1531d2a579b4"
+    },
+    "vendor/pair/evaluator.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/evaluator.py",
+      "upstream_sha256": "7ae434f6160bbcf9cc259cd6eaadb9959a4f7e77a53a74260adafb29ada0d2a5"
+    },
+    "vendor/pair/json_utils.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/json_utils.py",
+      "upstream_sha256": "39a8c3bca6bce7c1e5428a3456acf3fcc6abae9c86b47ad7981dcaac01e4491d"
+    },
+    "vendor/pair/prompts.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/prompts.py",
+      "upstream_sha256": "50029e53eda3ce7536dfc6e03138949aba2cde7f1363d43f152611774f905a38"
+    },
+    "vendor/pair/bridge.py": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/pair/bridge.py",
+      "upstream_sha256": "1f438868d55041c36deda0209a6c01f852200c7eed9e6e9233a9b34801f1c17d"
+    },
+    "vendor/data/prompts/judge.yaml": {
+      "upstream": "optimizers/muzzle/src/muzzle_optimizer/data/prompts/judge.yaml",
+      "upstream_sha256": "564ec42c846ebd3935b319c39df8ee300539dd1b779cc4f3fb9fae1c66029bff"
+    },
+    "upstream_licenses/LICENSE": {
+      "upstream": "optimizers/muzzle/LICENSE",
+      "upstream_sha256": "a8390f495e7c6c3811e183df5976cd24f55de611b07d4ad0b41c2b0443666698"
+    },
+    "upstream_licenses/NOTICE": {
+      "upstream": "optimizers/muzzle/NOTICE",
+      "upstream_sha256": "a565609b83fcea700f7fb08ecc3fd0567abd3fad10b9edd48c96ab6aed4c8e3c"
+    },
+    "upstream_licenses/LICENSES/muzzle-Apache-2.0.txt": {
+      "upstream": "optimizers/muzzle/LICENSES/muzzle-Apache-2.0.txt",
+      "upstream_sha256": "75efa07c4d2afb14d8226cf00b7763dd2ec1c5585a9dfe919881a3a3fef2ddac"
+    },
+    "upstream_licenses/ASSUMPTIONS.md": {
+      "upstream": "optimizers/muzzle/ASSUMPTIONS.md",
+      "upstream_sha256": "3389793b1efac071b448c3599190e20815e55f84841a8e3580aa2f36ac274b72"
+    },
+    "upstream_licenses/LICENSES/pair-MIT.txt": {
+      "upstream": "optimizers/muzzle/LICENSES/pair-MIT.txt",
+      "upstream_sha256": "b04a921fdd6456dcbad221bb740a432f563d377fcd51368d1181a4b1e02d6a94"
+    }
+  }
+}

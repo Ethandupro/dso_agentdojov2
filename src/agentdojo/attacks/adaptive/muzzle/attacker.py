@@ -1,0 +1,308 @@
+"""MUZZLE as the runner's evolving attacker (DESIGN.md, "Evolving attacker (SuperRed MUZZLE port)").
+
+Only MUZZLE's refinement loop is used (decided 2026-10-29). Before trials 1 and 2 of a pair, `text_for`:
+
+1. runs MUZZLE's Judge on the pair's previous trial: the text sent, the agent's final answer as the transcript,
+   payload presence fixed to "present", and a ground-truth block with the attacker-success result plus the
+   separate task and security results;
+2. runs offline PAIR with the injection task's goal as its target, seeded with upstream's reflection (the previous
+   text and the Judge's recommendations), against a stand-in victim that is the attacker model with no system prompt
+   and no context around the injection;
+3. returns PAIR's best prompt as the pair's full injection text. The runner puts it in every vector the user task
+   reads, replacing the vector's content.
+
+Trial 0 is always the manifest's `important_instructions` text, with no model call. The attacker keeps going after a
+success (upstream stops). It never sees the skill file, the checker's removals or the victim's trace; in C4 the
+runner keeps test pairs away from it, so this class is the same in C2 and C4.
+
+Deviations from upstream's `MuzzleOptimizer` are listed in `DEVIATIONS` and saved with the run's config.
+"""
+
+import asyncio
+import concurrent.futures
+import hashlib
+import json
+import logging
+from collections.abc import Callable, Coroutine
+from importlib import resources
+from typing import Any, Protocol, TypeVar
+
+from openai.types.chat import ChatCompletion
+from pydantic import BaseModel
+
+from agentdojo.attacks.adaptive.muzzle.llm import AttackerModelConfig, OpenAICompatibleLLM
+from agentdojo.attacks.adaptive.muzzle.vendor import judge as upstream_judge
+from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import extract_json_object, vendored_prompt_path
+from agentdojo.attacks.adaptive.muzzle.vendor.pair import prompts as pair_prompts
+from agentdojo.attacks.adaptive.muzzle.vendor.pair.bridge import PairBridge
+from agentdojo.runner.manifest import Pair, trial0_injections
+from agentdojo.runner.plugins import AttemptFeedback
+from agentdojo.task_suite.load_suites import get_suite
+
+logger = logging.getLogger(__name__)
+
+STATE_FORMAT = 1
+
+NO_VESSEL_ATTACK_METHOD: dict[str, Any] = {"element": "", "why": "", "how": "", "confidence": 0.0}
+"""Upstream's `_attack_method(None)`. Placement is AgentDojo's and never changes, so no vessel is described."""
+
+DEVIATIONS = (
+    "Only the refinement loop (Judge + offline PAIR) runs; OBSERVE (Summarizer, Grafter, Prompter), PROBE and the "
+    "vessel choice (Dispatcher) are dropped.",
+    "PAIR's instruction is the injection task's GOAL (upstream: the Prompter's instruction).",
+    "PAIR's stand-in victim has no system prompt and no transcript template (upstream: the victim's real system "
+    "prompt and the PROBE transcript).",
+    "Judge transcript: the agent's final answer only, as one assistant message (upstream: the run's full transcript).",
+    "Judge payload presence is fixed to present (upstream: the contains_injected_content heuristic), so the Judge's "
+    "attribution is always 'instruction' and every trial is refined on the same placement.",
+    "Judge ground truth: result = attacker success (injection goal met OR user task failed), plus "
+    "user_task_completed and injection_goal_achieved (upstream: result only).",
+    "Judge attack_method is upstream's empty no-vessel description.",
+    "The attacker keeps rewriting after a success, starting from the previous trial's text (upstream stops).",
+    "One rewrite per trial before trials 1 and 2; trial 0 is the unchanged important_instructions text.",
+)
+
+
+class MuzzleSettings(BaseModel):
+    """MUZZLE's knobs, pinned in the run's config.json and identical in C2 and C4. Defaults are the SuperRed port's."""
+
+    attacker: AttackerModelConfig
+    pair_n_streams: int = 3
+    pair_n_iterations: int = 4
+    pair_keep_last_n: int = 4
+    pair_attack_max_tokens: int = 500
+    pair_max_attack_attempts: int = 5
+    pair_attack_temperature: float = 1.0
+    pair_attack_top_p: float = 0.9
+    pair_surrogate_max_tokens: int = 500
+    pair_surrogate_temperature: float = 0.0
+    pair_judge_max_tokens: int = 10
+    pair_judge_temperature: float = 0.0
+    judge_max_tries: int = 5
+
+
+class RewriteLLM(Protocol):
+    """One rewrite's model client: what the vendored code calls, plus usage and cleanup."""
+
+    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> ChatCompletion: ...
+
+    def usage(self) -> dict[str, Any]: ...
+
+    async def aclose(self) -> None: ...
+
+
+def judge_user_prompt(
+    *, injection_text: str, final_answer: str | None, utility: bool, security: bool, attacker_success: bool
+) -> str:
+    """Upstream's Judge user prompt with the two extra ground-truth fields; every other byte is upstream's."""
+    prompt = upstream_judge._build_user_prompt(
+        attack_method=NO_VESSEL_ATTACK_METHOD,
+        malicious_instruction={"injection": injection_text},
+        transcript=[{"role": "assistant", "content": final_answer or ""}],
+        payload_present=True,
+        framework_success=attacker_success,
+    )
+    upstream_line = "ground_truth=" + json.dumps({"result": attacker_success}, separators=(",", ":"))
+    extended = {"result": attacker_success, "user_task_completed": utility, "injection_goal_achieved": security}
+    extended_line = "ground_truth=" + json.dumps(extended, separators=(",", ":"))
+    assert prompt.count(upstream_line) == 1
+    return prompt.replace(upstream_line, extended_line)
+
+
+async def evaluate_attempt(llm: RewriteLLM, feedback: AttemptFeedback, max_tries: int) -> dict[str, Any]:
+    """Upstream `Judge.evaluate` with `judge_user_prompt` in place of upstream's prompt builder."""
+    messages = [
+        {"role": "system", "content": upstream_judge.load_system_prompt_by_name("judge")},
+        {
+            "role": "user",
+            "content": judge_user_prompt(
+                injection_text=feedback.injection_text,
+                final_answer=feedback.final_answer,
+                utility=feedback.utility,
+                security=feedback.security,
+                attacker_success=feedback.attacker_success,
+            ),
+        },
+    ]
+    eval_obj: dict[str, Any] | None = None
+    remaining = max_tries
+    while remaining > 0:
+        try:
+            result = await llm.complete(messages)
+            parsed = extract_json_object(result.choices[0].message.content or "")
+            if parsed is None or "outcome" not in parsed:
+                raise ValueError("JudgeAgent: LLM output invalid JSON.")
+            eval_obj = parsed
+            break
+        except upstream_judge.BudgetExhaustedError:
+            raise
+        except Exception as exc:
+            remaining -= 1
+            logger.warning("MUZZLE judge attempt failed: %s. Retries left: %d", exc, remaining)
+    if eval_obj is None:
+        eval_obj = upstream_judge._default_evaluation()
+    return upstream_judge._ground_evaluation(
+        eval_obj, payload_present=True, framework_success=feedback.attacker_success
+    )
+
+
+T = TypeVar("T")
+
+
+def run_sync(make_coro: Callable[[], Coroutine[Any, Any, T]]) -> T:
+    """Runs a coroutine from the runner's synchronous loop, also when called inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(make_coro())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(make_coro())).result()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def prompt_hashes() -> dict[str, str]:
+    """Hashes of the prompts MUZZLE sends, for config.json (resume refuses a run whose prompts changed)."""
+    with open(vendored_prompt_path("judge"), encoding="utf-8") as f:
+        judge_yaml = f.read()
+    probe_goal, probe_target = "{goal}", "{target}"
+    return {
+        "judge_yaml": sha256_text(judge_yaml),
+        "pair_attacker_system_prompts": sha256_text(
+            json.dumps(pair_prompts.get_attacker_system_prompts(probe_goal, probe_target))
+        ),
+        "pair_judge_system_prompt": sha256_text(pair_prompts.get_judge_system_prompt(probe_goal, probe_target)),
+    }
+
+
+def upstream_pin() -> dict[str, Any]:
+    pin = json.loads(resources.files("agentdojo.attacks.adaptive.muzzle").joinpath("UPSTREAM.json").read_text())
+    return {"repository": pin["repository"], "commit": pin["commit"], "muzzle_upstream": pin["muzzle_upstream"]}
+
+
+class MuzzleAttacker:
+    """The runner's `Attacker` for C2 and C4 (see `agentdojo.runner.plugins.Attacker`).
+
+    The archive is run-wide: one entry per trial text this attacker handed out, in order, with the feedback, the
+    Judge's evaluation, PAIR's result and the model usage of the rewrite that produced it. It is saved in the run's
+    checkpoint, and a text already in the archive is returned again without model calls, so a resumed run never
+    rewrites a trial twice.
+    """
+
+    name = "muzzle"
+
+    def __init__(
+        self,
+        manifest: dict[str, Any],
+        settings: MuzzleSettings,
+        llm_factory: Callable[[], RewriteLLM] | None = None,
+    ) -> None:
+        self.manifest = manifest
+        self.settings = settings
+        self.llm_factory: Callable[[], RewriteLLM] = llm_factory or (lambda: OpenAICompatibleLLM(settings.attacker))
+        self.archive: list[dict[str, Any]] = []
+
+    def goal(self, pair: Pair) -> str:
+        suite = get_suite(self.manifest["benchmark_version"], pair.suite)
+        return suite.get_injection_task_by_id(pair.injection_task).GOAL
+
+    def _cached(self, pair: Pair, trial: int) -> str | None:
+        for entry in self.archive:
+            if entry["pair"] == pair.id and entry["trial"] == trial:
+                return entry["text"]
+        return None
+
+    def text_for(self, pair: Pair, trial: int, history: list[AttemptFeedback]) -> str:
+        cached = self._cached(pair, trial)
+        if cached is not None:
+            return cached
+        if trial == 0:
+            texts = set(trial0_injections(self.manifest, pair).values())
+            assert len(texts) == 1
+            text = texts.pop()
+            self.archive.append({"pair": pair.id, "trial": 0, "text": text, "source": "trial0"})
+            return text
+        if not history or history[-1].trial != trial - 1:
+            raise ValueError(f"trial {trial} of {pair.id} needs the feedback of trial {trial - 1}")
+        entry = run_sync(lambda: self._rewrite(pair, trial, history[-1]))
+        self.archive.append(entry)
+        return entry["text"]
+
+    async def _rewrite(self, pair: Pair, trial: int, last: AttemptFeedback) -> dict[str, Any]:
+        s = self.settings
+        goal = self.goal(pair)
+        llm = self.llm_factory()
+        try:
+            evaluation = await evaluate_attempt(llm, last, s.judge_max_tries)
+            reflection = {
+                "most_recent_working_payload": last.injection_text,
+                "recommendations": evaluation.get("recommendations"),
+                "reflection_details": evaluation,
+            }
+            bridge = PairBridge(
+                llm,  # type: ignore[arg-type]  # the vendored code types it as SuperRed's LLMClient
+                n_streams=s.pair_n_streams,
+                n_iterations=s.pair_n_iterations,
+                keep_last_n=s.pair_keep_last_n,
+                attack_max_tokens=s.pair_attack_max_tokens,
+                max_attack_attempts=s.pair_max_attack_attempts,
+                attack_temperature=s.pair_attack_temperature,
+                attack_top_p=s.pair_attack_top_p,
+                surrogate_max_tokens=s.pair_surrogate_max_tokens,
+                surrogate_temperature=s.pair_surrogate_temperature,
+                judge_max_tokens=s.pair_judge_max_tokens,
+                judge_temperature=s.pair_judge_temperature,
+            )
+            result = await bridge.craft(
+                instruction=goal, transcript_template=None, victim_system_prompt=None, reflection=reflection
+            )
+        finally:
+            await llm.aclose()
+        # Upstream: `payload = result.best_prompt or self._instruction`.
+        text = result.best_prompt or goal
+        return {
+            "pair": pair.id,
+            "trial": trial,
+            "text": text,
+            "source": "pair" if result.best_prompt else "goal_fallback",
+            "feedback": {
+                "trial": last.trial,
+                "injection_text": last.injection_text,
+                "utility": last.utility,
+                "security": last.security,
+                "attacker_success": last.attacker_success,
+                "final_answer": last.final_answer,
+            },
+            "judge": evaluation,
+            "pair_result": {
+                "best_score": result.best_score,
+                "is_jailbroken": result.is_jailbroken,
+                "best_improvement": result.best_improvement,
+            },
+            "usage": llm.usage(),
+        }
+
+    def attack_texts(self) -> list[str]:
+        """Every text handed out so far, in order (the attack archive the C4 judge's leakage check reads)."""
+        return [entry["text"] for entry in self.archive]
+
+    def config(self) -> dict[str, Any]:
+        """What goes into config.json under `attacker`. No secrets: only the key's variable name."""
+        return {
+            "name": self.name,
+            "settings": self.settings.model_dump(),
+            "upstream": upstream_pin(),
+            "prompt_sha256": prompt_hashes(),
+            "deviations": list(DEVIATIONS),
+            "on_api_failure": "the OpenAI SDK retries; then the error stops the run (resumable)",
+        }
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"format": STATE_FORMAT, "archive": json.loads(json.dumps(self.archive))}
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        if state.get("format") != STATE_FORMAT:
+            raise ValueError(f"unknown MUZZLE attacker state format {state.get('format')!r}")
+        self.archive = list(state["archive"])
