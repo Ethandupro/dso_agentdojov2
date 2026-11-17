@@ -5,16 +5,19 @@ import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from click.testing import CliRunner
 
 pytest.importorskip("deepagents")
 
+from agentdojo import experiment_models
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsPipeline, ToolMiddlewareFactory
+from agentdojo.attacks.adaptive.muzzle import MuzzleAttacker
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
+from agentdojo.runner import run_condition
 from agentdojo.runner.compare import write_comparison
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.config import RunConfig
@@ -298,12 +301,59 @@ def test_c4_phases_freeze_and_keep_test_pairs_from_the_attacker(tmp_path: Path):
     assert skill_file.seen == [(p, i) for i, p in enumerate(phases)]
 
 
-def test_cli_preflight_and_unsupported_conditions(monkeypatch):
+def test_cli_preflight(monkeypatch):
     monkeypatch.chdir(REPO_ROOT)
-    result = CliRunner().invoke(main, ["--condition", "C2"])
-    assert result.exit_code != 0 and "not wired in yet" in result.output
     result = CliRunner().invoke(main, ["--condition", "C1", "--victim-base-url", "http://127.0.0.1:9/v1"])
     assert result.exit_code == 1 and "did not answer" in result.output
+
+
+class CapturedRunner:
+    """Stands in for `Runner` in the CLI: keeps the wiring, runs nothing."""
+
+    last: ClassVar[dict[str, Any]] = {}
+
+    def __init__(self, **kwargs: Any) -> None:
+        CapturedRunner.last = kwargs
+        self.run_dir = kwargs["run_dir"]
+
+    def run(self) -> list[dict]:
+        return []
+
+
+@pytest.mark.parametrize("condition", ["C2", "C4"])
+def test_cli_wires_local_muzzle_for_c2_and_c4(monkeypatch, tmp_path: Path, condition: str):
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # C4's judge only
+    served: list[tuple[str, str, str]] = []
+    judged: list[str] = []
+
+    def check_served(role: str, url: str, model: str) -> list[str]:
+        served.append((role, url, model))
+        return [model]
+
+    monkeypatch.setattr(run_condition, "check_served", check_served)
+    monkeypatch.setattr(run_condition, "check_judge", judged.append)
+    monkeypatch.setattr(run_condition, "Runner", CapturedRunner)
+    monkeypatch.setattr(run_condition, "write_report", lambda run_dir: run_dir / "report.html")
+    monkeypatch.setattr(run_condition, "vllm_token_counter", lambda url, model: len)
+    args = ["--condition", condition, "--results-root", str(tmp_path), "--limit", "2", "--seed", "4"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+
+    wiring = CapturedRunner.last
+    attacker = wiring["attacker"]
+    assert isinstance(attacker, MuzzleAttacker) and wiring["static_attacker"].name == "static"
+    model = attacker.settings.attacker
+    assert (model.model, model.base_url) == (experiment_models.ATTACKER_MODEL_ID, experiment_models.ATTACKER_BASE_URL)
+    assert model.api_key_env is None and model.seed == 4
+    # Preflight checks the local attacker server like the victim and checker; only C4 pings the judge.
+    assert ("attacker", experiment_models.ATTACKER_BASE_URL, experiment_models.ATTACKER_MODEL_ID) in served
+    assert judged == ([] if condition == "C2" else [experiment_models.JUDGE_MODEL_ID])
+    config = wiring["config"]
+    assert config.attacker["name"] == "muzzle" and config.attacker["settings"]["attacker"]["seed"] == 4
+    assert config.served_models["attacker"] == [experiment_models.ATTACKER_MODEL_ID]
+    assert (config.judge is not None) == (condition == "C4")
+    assert "sk-or-test" not in json.dumps(config.model_dump(), default=str)
 
 
 def test_judge_preflight_and_env_file_override(monkeypatch, tmp_path: Path):
