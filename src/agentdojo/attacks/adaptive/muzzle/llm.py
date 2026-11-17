@@ -41,11 +41,18 @@ class AttackerModelConfig(BaseModel):
     request_timeout: float = 120.0
     max_calls_per_rewrite: int | None = None
     """Raise `BudgetExhaustedError` past this many calls in one rewrite. None: no cap (PAIR's own caps bound it)."""
+    reasoning: dict[str, Any] | None = None
+    """OpenRouter's `reasoning` request field, e.g. `{"enabled": False}`. Set it for a reasoning model: upstream's
+    token caps (PAIR judge 10, attacker and stand-in victim 500) leave no room for reasoning tokens, which OpenRouter
+    counts against `max_tokens`, so the replies come back empty (PAIR then scores every proposal 1)."""
 
     def extra_body(self) -> dict[str, Any] | None:
-        if self.provider_order is None:
-            return None
-        return {"provider": {"order": list(self.provider_order), "allow_fallbacks": self.allow_fallbacks}}
+        body: dict[str, Any] = {}
+        if self.provider_order is not None:
+            body["provider"] = {"order": list(self.provider_order), "allow_fallbacks": self.allow_fallbacks}
+        if self.reasoning is not None:
+            body["reasoning"] = dict(self.reasoning)
+        return body or None
 
 
 class OpenAICompatibleLLM:
@@ -67,6 +74,10 @@ class OpenAICompatibleLLM:
         self.calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.empty_replies = 0
+        """Replies with no text, e.g. a reasoning model that spent `max_tokens` before answering."""
+        self.truncated_replies = 0
+        """Replies cut off by `max_tokens` (finish reason "length")."""
         self.served_models: set[str] = set()
 
     async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> ChatCompletion:
@@ -89,6 +100,12 @@ class OpenAICompatibleLLM:
             self.completion_tokens += result.usage.completion_tokens
         if result.model:
             self.served_models.add(result.model)
+        if result.choices:
+            choice = result.choices[0]
+            if not (choice.message.content or "").strip():
+                self.empty_replies += 1
+            if choice.finish_reason == "length":
+                self.truncated_replies += 1
         return result
 
     def usage(self) -> dict[str, Any]:
@@ -96,6 +113,8 @@ class OpenAICompatibleLLM:
             "calls": self.calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "empty_replies": self.empty_replies,
+            "truncated_replies": self.truncated_replies,
             "served_models": sorted(self.served_models),
         }
 

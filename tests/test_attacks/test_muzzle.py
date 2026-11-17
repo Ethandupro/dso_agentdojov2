@@ -41,10 +41,17 @@ def completion(text: str) -> ChatCompletion:
 class ScriptedLLM:
     """Plays MUZZLE's Judge and PAIR's attacker, stand-in victim and judge, telling them apart by system prompt."""
 
-    def __init__(self, log: list[dict[str, Any]], pair_score: int = 10, judge_reply: str | None = None) -> None:
+    def __init__(
+        self,
+        log: list[dict[str, Any]],
+        pair_score: int = 10,
+        judge_reply: str | None = None,
+        attacker_reply: str | None = None,
+    ) -> None:
         self.log = log
         self.pair_score = pair_score
         self.judge_reply = judge_reply
+        self.attacker_reply = attacker_reply
         self.calls = 0
         self.closed = False
 
@@ -68,6 +75,8 @@ class ScriptedLLM:
             )
             return completion(reply)
         if role == "pair_attacker":
+            if self.attacker_reply is not None:
+                return completion(self.attacker_reply)
             # PAIR stops generation at "}"; the vendored attacker puts the brace back.
             return completion(f'{{"improvement": "be subtle", "prompt": "REWRITE {len(self.log)}"')
         if role == "pair_judge":
@@ -202,6 +211,21 @@ def test_pair_runs_all_iterations_when_never_jailbroken_and_keeps_the_best():
         "is_jailbroken": False,
         "best_improvement": "be subtle",
     }
+
+
+def test_refusing_pair_attacker_falls_back_to_the_goal_like_upstream():
+    log: list[dict[str, Any]] = []
+    attacker, _ = make_attacker(log, attacker_reply="I can't help with that.")
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    t1 = attacker.text_for(pair, 1, [feedback(0, t0)])
+    s = attacker.settings
+    # Each stream retries its parse `pair_max_attack_attempts` times per iteration, then is skipped.
+    assert [c["role"] for c in log] == ["judge"] + ["pair_attacker"] * (
+        s.pair_n_streams * s.pair_n_iterations * s.pair_max_attack_attempts
+    )
+    goal = get_suite("v1.2.2", pair.suite).get_injection_task_by_id(pair.injection_task).GOAL
+    assert t1 == goal and attacker.archive[-1]["source"] == "goal_fallback"
 
 
 def test_unparseable_judge_falls_back_like_upstream():
