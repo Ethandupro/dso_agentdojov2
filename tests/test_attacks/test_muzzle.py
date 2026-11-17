@@ -12,9 +12,10 @@ import pytest
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 
+from agentdojo import experiment_models
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, BudgetExhaustedError, MuzzleAttacker, MuzzleSettings
 from agentdojo.attacks.adaptive.muzzle.attacker import judge_user_prompt
-from agentdojo.attacks.adaptive.muzzle.llm import OpenAICompatibleLLM
+from agentdojo.attacks.adaptive.muzzle.llm import OPENROUTER_BASE_URL, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import load_system_prompt_by_name
 from agentdojo.attacks.adaptive.muzzle.vendor.pair.prompts import get_attacker_system_prompts, get_judge_system_prompt
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, load_pairs, trial0_injections
@@ -266,7 +267,8 @@ def test_missing_feedback_is_an_error():
 
 def test_config_has_no_secret_and_pins_upstream(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret")
-    attacker, _ = make_attacker([])
+    model = AttackerModelConfig(base_url=OPENROUTER_BASE_URL, api_key_env="OPENROUTER_API_KEY")
+    attacker = MuzzleAttacker(MANIFEST, MuzzleSettings(attacker=model))
     config = attacker.config()
     assert "sk-secret" not in json.dumps(config)
     assert config["upstream"]["commit"] == UPSTREAM["commit"]
@@ -289,7 +291,12 @@ def test_openai_client_sends_seed_provider_and_respects_the_call_budget():
             pass
 
     config = AttackerModelConfig(
-        model="m", provider_order=["p"], allow_fallbacks=False, seed=7, max_calls_per_rewrite=1
+        model="m",
+        base_url=OPENROUTER_BASE_URL,
+        provider_order=["p"],
+        allow_fallbacks=False,
+        seed=7,
+        max_calls_per_rewrite=1,
     )
     llm = OpenAICompatibleLLM(config, client=Client())  # type: ignore[arg-type]
 
@@ -314,4 +321,18 @@ def test_openai_client_sends_seed_provider_and_respects_the_call_budget():
 def test_missing_api_key_is_reported(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
-        OpenAICompatibleLLM(AttackerModelConfig(model="m"))
+        OpenAICompatibleLLM(AttackerModelConfig(model="m", api_key_env="OPENROUTER_API_KEY"))
+
+
+def test_defaults_are_the_local_attacker_without_a_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = AttackerModelConfig()
+    assert (config.model, config.base_url) == (
+        experiment_models.ATTACKER_MODEL_ID,
+        experiment_models.ATTACKER_BASE_URL,
+    )
+    assert config.api_key_env is None and config.extra_body() is None
+    llm = OpenAICompatibleLLM(config)  # no key needed
+    asyncio.run(llm.aclose())
+    with pytest.raises(ValueError, match="provider_order"):
+        AttackerModelConfig(provider_order=["p"])

@@ -122,28 +122,21 @@ def stand_in(monkeypatch) -> Iterator[StandInServer]:
     server.httpd.shutdown()
 
 
-def http_attacker(server: StandInServer) -> MuzzleAttacker:
+def http_attacker(server: StandInServer, **overrides: Any) -> MuzzleAttacker:
     config = AttackerModelConfig(
-        model="vendor/attacker",
-        base_url=server.base_url,
-        provider_order=["p"],
-        allow_fallbacks=False,
-        seed=0,
-        reasoning={"enabled": False},
-        max_retries=1,
-        request_timeout=5,
+        model="vendor/attacker", base_url=server.base_url, seed=0, max_retries=1, request_timeout=5, **overrides
     )
     return MuzzleAttacker(MANIFEST, MuzzleSettings(attacker=config))
 
 
 def test_c2_over_http_sends_upstreams_arguments(tmp_path: Path, stand_in: StandInServer):
+    # As against the local vLLM attacker: no API key.
     attacker = http_attacker(stand_in)
     make_runner(tmp_path, "C2", attacker).run()
     bodies = [r["body"] for r in stand_in.requests]
-    assert {r["auth"] for r in stand_in.requests} == {"Bearer sk-test"}
+    assert {r["auth"] for r in stand_in.requests} == {"Bearer EMPTY"}
     assert all(b["model"] == "vendor/attacker" and b["seed"] == 0 for b in bodies)
-    assert all(b["provider"] == {"order": ["p"], "allow_fallbacks": False} for b in bodies)
-    assert all(b["reasoning"] == {"enabled": False} for b in bodies)
+    assert not any("provider" in b or "reasoning" in b for b in bodies)
     # Two rewrites, each: Judge + 3 streams x 4 iterations x (attacker, stand-in victim, PAIR judge).
     s = attacker.settings
     per_rewrite = 1 + 3 * s.pair_n_streams * s.pair_n_iterations
@@ -159,14 +152,16 @@ def test_c2_over_http_sends_upstreams_arguments(tmp_path: Path, stand_in: StandI
 
 def test_api_failure_stops_the_run_and_resume_continues(tmp_path: Path, stand_in: StandInServer):
     stand_in.fail_with = 500
-    runner = make_runner(tmp_path, "C2", http_attacker(stand_in))
+    runner = make_runner(tmp_path, "C2", http_attacker(stand_in, api_key_env="OPENROUTER_API_KEY"))
     with pytest.raises(openai.InternalServerError):
         runner.run()
     done = [json.loads(line) for line in (runner.run_dir / "trials.jsonl").read_text().splitlines()]
     assert [r["trial"] for r in done if r["pair"]] == [0]  # stopped before trial 1, nothing half-written
 
+    assert {r["auth"] for r in stand_in.requests} == {"Bearer sk-test"}
     stand_in.fail_with = None
-    attacker = http_attacker(stand_in)
+    attacker = http_attacker(stand_in, reasoning={"enabled": False})
     records = make_runner(tmp_path, "C2", attacker).run()
     assert [r["trial"] for r in records if r["pair"]] == [0, 1, 2]
     assert [e["trial"] for e in attacker.archive] == [0, 1, 2]
+    assert stand_in.requests[-1]["body"]["reasoning"] == {"enabled": False}
