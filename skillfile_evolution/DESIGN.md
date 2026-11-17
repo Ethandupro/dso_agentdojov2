@@ -268,7 +268,7 @@ Segmentation rules:
 - **H2:** ASR curve slope over rounds, C2 vs C4.
   - Compared on train-injection pairs only (2026-11-11): C4's attacker can't rewrite test pairs, while C2 (no split) rewrites every pair.
   - **Open (2026-11-11):** rounds are no longer run-wide steps, and in C4 the file changes across pairs as well as across a pair's trials. The x-axis of this curve needs a new definition.
-    - *Proposed 2026-11-17:* two views, on train-injection pairs. Main: **position in the run** (the train pairs in run order, cut into 10 equal bins; C2 and C4 use the same order, so a bin holds the same pairs in both), which shows the C4 file learning over the run while C2's file stays fixed. Second: **trial index** 0/1/2, which shows the attacker refining one pair. The compare command reports both until the user decides.
+    - *Decided 2026-11-17 by user:* two views, on train-injection pairs. Main: **position in the run** (the train pairs in run order, cut into 10 equal bins; C2 and C4 use the same order, so a bin holds the same pairs in both), which shows the C4 file learning over the run while C2's file stays fixed. Second: **trial index** 0/1/2, which shows the attacker refining one pair. `python -m agentdojo.runner.compare` reports both.
 - **H3:** held-out-style ASR on test injections, and C5 (the final C4 file frozen) against a fresh evolving attacker.
 
 ## Seeds and statistics
