@@ -8,7 +8,15 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from agentdojo.runner.compare import RunMismatchError, compare, find_runs, main, position_bins, render_html, write_comparison
+from agentdojo.runner.compare import (
+    RunMismatchError,
+    compare,
+    find_runs,
+    main,
+    position_bins,
+    render_html,
+    write_comparison,
+)
 from agentdojo.runner.conditions import CONDITIONS
 
 TRAIN_INJ = ["injection_task_1", "injection_task_2", "injection_task_3"]
