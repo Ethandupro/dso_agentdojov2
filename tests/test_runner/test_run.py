@@ -2,6 +2,7 @@
 phase hooks, checkpoint and resume, and config checks."""
 
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from agentdojo.runner.config import RunConfig
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, Pair
 from agentdojo.runner.plugins import AttemptFeedback, FixedSkillFile, NoChecker, StaticAttacker
 from agentdojo.runner.run import ConfigMismatchError, Runner, VictimFactory, run_dir_for
-from agentdojo.runner.run_condition import main
+from agentdojo.runner.run_condition import PreflightError, check_judge, main
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import ChatMessage
 from tests.test_checker.test_checker_middleware import INJECTION_START, GullibleModel, _call, reading_checker
@@ -303,3 +304,18 @@ def test_cli_preflight_and_unsupported_conditions(monkeypatch):
     assert result.exit_code != 0 and "not wired in yet" in result.output
     result = CliRunner().invoke(main, ["--condition", "C1", "--victim-base-url", "http://127.0.0.1:9/v1"])
     assert result.exit_code == 1 and "did not answer" in result.output
+
+
+def test_judge_preflight_and_env_file_override(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(PreflightError, match="OPENROUTER_API_KEY is not set"):
+        check_judge("deepseek/deepseek-v4.1-flash")
+
+    # The env file wins over a key already exported in the shell.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "old")
+    env_file = tmp_path / "api.env"
+    env_file.write_text("OPENROUTER_API_KEY=sk-or-new\n")
+    monkeypatch.chdir(REPO_ROOT)
+    args = ["--condition", "C3", "--env-file", str(env_file), "--victim-base-url", "http://127.0.0.1:9/v1"]
+    CliRunner().invoke(main, args)
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-or-new"

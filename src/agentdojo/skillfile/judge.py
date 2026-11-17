@@ -12,17 +12,19 @@ carries over. A passing file is adopted blind for the next trial. Zero edits is 
 
 `SkillFileEvolver` keeps the run's state and writes every step to disk. A runner calls `record_trial` after each
 trial and gives the checker `evolver.current_markdown` for the next one. The judge model is a plain function
-(`JudgeFn`) so tests can script it; `anthropic_judge_fn` builds the real one.
+(`JudgeFn`) so tests can script it; `openrouter_judge_fn` builds the real one.
 """
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import anthropic
+import openai
 
+from agentdojo import experiment_models
 from agentdojo.skillfile.checks import (
     CheckFailure,
     EditContext,
@@ -42,8 +44,10 @@ from agentdojo.skillfile.edits import (
 )
 from agentdojo.skillfile.structure import PRINCIPLES_SECTION, SkillFile
 
-DEFAULT_JUDGE_MODEL = "claude-opus-5-5"
-"""DESIGN.md default ("strongest model available"); not yet confirmed by the user."""
+DEFAULT_JUDGE_MODEL = experiment_models.JUDGE_MODEL_ID
+"""DeepSeek V4.1 Flash on OpenRouter (decided 2026-11-17 by the user)."""
+DEFAULT_JUDGE_MAX_TOKENS = 8192
+"""Room for reasoning tokens, which OpenRouter counts against `max_tokens`; the JSON reply itself is short."""
 
 Outcome = Literal["injection_succeeded", "user_task_failed", "blocked"]
 
@@ -96,21 +100,40 @@ JudgeFn = Callable[[str, str], JudgeCall]
 """(system prompt, user message) -> the judge's reply."""
 
 
-def anthropic_judge_fn(model: str = DEFAULT_JUDGE_MODEL, max_tokens: int = 4096, max_retries: int = 5) -> JudgeFn:
-    """The judge on the Anthropic API (key from `ANTHROPIC_API_KEY`). The client retries transient errors with
-    backoff; an error that outlasts the retries is raised, and the runner stops with its checkpoint intact."""
-    client = anthropic.Anthropic(max_retries=max_retries)
+def openrouter_client(max_retries: int = 5) -> openai.OpenAI:
+    """OpenAI-compatible client for OpenRouter, key from `OPENROUTER_API_KEY`."""
+    api_key = os.environ.get(experiment_models.JUDGE_API_KEY_ENV)
+    if not api_key:
+        raise ValueError(f"{experiment_models.JUDGE_API_KEY_ENV} is not set")
+    return openai.OpenAI(base_url=experiment_models.JUDGE_BASE_URL, api_key=api_key, max_retries=max_retries)
+
+
+def openrouter_judge_fn(
+    model: str = DEFAULT_JUDGE_MODEL,
+    max_tokens: int = DEFAULT_JUDGE_MAX_TOKENS,
+    max_retries: int = 5,
+    seed: int | None = None,
+    client: openai.OpenAI | None = None,
+) -> JudgeFn:
+    """The judge on OpenRouter. The client retries transient errors with backoff; an error that outlasts the retries
+    is raised, and the runner stops with its checkpoint intact. An empty reply (for example, all tokens spent on
+    reasoning) is returned as empty text, which the evolver treats as an invalid reply and retries once."""
+    client = client or openrouter_client(max_retries)
 
     def call(system: str, user: str) -> JudgeCall:
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            seed=seed,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text")
+        if not response.choices:
+            raise RuntimeError(f"the judge {model} returned no choices")
+        usage = response.usage
         return JudgeCall(
-            text=text, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens
+            text=response.choices[0].message.content or "",
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
         )
 
     return call

@@ -17,7 +17,7 @@ from agentdojo.skillfile.judge import (
     RemovedSpan,
     SkillFileEvolver,
     TrialRecord,
-    anthropic_judge_fn,
+    openrouter_judge_fn,
     select_digest,
 )
 from agentdojo.skillfile.structure import Rule, Section, SkillFile, load_skill_file, parse_markdown
@@ -38,11 +38,11 @@ __all__ = [
     "SkillFile",
     "SkillFileEvolver",
     "TrialRecord",
-    "anthropic_judge_fn",
     "apply_edits",
     "approx_token_count",
     "load_skill_file",
     "load_word_list",
+    "openrouter_judge_fn",
     "parse_judge_reply",
     "parse_markdown",
     "select_digest",
