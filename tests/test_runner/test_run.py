@@ -124,6 +124,20 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+def test_suites_filter_keeps_only_those_suites_and_names_the_dir(tmp_path: Path):
+    c2 = build_units(CONDITIONS["C2"], MANIFEST, suites=("banking", "travel"))
+    suites = {u.suite for u in c2}
+    assert suites == {"banking", "travel"}  # workspace and slack dropped
+    attacked = [u for u in c2 if u.pair is not None]
+    assert attacked and all(u.pair.suite in ("banking", "travel") for u in attacked if u.pair)
+    assert [u.index for u in c2] == list(range(len(c2)))  # indices stay contiguous after filtering
+    # The filter combines with --limit and gets its own results directory.
+    limited = build_units(CONDITIONS["C2"], MANIFEST, limit=5, suites=("banking",))
+    assert len({u.pair.id for u in limited if u.pair}) == 5
+    rd = run_dir_for(tmp_path, CONDITIONS["C2"], 0, 5, ("travel", "banking"))
+    assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-banking+travel-limit5"
+
+
 def test_unit_lists():
     c1 = build_units(CONDITIONS["C1"], MANIFEST)
     assert len(c1) == 97 + 949 * 3

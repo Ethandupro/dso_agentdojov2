@@ -63,21 +63,33 @@ class Unit:
         return None if self.pair is None else self.pair.split
 
 
-def benign_tasks(manifest: dict[str, Any], limit: int | None = None) -> list[tuple[str, str]]:
-    """Every user task (suite, id), in suite then task order. With `limit`, the user tasks of the first `limit`
-    pairs of the run order instead, so a smoke run stays small."""
+def benign_tasks(
+    manifest: dict[str, Any], limit: int | None = None, suites: tuple[str, ...] | None = None
+) -> list[tuple[str, str]]:
+    """Every user task (suite, id), in suite then task order. With `suites`, only those suites. With `limit`, the
+    user tasks of the first `limit` pairs of the (suite-filtered) run order instead, so a smoke run stays small."""
     if limit is not None:
         seen: list[tuple[str, str]] = []
-        for pair in load_pairs(manifest)[:limit]:
+        for pair in _select_pairs(manifest, limit, suites):
             if (pair.suite, pair.user_task) not in seen:
                 seen.append((pair.suite, pair.user_task))
         return seen
-    tasks = {(p["suite"], p["user_task"]) for p in manifest["pairs"]}
+    tasks = {(p["suite"], p["user_task"]) for p in manifest["pairs"] if suites is None or p["suite"] in suites}
     return sorted(tasks, key=lambda t: (t[0], task_sort_key(t[1])))
 
 
+def _select_pairs(manifest: dict[str, Any], limit: int | None, suites: tuple[str, ...] | None) -> list[Pair]:
+    """Run-order pairs, kept to `suites` if given, then cut to the first `limit`."""
+    pairs = [p for p in load_pairs(manifest) if suites is None or p.suite in suites]
+    return pairs if limit is None else pairs[:limit]
+
+
 def build_units(
-    condition: Condition, manifest: dict[str, Any], trials_per_pair: int = 3, limit: int | None = None
+    condition: Condition,
+    manifest: dict[str, Any],
+    trials_per_pair: int = 3,
+    limit: int | None = None,
+    suites: tuple[str, ...] | None = None,
 ) -> list[Unit]:
     """The run's units in order.
 
@@ -85,14 +97,15 @@ def build_units(
       order, each pair keeping its train/test label.
     - C3/C4: benign before, train pairs x trials, (freeze), test pairs x trials, benign after.
 
-    `limit` keeps only the first `limit` pairs of the run order (smoke runs); in C3/C4 that means the first `limit`
-    train pairs and the first `limit` test pairs.
+    `suites` keeps only pairs in those suites (a pilot cut, e.g. the C0-vulnerable banking/travel pairs). `limit`
+    keeps only the first `limit` pairs of the (suite-filtered) run order (smoke runs); in C3/C4 that means the first
+    `limit` train pairs and the first `limit` test pairs.
     """
-    pairs = load_pairs(manifest)
+    pairs = _select_pairs(manifest, None, suites)
     units: list[Unit] = []
 
     def add_benign(phase: Phase) -> None:
-        for suite, user_task in benign_tasks(manifest, limit):
+        for suite, user_task in benign_tasks(manifest, limit, suites):
             units.append(Unit(len(units), phase, suite, user_task))
 
     def add_pairs(phase: Phase, selected: list[Pair]) -> None:

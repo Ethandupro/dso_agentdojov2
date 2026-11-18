@@ -95,6 +95,11 @@ def attacker_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings
 @click.option("--seed", type=int, default=0, show_default=True)
 @click.option("--results-root", type=click.Path(path_type=Path), default=Path("results"), show_default=True)
 @click.option("--limit", type=int, default=None, help="Smoke run: only the first N pairs of the run order.")
+@click.option(
+    "--suites",
+    default=None,
+    help="Pilot cut: comma-separated suites to keep (e.g. banking,travel). Gets its own results directory.",
+)
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
 @click.option("--victim-model-id", default=experiment_models.VICTIM_MODEL_ID, show_default=True)
@@ -112,6 +117,7 @@ def main(
     seed: int,
     results_root: Path,
     limit: int | None,
+    suites: str | None,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -139,6 +145,15 @@ def main(
             "rebuild it with `python -m agentdojo.runner.build_manifest`"
         )
 
+    suites_tuple: tuple[str, ...] | None = None
+    if suites is not None:
+        requested = tuple(s.strip() for s in suites.split(",") if s.strip())
+        known = {p["suite"] for p in manifest_data["pairs"]}
+        unknown = [s for s in requested if s not in known]
+        if unknown:
+            raise click.ClickException(f"unknown suite(s) {unknown}; the manifest has {sorted(known)}")
+        suites_tuple = requested or None
+
     victim_config = DeepAgentsConfig(
         model_id=victim_model_id,
         base_url=victim_base_url,
@@ -161,7 +176,7 @@ def main(
     policy = EditPolicy()
     static = StaticAttacker(manifest_data)
     attacker: Attacker = static if muzzle_settings is None else MuzzleAttacker(manifest_data, muzzle_settings)
-    run_dir = run_dir_for(results_root, cond, seed, limit)
+    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple)
     config = RunConfig(
         condition=cond.name,
         run_id=cond.run_id,
@@ -171,6 +186,7 @@ def main(
         attack_mode=cond.attack_mode,
         trials_per_pair=trials_per_pair,
         limit=limit,
+        suites=list(suites_tuple) if suites_tuple else None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -242,7 +258,7 @@ def main(
         config=config,
         condition=cond,
         run_dir=run_dir,
-        units=build_units(cond, manifest_data, trials_per_pair, limit),
+        units=build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple),
         attacker=attacker,
         static_attacker=static,
         skill_file=skill_file,
