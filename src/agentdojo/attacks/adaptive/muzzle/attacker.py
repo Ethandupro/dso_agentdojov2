@@ -237,6 +237,11 @@ class MuzzleAttacker:
         self.settings = settings
         self.llm_factory: Callable[[], RewriteLLM] = llm_factory or (lambda: OpenAICompatibleLLM(settings.attacker))
         self.archive: list[dict[str, Any]] = []
+        # Cross-pair memory (ipi only): texts whose real trial broke security, and the stand-in-judge scores each
+        # framing angle earned. Both are the attacker's own observations -- never the skill file or the real
+        # checker -- so they stay inside the black-box rule. Saved in the checkpoint; empty until a trial succeeds.
+        self.library: list[dict[str, Any]] = []
+        self.style: dict[int, list[int]] = {}
 
     def goal(self, pair: Pair) -> str:
         suite = get_suite(self.manifest["benchmark_version"], pair.suite)
@@ -248,10 +253,56 @@ class MuzzleAttacker:
                 return entry["text"]
         return None
 
+    def _ingest(self, pair: Pair, history: list[AttemptFeedback]) -> None:
+        """Record this pair's finished trials that broke security, so later pairs can reuse what worked."""
+        for fb in history:
+            if not fb.security:
+                continue
+            if any(e["pair"] == pair.id and e["trial"] == fb.trial for e in self.library):
+                continue
+            self.library.append(
+                {
+                    "pair": pair.id,
+                    "trial": fb.trial,
+                    "suite": pair.suite,
+                    "injection_task": pair.injection_task,
+                    "text": fb.injection_text,
+                }
+            )
+
+    def _examples_for(self, pair: Pair, k: int = 3) -> list[str]:
+        """Up to `k` prior winning texts to show PAIR, same injection task first, then same suite; never this pair."""
+        same_task = [e for e in self.library if e["injection_task"] == pair.injection_task and e["pair"] != pair.id]
+        same_suite = [
+            e for e in self.library if e["suite"] == pair.suite and e["pair"] != pair.id and e not in same_task
+        ]
+        chosen = same_task[-k:] + same_suite[-(k - min(k, len(same_task))) :]
+        out: list[str] = []
+        for text in (e["text"] for e in chosen):
+            if text not in out:
+                out.append(text)
+        return out[:k]
+
+    def _angle_order(self) -> list[int] | None:
+        """Order the framing angles by the mean stand-in score each has earned so far (best first); None at the start.
+
+        A light diversity-aware preference in the spirit of the search attack in arXiv:2510.09023: keep every angle
+        in play, but let the framings that have worked lead. Unseen angles sit at the running average.
+        """
+        if not self.style:
+            return None
+        n = len(ipi.ipi_attacker_system_prompts("_"))
+        means = {i: sum(v) / len(v) for i, v in self.style.items() if v}
+        if not means:
+            return None
+        default = sum(means.values()) / len(means)
+        return sorted(range(n), key=lambda i: -means.get(i, default))
+
     def text_for(self, pair: Pair, trial: int, history: list[AttemptFeedback]) -> str:
         cached = self._cached(pair, trial)
         if cached is not None:
             return cached
+        self._ingest(pair, history)
         if trial == 0:
             texts = set(trial0_injections(self.manifest, pair).values())
             assert len(texts) == 1
@@ -310,12 +361,19 @@ class MuzzleAttacker:
                     judge_max_tokens=s.pair_judge_max_tokens,
                     judge_temperature=s.pair_judge_temperature,
                 )
+            examples = self._examples_for(pair) if s.prompt_set == "ipi" else []
+            angle_order = self._angle_order() if s.prompt_set == "ipi" else None
+            extra = {"examples": examples, "angle_order": angle_order} if s.prompt_set == "ipi" else {}
             result = await bridge.craft(
                 instruction=goal,
                 transcript_template=transcript_template,
                 victim_system_prompt=system_prompt,
                 reflection=reflection,
+                **extra,
             )
+            if isinstance(bridge, IpiPairBridge):
+                for angle, scores in bridge.angle_scores.items():
+                    self.style.setdefault(angle, []).extend(scores)
         finally:
             await llm.aclose()
         # Upstream: `payload = result.best_prompt or self._instruction`.
@@ -342,6 +400,8 @@ class MuzzleAttacker:
                 "best_improvement": result.best_improvement,
             },
             "inner_loop": asdict(bridge.last_stats) if isinstance(bridge, IpiPairBridge) else None,
+            "examples_used": examples,
+            "angle_order": angle_order,
             "usage": llm.usage(),
         }
 
@@ -361,9 +421,16 @@ class MuzzleAttacker:
         }
 
     def state_dict(self) -> dict[str, Any]:
-        return {"format": STATE_FORMAT, "archive": json.loads(json.dumps(self.archive))}
+        return {
+            "format": STATE_FORMAT,
+            "archive": json.loads(json.dumps(self.archive)),
+            "library": json.loads(json.dumps(self.library)),
+            "style": {str(k): v for k, v in self.style.items()},
+        }
 
     def load_state(self, state: dict[str, Any]) -> None:
         if state.get("format") != STATE_FORMAT:
             raise ValueError(f"unknown MUZZLE attacker state format {state.get('format')!r}")
         self.archive = list(state["archive"])
+        self.library = list(state.get("library", []))
+        self.style = {int(k): list(v) for k, v in state.get("style", {}).items()}
