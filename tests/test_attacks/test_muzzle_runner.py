@@ -144,13 +144,17 @@ def test_c2_over_http_sends_upstreams_arguments(tmp_path: Path, stand_in: StandI
     assert {r["auth"] for r in stand_in.requests} == {"Bearer EMPTY"}
     assert all(b["model"] == "vendor/attacker" and b["seed"] == 0 for b in bodies)
     assert not any("provider" in b or "reasoning" in b for b in bodies)
-    # Two rewrites, each: Judge + 3 streams x 4 iterations x (attacker, stand-in victim, PAIR judge).
+    # Two rewrites, each: MUZZLE Judge + n_streams x n_iterations x (IPI attacker, stand-in checker, stand-in
+    # victim, delivery judge). The stand-in checker allows every candidate here, so none is short-circuited.
     s = attacker.settings
-    per_rewrite = 1 + 3 * s.pair_n_streams * s.pair_n_iterations
+    per_rewrite = 1 + 4 * s.pair_n_streams * s.pair_n_iterations
     assert len(bodies) == 2 * per_rewrite
-    pair_attacker = [b for b in bodies if b.get("stop") == ["}"]]
+    # The IPI attacker drops upstream's stop=["}"]; identify it by its sampling params instead.
+    assert not any("stop" in b for b in bodies)
+    pair_attacker = [
+        b for b in bodies if (b.get("max_tokens"), b.get("temperature"), b.get("top_p")) == (500, 1.0, 0.9)
+    ]
     assert len(pair_attacker) == 2 * s.pair_n_streams * s.pair_n_iterations
-    assert {(b["max_tokens"], b["temperature"], b["top_p"]) for b in pair_attacker} == {(500, 1.0, 0.9)}
     assert {(b["max_tokens"], b["temperature"]) for b in bodies if b.get("max_tokens") == 10} == {(10, 0.0)}
     usage = attacker.archive[-1]["usage"]
     assert usage["calls"] == per_rewrite and usage["prompt_tokens"] == 10 * per_rewrite
