@@ -30,6 +30,8 @@ from typing import Any, Protocol, TypeVar
 from openai.types.chat import ChatCompletion
 from pydantic import BaseModel
 
+from agentdojo.attacks.adaptive.muzzle import ipi
+from agentdojo.attacks.adaptive.muzzle.ipi import IpiPairBridge, PromptSet, build_stand_in_context
 from agentdojo.attacks.adaptive.muzzle.llm import AttackerModelConfig, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor import judge as upstream_judge
 from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import extract_json_object, vendored_prompt_path
@@ -60,6 +62,10 @@ DEVIATIONS = (
     "Judge attack_method is upstream's empty no-vessel description.",
     "The attacker keeps rewriting after a success, starting from the previous trial's text (upstream stops).",
     "One rewrite per trial before trials 1 and 2; trial 0 is the unchanged important_instructions text.",
+    "prompt_set='ipi' (default, 2026-11-18): PAIR's attacker prompts, judge and stand-in victim are replaced (ipi.py) "
+    "so the loop optimises a realistic indirect injection -- text placed in tool-result data, scored on whether a "
+    "stand-in agent (given the task's tools and transcript with the candidate spliced into the injection slot) carries "
+    "out the goal. The faithful chat-jailbreak PAIR, with a context-free stand-in, stays as prompt_set='upstream'.",
 )
 
 
@@ -79,6 +85,10 @@ class MuzzleSettings(BaseModel):
     pair_judge_max_tokens: int = 10
     pair_judge_temperature: float = 0.0
     judge_max_tries: int = 5
+    prompt_set: PromptSet = "ipi"
+    """`"ipi"` (default, decided 2026-11-18): PAIR optimises a realistic indirect injection against a stand-in agent
+    given the task's context (`ipi.py`). `"upstream"`: the faithful chat-jailbreak PAIR with a context-free stand-in
+    (`vendor/pair/`), kept for ablation."""
 
 
 class RewriteLLM(Protocol):
@@ -174,6 +184,9 @@ def prompt_hashes() -> dict[str, str]:
             json.dumps(pair_prompts.get_attacker_system_prompts(probe_goal, probe_target))
         ),
         "pair_judge_system_prompt": sha256_text(pair_prompts.get_judge_system_prompt(probe_goal, probe_target)),
+        "ipi_attacker_system_prompts": sha256_text(json.dumps(ipi.ipi_attacker_system_prompts(probe_goal))),
+        "ipi_judge_system": sha256_text(ipi.ipi_judge_system(probe_goal)),
+        "ipi_stand_in_system_prompt": sha256_text(ipi.STAND_IN_SYSTEM_PROMPT),
     }
 
 
@@ -241,22 +254,43 @@ class MuzzleAttacker:
                 "recommendations": evaluation.get("recommendations"),
                 "reflection_details": evaluation,
             }
-            bridge = PairBridge(
-                llm,  # type: ignore[arg-type]  # the vendored code types it as SuperRed's LLMClient
-                n_streams=s.pair_n_streams,
-                n_iterations=s.pair_n_iterations,
-                keep_last_n=s.pair_keep_last_n,
-                attack_max_tokens=s.pair_attack_max_tokens,
-                max_attack_attempts=s.pair_max_attack_attempts,
-                attack_temperature=s.pair_attack_temperature,
-                attack_top_p=s.pair_attack_top_p,
-                surrogate_max_tokens=s.pair_surrogate_max_tokens,
-                surrogate_temperature=s.pair_surrogate_temperature,
-                judge_max_tokens=s.pair_judge_max_tokens,
-                judge_temperature=s.pair_judge_temperature,
-            )
+            if s.prompt_set == "ipi":
+                system_prompt, transcript_template = build_stand_in_context(pair, self.manifest["benchmark_version"])
+                bridge: PairBridge | IpiPairBridge = IpiPairBridge(
+                    llm,
+                    n_streams=s.pair_n_streams,
+                    n_iterations=s.pair_n_iterations,
+                    keep_last_n=s.pair_keep_last_n,
+                    attack_max_tokens=s.pair_attack_max_tokens,
+                    max_attack_attempts=s.pair_max_attack_attempts,
+                    attack_temperature=s.pair_attack_temperature,
+                    attack_top_p=s.pair_attack_top_p,
+                    surrogate_max_tokens=s.pair_surrogate_max_tokens,
+                    surrogate_temperature=s.pair_surrogate_temperature,
+                    judge_max_tokens=s.pair_judge_max_tokens,
+                    judge_temperature=s.pair_judge_temperature,
+                )
+            else:
+                system_prompt, transcript_template = None, None
+                bridge = PairBridge(
+                    llm,  # type: ignore[arg-type]  # the vendored code types it as SuperRed's LLMClient
+                    n_streams=s.pair_n_streams,
+                    n_iterations=s.pair_n_iterations,
+                    keep_last_n=s.pair_keep_last_n,
+                    attack_max_tokens=s.pair_attack_max_tokens,
+                    max_attack_attempts=s.pair_max_attack_attempts,
+                    attack_temperature=s.pair_attack_temperature,
+                    attack_top_p=s.pair_attack_top_p,
+                    surrogate_max_tokens=s.pair_surrogate_max_tokens,
+                    surrogate_temperature=s.pair_surrogate_temperature,
+                    judge_max_tokens=s.pair_judge_max_tokens,
+                    judge_temperature=s.pair_judge_temperature,
+                )
             result = await bridge.craft(
-                instruction=goal, transcript_template=None, victim_system_prompt=None, reflection=reflection
+                instruction=goal,
+                transcript_template=transcript_template,
+                victim_system_prompt=system_prompt,
+                reflection=reflection,
             )
         finally:
             await llm.aclose()
@@ -267,6 +301,8 @@ class MuzzleAttacker:
             "trial": trial,
             "text": text,
             "source": "pair" if result.best_prompt else "goal_fallback",
+            "prompt_set": s.prompt_set,
+            "stand_in_context": s.prompt_set == "ipi" and transcript_template is not None,
             "feedback": {
                 "trial": last.trial,
                 "injection_text": last.injection_text,

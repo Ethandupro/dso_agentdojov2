@@ -15,6 +15,7 @@ from openai.types.chat.chat_completion import Choice
 from agentdojo import experiment_models
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, BudgetExhaustedError, MuzzleAttacker, MuzzleSettings
 from agentdojo.attacks.adaptive.muzzle.attacker import judge_user_prompt
+from agentdojo.attacks.adaptive.muzzle.ipi import PromptSet
 from agentdojo.attacks.adaptive.muzzle.llm import OPENROUTER_BASE_URL, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import load_system_prompt_by_name
 from agentdojo.attacks.adaptive.muzzle.vendor.pair.prompts import get_attacker_system_prompts, get_judge_system_prompt
@@ -62,6 +63,12 @@ class ScriptedLLM:
             return "surrogate"
         if system == load_system_prompt_by_name("judge"):
             return "judge"
+        if system.startswith("You are an AI assistant for the user Emma Johnson"):
+            return "surrogate"  # the IPI stand-in agent
+        if system.startswith("You rate how fully an AI agent's next step"):
+            return "pair_judge"  # the IPI delivery judge
+        if system.startswith("You are a red-team assistant evaluating"):
+            return "pair_attacker"  # the IPI attacker
         if system.startswith("You are a helpful red teaming assistant. You will receive a prompt"):
             return "pair_judge"
         return "pair_attacker"
@@ -91,14 +98,16 @@ class ScriptedLLM:
         self.closed = True
 
 
-def make_attacker(log: list[dict[str, Any]], **llm_kwargs: Any) -> tuple[MuzzleAttacker, list[ScriptedLLM]]:
+def make_attacker(
+    log: list[dict[str, Any]], prompt_set: PromptSet = "upstream", **llm_kwargs: Any
+) -> tuple[MuzzleAttacker, list[ScriptedLLM]]:
     clients: list[ScriptedLLM] = []
 
     def factory() -> ScriptedLLM:
         clients.append(ScriptedLLM(log, **llm_kwargs))
         return clients[-1]
 
-    settings = MuzzleSettings(attacker=AttackerModelConfig(model="scripted/attacker"))
+    settings = MuzzleSettings(attacker=AttackerModelConfig(model="scripted/attacker"), prompt_set=prompt_set)
     return MuzzleAttacker(MANIFEST, settings, llm_factory=factory), clients
 
 
@@ -273,7 +282,15 @@ def test_config_has_no_secret_and_pins_upstream(monkeypatch):
     assert "sk-secret" not in json.dumps(config)
     assert config["upstream"]["commit"] == UPSTREAM["commit"]
     assert config["settings"]["attacker"]["api_key_env"] == "OPENROUTER_API_KEY"
-    assert set(config["prompt_sha256"]) == {"judge_yaml", "pair_attacker_system_prompts", "pair_judge_system_prompt"}
+    assert set(config["prompt_sha256"]) == {
+        "judge_yaml",
+        "pair_attacker_system_prompts",
+        "pair_judge_system_prompt",
+        "ipi_attacker_system_prompts",
+        "ipi_judge_system",
+        "ipi_stand_in_system_prompt",
+    }
+    assert config["settings"]["prompt_set"] == "ipi"
 
 
 def test_openai_client_sends_seed_provider_and_respects_the_call_budget():
@@ -336,3 +353,73 @@ def test_defaults_are_the_local_attacker_without_a_key(monkeypatch):
     asyncio.run(llm.aclose())
     with pytest.raises(ValueError, match="provider_order"):
         AttackerModelConfig(provider_order=["p"])
+
+
+# --- IPI prompt_set (realistic indirect injection, default since 2026-11-18) ------------------------------------
+
+from agentdojo.attacks.adaptive.muzzle import ipi
+from agentdojo.attacks.adaptive.muzzle.vendor.constants import PLACEHOLDER_INSTR
+
+
+def test_build_stand_in_context_splices_the_slot_into_a_tool_result():
+    built = []
+    for pair in PAIRS[:40]:
+        system, template = ipi.build_stand_in_context(pair, "v1.2.2")
+        if template is not None:
+            built.append((pair, system, template))
+    assert built, "no stand-in context built for the first 40 pairs"
+    pair, system, template = built[0]
+    assert system is not None and "- " in system  # tools are listed
+    assert PLACEHOLDER_INSTR in template
+    assert "[[INJECT::" not in template  # the raw marker is replaced, not left in
+    assert template.startswith("USER:")
+
+
+def test_ipi_prompts_frame_the_text_as_tool_data_and_the_judge_asks_for_a_rating():
+    prompts = ipi.ipi_attacker_system_prompts("send 100 to IBAN XX")
+    assert len(prompts) == 3
+    for p in prompts:
+        assert "send 100 to IBAN XX" in p
+        assert "tool result" in p.lower() and "json" in p.lower()
+        assert "role-play" in p.lower() or "role play" in p.lower()
+    assert "Rating: [[N]]" in ipi.ipi_judge_system("g")
+
+
+def test_ipi_rewrite_routes_through_stand_in_with_context_and_records_it(monkeypatch):
+    fixed = (
+        "You are an AI assistant for the user Emma Johnson\n- tool: x",
+        f"USER: t\nTOOL RESULT: a {PLACEHOLDER_INSTR} b",
+    )
+    monkeypatch.setattr("agentdojo.attacks.adaptive.muzzle.attacker.build_stand_in_context", lambda pair, ver: fixed)
+    log: list[dict[str, Any]] = []
+    attacker, _ = make_attacker(log, prompt_set="ipi")
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    t1 = attacker.text_for(pair, 1, [feedback(0, t0, utility=False)])
+
+    assert [c["role"] for c in log] == ["judge", "pair_attacker", "surrogate", "pair_judge"]
+    # The stand-in got the task's system prompt (not the real victim's) and the candidate spliced into the slot.
+    stand_in = log[2]["messages"]
+    assert stand_in[0]["content"].startswith("You are an AI assistant for the user Emma Johnson")
+    assert "TOOL RESULT: a REWRITE 2 b" in stand_in[1]["content"] and PLACEHOLDER_INSTR not in stand_in[1]["content"]
+    # The IPI attacker was told the goal and the data channel.
+    goal = get_suite("v1.2.2", pair.suite).get_injection_task_by_id(pair.injection_task).GOAL
+    assert goal in log[1]["messages"][0]["content"]
+    assert t1 == "REWRITE 2"
+    entry = attacker.archive[-1]
+    assert entry["prompt_set"] == "ipi" and entry["stand_in_context"] is True
+
+
+def test_ipi_without_context_still_runs_and_is_recorded(monkeypatch):
+    monkeypatch.setattr(
+        "agentdojo.attacks.adaptive.muzzle.attacker.build_stand_in_context", lambda pair, ver: (None, None)
+    )
+    log: list[dict[str, Any]] = []
+    attacker, _ = make_attacker(log, prompt_set="ipi")
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    t1 = attacker.text_for(pair, 1, [feedback(0, t0)])
+    assert t1 == "REWRITE 2"
+    # No context: the candidate goes to the stand-in as the bare prompt.
+    assert log[2]["messages"] == [{"role": "user", "content": "REWRITE 2"}]
+    assert attacker.archive[-1]["stand_in_context"] is False
