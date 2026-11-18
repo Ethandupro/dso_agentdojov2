@@ -38,6 +38,7 @@ import ast
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Literal
 
 from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
@@ -428,6 +429,23 @@ class IpiAttacker:
 # --- The IPI PAIR loop: PAIR's structure, the prompts, checker and judge above ----------------------------------
 
 
+@dataclass
+class InnerLoopStats:
+    """Per-trial counts of what happened to PAIR's candidates, so a flat best score of 1 can be told apart.
+
+    `candidates` parsed proposals; `no_json` attacker turns that never parsed; `checker_blocked` candidates the
+    stand-in checker blocked or emptied (scored 1 without reaching the agent); `checker_trimmed` candidates it let
+    through with some text removed; `agent_scores` the judge's 1-10 score for every candidate the stand-in agent saw
+    (a 1 there means the agent ignored it).
+    """
+
+    candidates: int = 0
+    no_json: int = 0
+    checker_blocked: int = 0
+    checker_trimmed: int = 0
+    agent_scores: list[int] = field(default_factory=list)
+
+
 class IpiPairBridge:
     """PAIR's offline loop with the indirect-injection prompts, stand-in context, stand-in checker and delivery judge.
 
@@ -468,6 +486,7 @@ class IpiPairBridge:
             top_p=attack_top_p,
             keep_last_n=keep_last_n,
         )
+        self.last_stats = InnerLoopStats()
         self._evaluator = IpiEvaluator(llm, max_tokens=judge_max_tokens, temperature=judge_temperature)
         self._checker = (
             IpiChecker(llm, max_tokens=checker_max_tokens, temperature=checker_temperature) if use_checker else None
@@ -497,21 +516,27 @@ class IpiPairBridge:
         best_prompt: str | None = None
         best_score = 0.0
         best_improvement: str | None = None
+        stats = self.last_stats = InnerLoopStats()
 
         for _ in range(self._n_iterations):
             for stream in streams:
                 try:
                     proposal = await self._attacker.generate(stream)
                 except JsonExtractionError:
+                    stats.no_json += 1
                     logger.warning(
                         "MUZZLE IPI: stream %d produced no valid JSON; skipping", stream.index, exc_info=True
                     )
                     continue
 
+                stats.candidates += 1
                 surviving = proposal.prompt
                 if self._checker is not None:
                     surviving = await self._checker.screen(proposal.prompt)
+                    if surviving is not None and surviving.strip() != proposal.prompt.strip():
+                        stats.checker_trimmed += 1
                     if surviving is None:
+                        stats.checker_blocked += 1
                         stream.processed_response = ipi_blocked_message(goal)
                         if float(BLOCKED_SCORE) > best_score:
                             best_score = float(BLOCKED_SCORE)
@@ -522,6 +547,7 @@ class IpiPairBridge:
                 candidate = _splice(transcript_template, surviving)
                 response = await self._stand_in_step(victim_system_prompt, candidate)
                 score = await self._evaluator.score_response(goal=goal, prompt=surviving, response=response)
+                stats.agent_scores.append(int(score.score))
                 stream.processed_response = ipi_feedback_message(response, int(score.score), goal)
 
                 if float(score.score) > best_score:
