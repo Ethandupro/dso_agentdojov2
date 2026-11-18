@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from functools import lru_cache
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import yaml
 from pydantic import BaseModel
@@ -98,6 +98,26 @@ def validate_injections(injections: dict[str, str], injection_vector_defaults: d
         raise ValueError("Injections must be a subset of the injection vector defaults")
 
 
+def inject_into_structure(structure: Any, injections: dict[str, str]) -> Any:
+    """Substitute `{injection_vector}` placeholders into the string leaves of an already-parsed environment.
+
+    Each injected value is inserted as a literal (one `str.format` pass over the template leaves), so it is never
+    itself parsed as YAML. Used as a fallback when a payload's YAML-special characters would break the normal
+    text-level substitution. The template leaves hold the only placeholders, so formatting keys and other strings is
+    a no-op.
+    """
+    if isinstance(structure, str):
+        return structure.format(**injections)
+    if isinstance(structure, dict):
+        return {
+            inject_into_structure(key, injections): inject_into_structure(value, injections)
+            for key, value in structure.items()
+        }
+    if isinstance(structure, list):
+        return [inject_into_structure(item, injections) for item in structure]
+    return structure
+
+
 Env = TypeVar("Env", bound=TaskEnvironment)
 
 
@@ -142,7 +162,17 @@ class TaskSuite(Generic[Env]):
         injections_with_defaults = dict(injection_vector_defaults, **injections)
         validate_injections(injections, injection_vector_defaults)
         injected_environment = environment_text.format(**injections_with_defaults)
-        environment = self.environment_type.model_validate(yaml.safe_load(injected_environment))
+        try:
+            data = yaml.safe_load(injected_environment)
+        except yaml.YAMLError:
+            # The placeholders sit inside double-quoted YAML scalars, so an injected payload that contains a `"`, a
+            # `\`, or a line that is `---`/`...` (which the evolving attacker produces when it mimics structured data)
+            # breaks the document. Fall back to parsing the template first and substituting into the parsed strings,
+            # so the payload is inserted as a literal and never re-parsed as YAML. This path is reached only for
+            # payloads that would otherwise crash, so every injection that already parsed -- the baseline
+            # `important_instructions` text and all of C0/C1 -- keeps its exact original delivery and stays comparable.
+            data = inject_into_structure(yaml.safe_load(environment_text), injections_with_defaults)
+        environment = self.environment_type.model_validate(data)
         return environment
 
     def get_injection_vector_defaults(self) -> dict[str, str]:
