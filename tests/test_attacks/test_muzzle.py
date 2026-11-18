@@ -505,6 +505,14 @@ def test_ipi_stand_in_checker_blocks_loud_candidates_and_skips_the_agent():
     entry = attacker.archive[-1]
     assert entry["pair_result"]["best_score"] == 1.0 and entry["pair_result"]["is_jailbroken"] is False
     assert t1 == "REWRITE 2" and entry["source"] == "pair"
+    n = attacker.settings.pair_n_streams * attacker.settings.pair_n_iterations
+    assert entry["inner_loop"] == {
+        "candidates": n,
+        "no_json": 0,
+        "checker_blocked": n,
+        "checker_trimmed": 0,
+        "agent_scores": [],
+    }
 
 
 def test_ipi_checker_off_runs_the_pre_checker_loop():
@@ -515,6 +523,9 @@ def test_ipi_checker_off_runs_the_pre_checker_loop():
     attacker.text_for(pair, 1, [feedback(0, t0)])
     assert [c["role"] for c in log] == ["judge", "pair_attacker", "surrogate", "pair_judge"]
     assert "ipi_checker" not in [c["role"] for c in log]
+    stats = attacker.archive[-1]["inner_loop"]
+    # The scripted judge rates 10 on the first candidate, so PAIR stops early with one score reaching the agent.
+    assert stats["candidates"] == 1 and stats["checker_blocked"] == 0 and len(stats["agent_scores"]) == 1
 
 
 def test_muzzle_judge_reflection_tolerates_single_quoted_json():

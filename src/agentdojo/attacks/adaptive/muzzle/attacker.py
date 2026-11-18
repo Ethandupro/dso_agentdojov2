@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
+from dataclasses import asdict
 from importlib import resources
 from typing import Any, Protocol, TypeVar
 
@@ -340,6 +341,7 @@ class MuzzleAttacker:
                 "is_jailbroken": result.is_jailbroken,
                 "best_improvement": result.best_improvement,
             },
+            "inner_loop": asdict(bridge.last_stats) if isinstance(bridge, IpiPairBridge) else None,
             "usage": llm.usage(),
         }
 
