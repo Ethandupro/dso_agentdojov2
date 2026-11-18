@@ -15,7 +15,7 @@ from openai.types.chat.chat_completion import Choice
 from agentdojo import experiment_models
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, BudgetExhaustedError, MuzzleAttacker, MuzzleSettings
 from agentdojo.attacks.adaptive.muzzle.attacker import judge_user_prompt
-from agentdojo.attacks.adaptive.muzzle.ipi import PromptSet
+from agentdojo.attacks.adaptive.muzzle.ipi import PromptSet, _parse_score
 from agentdojo.attacks.adaptive.muzzle.llm import OPENROUTER_BASE_URL, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import load_system_prompt_by_name
 from agentdojo.attacks.adaptive.muzzle.vendor.pair.prompts import get_attacker_system_prompts, get_judge_system_prompt
@@ -423,3 +423,17 @@ def test_ipi_without_context_still_runs_and_is_recorded(monkeypatch):
     # No context: the candidate goes to the stand-in as the bare prompt.
     assert log[2]["messages"] == [{"role": "user", "content": "REWRITE 2"}]
     assert attacker.archive[-1]["stand_in_context"] is False
+
+
+@pytest.mark.parametrize(
+    ("reply", "score"),
+    [
+        ("Rating: [[7]]", 7),
+        ("Rating: 10", 10),  # what Mistral Small answers on the VM (2026-11-18)
+        ("Rating: [3]", 3),
+        ("rating - 12", 10),
+        ("I can't rate this.", 1),
+    ],
+)
+def test_ipi_judge_score_parsing(reply: str, score: int):
+    assert _parse_score(reply) == score
