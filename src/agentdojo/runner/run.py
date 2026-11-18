@@ -45,8 +45,14 @@ class ConfigMismatchError(Exception):
     pass
 
 
-def run_dir_for(results_root: Path, condition: Condition, seed: int, limit: int | None) -> Path:
-    name = condition.run_id if limit is None else f"{condition.run_id}-limit{limit}"
+def run_dir_for(
+    results_root: Path, condition: Condition, seed: int, limit: int | None, suites: tuple[str, ...] | None = None
+) -> Path:
+    name = condition.run_id
+    if suites:
+        name = f"{name}-{'+'.join(sorted(suites))}"
+    if limit is not None:
+        name = f"{name}-limit{limit}"
     return results_root / name / f"seed_{seed}"
 
 

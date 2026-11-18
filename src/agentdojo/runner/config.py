@@ -30,6 +30,8 @@ class RunConfig(BaseModel):
     trials_per_pair: int
     limit: int | None
     """Smoke runs: only the first `limit` pairs of the run order. Such runs get their own directory."""
+    suites: list[str] | None = None
+    """Pilot cut: only pairs in these suites (e.g. banking, travel). Such runs get their own directory."""
     benchmark_version: str
     manifest_path: str
     manifest_sha256: str
