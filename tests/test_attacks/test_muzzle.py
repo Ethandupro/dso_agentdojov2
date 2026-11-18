@@ -554,7 +554,9 @@ def _two_pairs_sharing_an_injection_task() -> tuple[Any, Any]:
 
 def test_split_injected_tool_result_screens_the_slot_in_its_surrounding_data():
     template = f"USER: t\nASSISTANT calls read()\nTOOL RESULT: subject: hi\nbody: {PLACEHOLDER_INSTR}\nsent: ok"
-    prefix, body = ipi._split_injected_tool_result(template)
+    split = ipi._split_injected_tool_result(template)
+    assert split is not None
+    prefix, body = split
     assert prefix == "USER: t\nASSISTANT calls read()\n"
     assert body == f"subject: hi\nbody: {PLACEHOLDER_INSTR}\nsent: ok"
     # The reconstructed agent view keeps the surrounding data and the TOOL RESULT label.
