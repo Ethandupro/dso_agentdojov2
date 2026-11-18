@@ -540,3 +540,87 @@ def test_muzzle_judge_reflection_tolerates_single_quoted_json():
     assert attacker.archive[-1]["judge"]["recommendations"] == ["keep it quieter"]
     seed = log[1]["messages"][-1]["content"]
     assert "Recommendations: keep it quieter" in seed
+
+
+def _two_pairs_sharing_an_injection_task() -> tuple[Any, Any]:
+    by_task: dict[str, list[Any]] = {}
+    for p in PAIRS:
+        by_task.setdefault(p.injection_task, []).append(p)
+    for pairs in by_task.values():
+        if len({p.id for p in pairs}) >= 2:
+            return pairs[0], pairs[1]
+    raise AssertionError("no two pairs share an injection task")
+
+
+def test_split_injected_tool_result_screens_the_slot_in_its_surrounding_data():
+    template = f"USER: t\nASSISTANT calls read()\nTOOL RESULT: subject: hi\nbody: {PLACEHOLDER_INSTR}\nsent: ok"
+    split = ipi._split_injected_tool_result(template)
+    assert split is not None
+    prefix, body = split
+    assert prefix == "USER: t\nASSISTANT calls read()\n"
+    assert body == f"subject: hi\nbody: {PLACEHOLDER_INSTR}\nsent: ok"
+    # The reconstructed agent view keeps the surrounding data and the TOOL RESULT label.
+    assert prefix + "TOOL RESULT: " + body.replace(PLACEHOLDER_INSTR, "X") == template.replace(PLACEHOLDER_INSTR, "X")
+    assert ipi._split_injected_tool_result("USER: t\nTOOL RESULT: no slot here") is None
+
+
+def test_checker_screens_the_candidate_inside_the_tool_result(monkeypatch):
+    # The checker (scripted: echoes back the tool data) must see the surrounding data, not the bare candidate.
+    fixed = (
+        "You are an AI assistant for the user Emma Johnson\n- tool: x",
+        f"USER: t\nTOOL RESULT: amount 5 {PLACEHOLDER_INSTR} ref 9",
+    )
+    monkeypatch.setattr("agentdojo.attacks.adaptive.muzzle.attacker.build_stand_in_context", lambda pair, ver: fixed)
+    log: list[dict[str, Any]] = []
+    attacker, _ = make_attacker(log, prompt_set="ipi")
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    attacker.text_for(pair, 1, [feedback(0, t0)])
+    checker_call = next(c for c in log if c["role"] == "ipi_checker")
+    assert "amount 5 REWRITE 2 ref 9" in checker_call["messages"][-1]["content"]
+    assert PLACEHOLDER_INSTR not in checker_call["messages"][-1]["content"]
+
+
+def test_cross_pair_library_feeds_prior_wins_into_the_seed(monkeypatch):
+    monkeypatch.setattr(
+        "agentdojo.attacks.adaptive.muzzle.attacker.build_stand_in_context", lambda pair, ver: (None, None)
+    )
+    a, b = _two_pairs_sharing_an_injection_task()
+    log: list[dict[str, Any]] = []
+    attacker, _ = make_attacker(log, prompt_set="ipi")
+    t0a = attacker.text_for(a, 0, [])
+    attacker.text_for(a, 1, [feedback(0, t0a, security=True)])  # A's trial-0 broke security -> enters the library
+    assert any(e["text"] == t0a and e["pair"] == a.id for e in attacker.library)
+
+    log.clear()
+    t0b = attacker.text_for(b, 0, [])
+    attacker.text_for(b, 1, [feedback(0, t0b)])
+    entry = attacker.archive[-1]
+    assert t0a in entry["examples_used"]
+    seed = next(c for c in log if c["role"] == "pair_attacker")["messages"][-1]["content"]
+    assert "EXAMPLES that already worked" in seed and t0a in seed
+
+
+def test_library_excludes_the_current_pair_and_survives_a_state_round_trip(monkeypatch):
+    monkeypatch.setattr(
+        "agentdojo.attacks.adaptive.muzzle.attacker.build_stand_in_context", lambda pair, ver: (None, None)
+    )
+    pair = PAIRS[0]
+    attacker, _ = make_attacker([], prompt_set="ipi")
+    t0 = attacker.text_for(pair, 0, [])
+    attacker.text_for(pair, 1, [feedback(0, t0, security=True)])
+    # A win on this very pair is remembered but never offered back to the same pair as an example.
+    assert attacker.library and attacker._examples_for(pair) == []
+
+    state = json.loads(json.dumps(attacker.state_dict()))
+    fresh, _ = make_attacker([], prompt_set="ipi")
+    fresh.load_state(state)
+    assert fresh.library == attacker.library and fresh.style == attacker.style
+
+
+def test_angle_order_prefers_framings_that_scored_well():
+    attacker, _ = make_attacker([], prompt_set="ipi")
+    assert attacker._angle_order() is None  # nothing learned yet
+    attacker.style = {0: [2, 3], 2: [9, 10]}
+    order = attacker._angle_order()
+    assert order is not None and order[0] == 2 and set(order) == {0, 1, 2}
