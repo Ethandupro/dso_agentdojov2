@@ -44,7 +44,12 @@ class ScriptedOptimizer:
         self.log.append({"messages": messages, "kwargs": kwargs})
         if self.reply is not None:
             return completion(self.reply)
-        return completion(json.dumps({"diagnosis": "be quieter", "prompt": f"REWRITE {self.calls} {len(self.log)}"}))
+        # Carries the target's literal values, as a real rewrite must (see `goal_literals`).
+        target = messages[1]["content"].split("\n\n")[0]
+        values = " ".join(goal_literals(target))
+        return completion(
+            json.dumps({"diagnosis": "be quieter", "prompt": f"REWRITE {self.calls} {len(self.log)} {values}".strip()})
+        )
 
     def usage(self) -> dict[str, Any]:
         return {"calls": self.calls, "empty_replies": 0, "truncated_replies": 0}
