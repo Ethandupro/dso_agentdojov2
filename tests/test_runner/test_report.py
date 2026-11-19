@@ -9,8 +9,22 @@ from agentdojo.runner.report import summarize_run, write_report
 from tests.test_runner.test_run import make_runner
 
 
-def test_report_from_a_c1_run(tmp_path: Path):
-    runner = make_runner(tmp_path, "C1", limit=4)
+def test_report_shows_victim_skills(tmp_path: Path):
+    runner = make_runner(tmp_path, "C1", limit=2)
+    runner.run()
+    path = write_report(runner.run_dir)
+    skills = json.loads((runner.run_dir / "summary.json").read_text())["skills"]
+    assert skills["security_skill"] == "tool-output-safety"
+    assert skills["s0_load_rate_attacked"] == 1.0 and skills["s0_load_rate_benign"] == 1.0
+    assert skills["asr_when_s0_loaded"] == 0.0 and skills["asr_when_s0_not_loaded"] is None
+    assert skills["units_loading_each_skill"] == {"tool-output-safety": skills["units"]}
+    page = path.read_text()
+    assert "Victim skills" in page and "S0 load rate, attacked trials" in page
+    assert "&quot;run_id&quot;: &quot;c1_static-s0_static-attack&quot;" in page  # full config shown
+
+
+def test_report_from_an_external_checker_c1_run(tmp_path: Path):
+    runner = make_runner(tmp_path, "C1", limit=4, defense="checker")
     records = runner.run()
     path = write_report(runner.run_dir)
     summary = json.loads((runner.run_dir / "summary.json").read_text())
@@ -32,7 +46,7 @@ def test_report_from_a_c1_run(tmp_path: Path):
     page = path.read_text()
     assert page.startswith("<!DOCTYPE html>")
     assert "<script src" not in page and "<link" not in page  # self-contained
-    assert "&quot;run_id&quot;: &quot;c1_static-skill_static-attack&quot;" in page  # full config shown
+    assert summary["skills"] is None
     assert "<svg" in page and "Per injection task" in page
     assert "Tokens by component" in page
     by_component = summary["cost"]["by_component"]

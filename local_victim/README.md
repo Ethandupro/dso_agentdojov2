@@ -94,25 +94,36 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
-## The project setup: victim, checker and attacker together
+## The project setup: victim (with DFlash) and attacker
 
-The project's models (`src/agentdojo/experiment_models.py`) are the victim `Qwen/Qwen3.5-27B` on GPU 0 (port 8000),
-the checker `Qwen/Qwen3.5-9B` on GPU 1 (port 8002, since 8001 is taken on the shared VM; half the GPU) and, for C2
-and C4, the MUZZLE attacker `mistralai/Mistral-Small-3.2-24B-Instruct-2506` on the other half of GPU 1 (port 8003).
-None of them thinks. The attacker's BF16 weights (~48 GB) don't fit next to the checker, so `serve_all.sh` loads it
-with vLLM's FP8 quantization (`--quantization fp8`, ~24 GB of weights, 0.42 of the GPU) and starts it only after the
-checker is up. Start all three and wait until they answer:
+Since the victim redesign of 2026-11-19 there is no external checker: the security skill S0 is one of the victim's
+skills (`skillfile_evolution/DESIGN.md`, "Victim skills"). The project's models (`src/agentdojo/experiment_models.py`)
+are the victim `Qwen/Qwen3.5-27B` on GPU 0 (port 8000) and, for C2 and C4, the attacker
+`mistralai/Mistral-Small-3.2-24B-Instruct-2506` on GPU 1 (port 8003, BF16, the GPU to itself). None of them thinks.
+
+The victim is served with the speculative-decoding draft model `z-lab/Qwen3.5-27B-DFlash` (~2B). The draft guesses
+several tokens ahead and the 27B model checks them in one pass, so the answers are the same as plain 27B and only the
+speed changes. The runner still talks to `Qwen/Qwen3.5-27B`; the draft is a server setting
+(`--speculative-config '{"method": "dflash", "model": "z-lab/Qwen3.5-27B-DFlash", "num_speculative_tokens": 7}'`).
+If your vLLM build does not know the `dflash` method, start without it (`VICTIM_DRAFT=none`) or upgrade vLLM.
 
 ```bash
 cd ~/dso_agentdojov2
-bash local_victim/serve_all.sh          # logs in ~/vllm_logs; `bash local_victim/serve_all.sh stop` stops them
-ATTACKER=0 bash local_victim/serve_all.sh   # victim and checker only (C0, C1, C3)
+bash local_victim/serve_all.sh               # victim + attacker; logs in ~/vllm_logs
+ATTACKER=0 bash local_victim/serve_all.sh    # victim only (C0, C1, C3)
+VICTIM_DRAFT=none bash local_victim/serve_all.sh   # plain 27B, no DFlash
+CHECKER=1 bash local_victim/serve_all.sh     # also the old checker (port 8002), for --external-checker runs
+bash local_victim/serve_all.sh stop          # stop all
 # the no-nvcc workaround, if the servers fail at "Engine core initialization":
 VLLM_ATTENTION_BACKEND=FLASH_ATTN EXTRA_ARGS=--enforce-eager bash local_victim/serve_all.sh
 ```
 
-Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.42), `ATTACKER_QUANT` (`fp8`; set it empty
-for BF16, which needs the checker's share lowered first). The attacker needs no API key.
+Victim options: `VICTIM_DRAFT` (`z-lab/Qwen3.5-27B-DFlash`; `none` turns it off), `SPEC_TOKENS` (7: tokens drafted per
+step). Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90, or 0.42 with `CHECKER=1`),
+`ATTACKER_QUANT` (empty = BF16; `fp8` with `CHECKER=1`). The attacker needs no API key.
+
+Experiment runs use `python -m agentdojo.runner.run_condition` (see `src/agentdojo/runner/run_condition.py`). The
+benchmark CLI below still has the old checker flags, for quick single-task checks.
 
 With `--harness deepagents` and no `--model-id`, the benchmark uses that victim; `--checker` adds that checker with
 the skill file S0. So the pilot's two conditions are:
@@ -142,4 +153,5 @@ so its checker log does not record `injection_survival`; the experiment runner w
 - The server listens on 127.0.0.1 only. To reach it from another machine, use an SSH tunnel
   (`ssh -L 8000:localhost:8000 vm`) rather than opening the port; with `--api-key`, set `LOCAL_LLM_API_KEY` for the
   benchmark.
-- The checker still runs on OpenRouter (`OPENROUTER_API_KEY`); only the victim moves to the VM.
+- The benchmark CLI's `--checker` uses `skillfile_evolution/skill_files/S0_checker.md` (S0 as written for the old
+  external checker).

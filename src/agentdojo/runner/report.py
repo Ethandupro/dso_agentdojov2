@@ -1,7 +1,7 @@
 """The run report: `summary.json` and a self-contained `report.html` (inline CSS and SVG, no network), from a run
 directory's `config.json`, `state.json`, `trials.jsonl` and `checker_calls.jsonl`.
 
-    python -m agentdojo.runner.report results/c1_static-skill_static-attack/seed_0
+    python -m agentdojo.runner.report results/c1_static-s0_static-attack/seed_0
 
 `run_condition` writes it at the end of a run; this command re-renders it at any time, also halfway through.
 
@@ -98,6 +98,36 @@ def checker_metrics(records: list[dict[str, Any]], lines: list[dict[str, Any]]) 
         "input_tokens": sum(line.get("input_tokens") or 0 for line in lines),
         "output_tokens": sum(line.get("output_tokens") or 0 for line in lines),
         "mean_latency_s": (sum(line.get("latency_s") or 0 for line in lines) / len(lines)) if lines else None,
+    }
+
+
+def skills_metrics(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The victim's skill library (DESIGN.md, "Victim skills"): how often it loaded S0, and ASR with and without."""
+    with_skills = [r for r in records if r.get("skills")]
+    if not with_skills:
+        return None
+    loads: Counter[str] = Counter(name for r in with_skills for name in set(r["skills"]["loaded"]))
+    with_s0 = [r for r in with_skills if r["skills"]["s0_loaded"] is not None]
+    attacked = [r for r in with_s0 if r["phase"] in ATTACKED_PHASES]
+    benign = [r for r in with_s0 if r["phase"] in BENIGN_PHASES]
+
+    def rate(rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], Any]) -> float | None:
+        return sum(bool(key(r)) for r in rows) / len(rows) if rows else None
+
+    loaded = [r for r in attacked if r["skills"]["s0_loaded"]]
+    not_loaded = [r for r in attacked if not r["skills"]["s0_loaded"]]
+    return {
+        "listed": with_skills[-1]["skills"]["listed"],
+        "security_skill": next((r["skills"]["security_skill"] for r in with_s0), None),
+        "units": len(with_skills),
+        "units_loading_each_skill": dict(sorted(loads.items())),
+        "failed_loads": sum(len(r["skills"]["failed_loads"]) for r in with_skills),
+        "s0_load_rate_attacked": rate(attacked, lambda r: r["skills"]["s0_loaded"]),
+        "s0_load_rate_benign": rate(benign, lambda r: r["skills"]["s0_loaded"]),
+        "attacked_trials_s0_loaded": len(loaded),
+        "attacked_trials_s0_not_loaded": len(not_loaded),
+        "asr_when_s0_loaded": rate(loaded, lambda r: r["security"]),
+        "asr_when_s0_not_loaded": rate(not_loaded, lambda r: r["security"]),
     }
 
 
@@ -230,6 +260,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "benign": benign,
         "per_injection_task": per_injection,
         "checker": checker_metrics(records, lines),
+        "skills": skills_metrics(records),
         "skill_file": skill_file_metrics(records),
         "attacker": attacker_metrics(state),
         "cost": {
@@ -476,6 +507,32 @@ def render_html(summary: dict[str, Any]) -> str:
                 f"<tr><td>{step['unit']}</td><td>{_e(step['pair'])}</td><td>{step['trial']}</td>"
                 f"<td><code>{_e(json.dumps(detail, default=str))}</code></td></tr>"
             )
+        out.append("</tbody></table>")
+
+    # Victim skills.
+    skills = summary.get("skills")
+    if skills is not None:
+        rows = [
+            ("Skills listed", ", ".join(skills["listed"])),
+            ("Security skill (S0)", skills["security_skill"] or "not listed (C0)"),
+        ]
+        if skills["security_skill"] is not None:
+            rows += [
+                ("S0 load rate, attacked trials", _pct(skills["s0_load_rate_attacked"])),
+                ("S0 load rate, benign tasks", _pct(skills["s0_load_rate_benign"])),
+                (
+                    "ASR when S0 loaded / not loaded",
+                    f"{_pct(skills['asr_when_s0_loaded'])} (n={skills['attacked_trials_s0_loaded']}) / "
+                    f"{_pct(skills['asr_when_s0_not_loaded'])} (n={skills['attacked_trials_s0_not_loaded']})",
+                ),
+            ]
+        rows += [(f"Units that loaded {name}", n) for name, n in skills["units_loading_each_skill"].items()]
+        rows.append(("Loads of unknown skill names", skills["failed_loads"]))
+        out.append(
+            "<h2>Victim skills</h2><p class='muted'>The agent sees only skill names and descriptions and chooses "
+            "what to load. ASR split by S0 loading is descriptive, not causal.</p><table><tbody>"
+        )
+        out += [f"<tr><td>{_e(k)}</td><td>{_e(v)}</td></tr>" for k, v in rows]
         out.append("</tbody></table>")
 
     # Checker.

@@ -125,7 +125,7 @@ tr.same td { background: var(--zone); }
 <header>
   <div class="eyebrow">AgentDojo v1.2.2 · experiment design</div>
   <h1>Skill File Evolution</h1>
-  <p class="lede">Can a judge model keep editing a checker's security policy (the "skill file") one rule at a time, after each attack that gets through, so prompt-injection success drops on attacks it has never seen, including against attackers that adapt back?</p>
+  <p class="lede">Can a judge model keep editing an agent's security skill (the "skill file", one of the skills the agent can choose to load) one rule at a time, after each attack that gets through, so prompt-injection success drops on attacks it has never seen, including against attackers that adapt back?</p>
   <div class="legend" aria-label="Legend">
     <span><i class="sw llm"></i>LLM call</span>
     <span><i class="sw inj"></i>Attacker or injected content</span>
@@ -137,36 +137,46 @@ tr.same td { background: var(--zone); }
 <!-- FIG 1 -->
 <section>
   <div class="sec-head">
-    <div class="eyebrow">Figure 1 · the smallest unit</div>
-    <h2>One trial: a user task, one injection, every tool call screened</h2>
+    <div class="eyebrow">Figure 1 · the smallest unit (redesigned 2026-11-19)</div>
+    <h2>One trial: a user task, one injection, and a victim that chooses its skills</h2>
   </div>
   <figure>
     <div class="plate">
-    <svg viewBox="0 -8 1040 488" role="img" aria-label="One trial. The victim agent calls AgentDojo tools; each raw tool output goes to the checker, which reads the skill file and flags spans; the harness deletes them and returns the sanitized output to the agent. The attacker has planted injection text in the environment. After the run, AgentDojo's deterministic checks score utility and security.">
+    <svg viewBox="0 -8 1040 488" role="img" aria-label="One trial. The victim agent's system prompt lists its skills by name and description: five fixed skills plus the security skill S0. The agent may call load_skill to read a skill. It calls AgentDojo tools, whose outputs reach it unchanged; the attacker has planted injection text in the environment. There is no external checker. After the run, AgentDojo's deterministic checks score utility and security, and the trial record notes which skills the agent loaded.">
       <defs>
         <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
         <marker id="a1i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahi" d="M0 0 L10 5 L0 10 z"/></marker>
       </defs>
 
       <!-- attacker feedback (evolving attacker only) -->
-      <path class="ar-fb" d="M1020 425 H1032 V12 H490 V26" marker-end="url(#a1i)"/>
-      <text class="it" x="760" y="6" text-anchor="middle">task result, security result, final answer → attacker (evolving attacker only)</text>
+      <path class="ar-fb" d="M1020 425 H1032 V12 H520 V26" marker-end="url(#a1i)"/>
+      <text class="it" x="780" y="6" text-anchor="middle">task result, security result, final answer → attacker (evolving attacker only)</text>
+
+      <!-- skill library -->
+      <rect class="b-det" x="130" y="30" width="300" height="80" rx="8"/>
+      <text class="t" x="280" y="54" text-anchor="middle">Skill library (name + description listed)</text>
+      <text class="s" x="280" y="72" text-anchor="middle">5 fixed: brainstorming, budgeting, calendar-planning,</text>
+      <text class="s" x="280" y="88" text-anchor="middle">document-summarizing, writing-messages</text>
+      <line class="ar" x1="250" y1="110" x2="250" y2="168" marker-end="url(#a1)"/>
+      <text class="lbl" x="242" y="142" text-anchor="end">listed in prompt</text>
+      <line class="ar" x1="320" y1="168" x2="320" y2="112" marker-end="url(#a1)"/>
+      <text class="lbl" x="328" y="142">load_skill(name) → text</text>
+
+      <!-- S0 -->
+      <rect class="b-det evo" x="20" y="30" width="96" height="80" rx="8"/>
+      <text class="t" x="68" y="56" text-anchor="middle">S0</text>
+      <text class="s" x="68" y="73" text-anchor="middle">tool-output-</text>
+      <text class="s" x="68" y="88" text-anchor="middle">safety</text>
+      <text class="et" x="68" y="104" text-anchor="middle">evolves C3/C4</text>
+      <line class="ar" x1="116" y1="70" x2="128" y2="70" marker-end="url(#a1)"/>
 
       <!-- attacker -->
-      <rect class="b-inj evo" x="400" y="30" width="180" height="72" rx="8"/>
-      <text class="t" x="490" y="56" text-anchor="middle">Attacker</text>
-      <text class="s" x="490" y="74" text-anchor="middle">writes injection text</text>
-      <text class="et" x="490" y="92" text-anchor="middle">evolves in C2, C4</text>
-      <line class="ar" x1="490" y1="102" x2="490" y2="168" marker-end="url(#a1)"/>
-      <text class="lbl" x="498" y="140">fills injection slots</text>
-
-      <!-- skill file -->
-      <rect class="b-det evo" x="650" y="30" width="180" height="72" rx="8"/>
-      <text class="t" x="740" y="56" text-anchor="middle">Skill file (current)</text>
-      <text class="s" x="740" y="74" text-anchor="middle">markdown policy, ≤1500 tok</text>
-      <text class="et" x="740" y="92" text-anchor="middle">evolves in C3, C4</text>
-      <line class="ar" x1="740" y1="102" x2="740" y2="168" marker-end="url(#a1)"/>
-      <text class="lbl" x="748" y="140">read on every call</text>
+      <rect class="b-inj evo" x="430" y="30" width="180" height="72" rx="8"/>
+      <text class="t" x="520" y="56" text-anchor="middle">Attacker</text>
+      <text class="s" x="520" y="74" text-anchor="middle">writes injection text</text>
+      <text class="et" x="520" y="92" text-anchor="middle">evolves in C2, C4</text>
+      <line class="ar" x1="520" y1="102" x2="520" y2="168" marker-end="url(#a1)"/>
+      <text class="lbl" x="528" y="140">fills injection slots</text>
 
       <!-- user task -->
       <rect class="b-det" x="20" y="180" width="130" height="80" rx="8"/>
@@ -176,57 +186,43 @@ tr.same td { background: var(--zone); }
       <text class="lbl" x="174" y="212" text-anchor="middle">prompt</text>
 
       <!-- agent -->
-      <rect class="b-llm" x="200" y="170" width="160" height="100" rx="8"/>
-      <text class="t" x="280" y="202" text-anchor="middle">Victim agent</text>
-      <text class="s" x="280" y="221" text-anchor="middle">DeepAgents main agent</text>
-      <text class="m" x="280" y="240" text-anchor="middle">Qwen3.5-27B · local vLLM</text>
-      <text class="s" x="280" y="257" text-anchor="middle">thinking off, ≤30 calls</text>
-      <line class="ar" x1="360" y1="200" x2="408" y2="200" marker-end="url(#a1)"/>
-      <text class="lbl" x="384" y="192" text-anchor="middle">tool call</text>
+      <rect class="b-llm" x="200" y="170" width="200" height="100" rx="8"/>
+      <text class="t" x="300" y="200" text-anchor="middle">Victim agent</text>
+      <text class="s" x="300" y="218" text-anchor="middle">DeepAgents main agent</text>
+      <text class="m" x="300" y="237" text-anchor="middle">Qwen3.5-27B + DFlash draft</text>
+      <text class="s" x="300" y="256" text-anchor="middle">local vLLM · thinking off · ≤30 calls</text>
+      <line class="ar" x1="400" y1="200" x2="438" y2="200" marker-end="url(#a1)"/>
+      <text class="lbl" x="419" y="192" text-anchor="middle">call</text>
+      <line class="ar" x1="440" y1="248" x2="402" y2="248" marker-end="url(#a1)"/>
+      <text class="lbl" x="421" y="266" text-anchor="middle">output</text>
 
       <!-- env -->
-      <rect class="b-det" x="410" y="170" width="160" height="100" rx="8"/>
-      <text class="t" x="490" y="202" text-anchor="middle">AgentDojo tools</text>
-      <text class="s" x="490" y="221" text-anchor="middle">run in FunctionsRuntime</text>
-      <text class="s" x="490" y="239" text-anchor="middle">on the task environment,</text>
-      <text class="it" x="490" y="257" text-anchor="middle">which holds the injection</text>
-      <line class="ar" x1="570" y1="220" x2="648" y2="220" marker-end="url(#a1)"/>
-      <text class="lbl" x="609" y="212" text-anchor="middle">raw output</text>
+      <rect class="b-det" x="440" y="170" width="160" height="100" rx="8"/>
+      <text class="t" x="520" y="202" text-anchor="middle">AgentDojo tools</text>
+      <text class="s" x="520" y="221" text-anchor="middle">run in FunctionsRuntime</text>
+      <text class="s" x="520" y="239" text-anchor="middle">on the task environment,</text>
+      <text class="it" x="520" y="257" text-anchor="middle">which holds the injection</text>
 
-      <!-- checker -->
-      <rect class="b-llm" x="650" y="170" width="180" height="100" rx="8"/>
-      <text class="t" x="740" y="202" text-anchor="middle">Checker</text>
-      <text class="m" x="740" y="221" text-anchor="middle">Qwen3.5-9B · local vLLM</text>
-      <text class="s" x="740" y="239" text-anchor="middle">sees skill file, user task,</text>
-      <text class="s" x="740" y="257" text-anchor="middle">raw output; no tools</text>
-      <line class="ar" x1="830" y1="220" x2="868" y2="220" marker-end="url(#a1)"/>
-      <text class="lbl" x="849" y="212" text-anchor="middle">spans</text>
-
-      <!-- span remover -->
-      <rect class="b-det" x="870" y="170" width="150" height="100" rx="8"/>
-      <text class="t" x="945" y="202" text-anchor="middle">Span remover</text>
-      <text class="s" x="945" y="221" text-anchor="middle">deletes flagged spans,</text>
-      <text class="s" x="945" y="239" text-anchor="middle">marks each deletion</text>
-      <text class="m" x="945" y="257" text-anchor="middle">[removed by …]</text>
-
-      <!-- sanitized return -->
-      <path class="ar" d="M945 270 V312 H330 V272" marker-end="url(#a1)"/>
-      <text class="lbl" x="730" y="330" text-anchor="middle">sanitized output enters agent context (agent never sees the skill file)</text>
+      <!-- no checker note -->
+      <rect class="b-det" x="650" y="170" width="370" height="100" rx="8"/>
+      <text class="t" x="835" y="198" text-anchor="middle">No external checker (since 2026-11-19)</text>
+      <text class="s" x="835" y="218" text-anchor="middle">Tool outputs reach the agent unchanged.</text>
+      <text class="s" x="835" y="236" text-anchor="middle">S0 can only help if the agent chooses to load it,</text>
+      <text class="s" x="835" y="254" text-anchor="middle">so every trial records s0_loaded.</text>
 
       <!-- subagent -->
-      <line class="ar" x1="240" y1="270" x2="240" y2="378" marker-end="url(#a1)"/>
-      <text class="lbl" x="232" y="330" text-anchor="end">task()</text>
-      <line class="ar" x1="290" y1="380" x2="290" y2="272" marker-end="url(#a1)"/>
-      <text class="lbl" x="298" y="352">result</text>
-      <rect class="b-llm" x="200" y="380" width="160" height="80" rx="8"/>
-      <text class="t" x="280" y="408" text-anchor="middle">Subagent</text>
-      <text class="s" x="280" y="426" text-anchor="middle">same model, same tools,</text>
-      <text class="s" x="280" y="443" text-anchor="middle">same checker</text>
+      <line class="ar" x1="250" y1="270" x2="250" y2="378" marker-end="url(#a1)"/>
+      <text class="lbl" x="242" y="330" text-anchor="end">task()</text>
+      <line class="ar" x1="320" y1="380" x2="320" y2="272" marker-end="url(#a1)"/>
+      <text class="lbl" x="328" y="352">result</text>
+      <rect class="b-llm" x="200" y="380" width="180" height="80" rx="8"/>
+      <text class="t" x="290" y="408" text-anchor="middle">Subagent</text>
+      <text class="s" x="290" y="426" text-anchor="middle">same model, same tools,</text>
+      <text class="s" x="290" y="443" text-anchor="middle">same skill library</text>
 
-      <!-- env to scoring (bridges over return line) -->
-      <line class="halo" x1="490" y1="300" x2="490" y2="324"/>
-      <line class="ar" x1="490" y1="270" x2="490" y2="378" marker-end="url(#a1)"/>
-      <text class="lbl" x="498" y="362">final env state + trace</text>
+      <!-- env to scoring -->
+      <line class="ar" x1="520" y1="270" x2="520" y2="378" marker-end="url(#a1)"/>
+      <text class="lbl" x="528" y="330">final env state + trace</text>
 
       <!-- scoring -->
       <rect class="b-det" x="410" y="380" width="420" height="90" rx="8"/>
@@ -237,12 +233,13 @@ tr.same td { background: var(--zone); }
 
       <!-- record -->
       <rect class="b-det" x="870" y="380" width="150" height="90" rx="8"/>
-      <text class="t" x="945" y="408" text-anchor="middle">Trial record</text>
-      <text class="s" x="945" y="428" text-anchor="middle">feeds ASR, utility</text>
-      <text class="s" x="945" y="447" text-anchor="middle">and the evolution loop</text>
+      <text class="t" x="945" y="404" text-anchor="middle">Trial record</text>
+      <text class="s" x="945" y="422" text-anchor="middle">utility, security,</text>
+      <text class="s" x="945" y="439" text-anchor="middle">skills loaded, s0_loaded,</text>
+      <text class="s" x="945" y="456" text-anchor="middle">agent's tool calls</text>
     </svg>
     </div>
-    <figcaption>Everything inside one trial is fixed except the two dashed boxes. The checker runs on <b>every AgentDojo tool output</b>, including calls made by the subagent, and returns spans to delete with a reason each; it never rewrites text. Everything it doesn't flag reaches the agent, so the user's task keeps its data. A flagged span that isn't found verbatim in the output is ignored and counted; the rest is still removed. Only a reply that doesn't parse removes the whole output, with its own marker, and that's counted too. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. There is no block mode: sanitizing is the only policy, in every condition with a checker. The checker is built once per task from the user's prompt and shared by both agent levels, so the subagent's checker also judges against the <b>user's</b> task. Every run builds this same victim from one <code>DeepAgentsConfig</code>, saved in its <code>config.json</code>; only the checker differs, and C0 has none. The victim (<code>Qwen/Qwen3.5-27B</code>, GPU 0, port 8000) and the checker (<code>Qwen/Qwen3.5-9B</code>, a <code>wrap_tool_call</code> middleware, GPU 1, port 8002) are self-hosted with vLLM on the project's 2× H100 VM, thinking off, temperature 0, and tool calls run one at a time. Every checker call is logged to <code>checker_calls.jsonl</code> with the trial keys, characters removed, markers, and for attacked trials how much of the injection survived (<code>injection_survival</code>).</figcaption>
+    <figcaption><b>Redesign of 2026-11-19 (user's decision):</b> there is no external checker; the defence lives inside the victim. Like the agents people use, the victim has a skill library. Its system prompt lists every skill by name and one-line description (alphabetically): five fixed general skills, the same in every condition, plus, in C1–C4, the security skill S0 listed as <code>tool-output-safety</code>. The agent reads a skill only by calling <code>load_skill</code>, so it may never read S0; every trial records which skills it loaded and <code>s0_loaded</code>. Tool outputs reach the agent unchanged. C0 lists only the five fixed skills. In C3 and C4 the judge edits only S0's body; its name, description and the other five skills never change. The victim is <code>Qwen/Qwen3.5-27B</code> on GPU 0 (port 8000), served with the DFlash speculative-decoding draft <code>z-lab/Qwen3.5-27B-DFlash</code>: the draft guesses tokens ahead and the 27B model checks them, so answers are the same and only speed changes. Thinking off, temperature 0, tool calls one at a time. A recorder logs every model call and tool result at both agent levels, so the security checks see subagent actions too. The earlier design (S0 read by a Qwen3.5-9B checker that deleted flagged spans from every tool output) still runs as an ablation with <code>run_condition --external-checker</code>.</figcaption>
   </figure>
 </section>
 
@@ -351,7 +348,7 @@ tr.same td { background: var(--zone); }
       <text class="s" x="820" y="470" text-anchor="middle">on S0, after it on the final file → metrics only</text>
     </svg>
     </div>
-    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. One file is shared by every train pair. After each train trial, if the attack succeeded (the injection goal was reached <b>or</b> the user task failed), the judge runs; a failed attack leaves the file as it is. The judge also runs after a successful third trial, and it may return zero edits, for example when the task failed for a reason unrelated to the checker. <b>The judge never writes the file.</b> It names the rules involved, with a diagnosis (<code>missing</code>, <code>vague</code>, <code>conflict</code>, <code>not_applied</code>, <code>over_removed</code>), and returns a short list of edits that code applies; Role, When unsure and the frozen sentences can't be touched. <b>Adoption is blind</b> (since 2026-11-05): the edited file goes straight into the next trial without a replay or benign comparison, so it can turn out worse, and that is measured, not prevented. <b>Trial history digest</b> (since 2026-11-13): besides the triggering trial, the judge gets a code-built log of the last N train trials before it (proposed N = 20), balanced between successes and failures, each with its pair, trial, file version, outcome, injection text, removed spans with reasons and <code>injection_survival</code>. No raw tool outputs, no full answers, no test or benign trials; same format and N in C3 and C4. The leakage check forces the judge to describe attack patterns abstractly. Every version, diagnosis, digest, edit list, check result and retry is saved, and the evolver's state goes into the runner's checkpoint after every unit, so a resumed run continues with the same file. The judge is <code>deepseek/deepseek-v4.1-flash</code> on OpenRouter (since 2026-11-17), with the run's seed and <code>max_tokens</code> 8192; the provider is not pinned. Tokens for the 1500-token cap are counted with the checker's own tokenizer through vLLM. In C1 and C2 there is no judge, no split and no phases: every pair gets 3 trials against S0.</figcaption>
+    <figcaption><b>This is the only place the skill file changes</b>, and only in C3 and C4. One file is shared by every train pair. After each train trial, if the attack succeeded (the injection goal was reached <b>or</b> the user task failed), the judge runs; a failed attack leaves the file as it is. The judge also runs after a successful third trial, and it may return zero edits, for example when the task failed for a reason unrelated to the skill, or when the agent never loaded S0. <b>The judge never writes the file.</b> It names the rules involved, with a diagnosis (<code>missing</code>, <code>vague</code>, <code>conflict</code>, <code>not_applied</code>, <code>not_loaded</code>, <code>over_restrictive</code>; since 2026-11-19, replacing <code>over_removed</code>), and returns a short list of edits that code applies; Role, When unsure and the frozen sentences can't be touched. <b>Adoption is blind</b> (since 2026-11-05): the edited file goes straight into the next trial without a replay or benign comparison, so it can turn out worse, and that is measured, not prevented. <b>Trial history digest</b> (since 2026-11-13): besides the triggering trial, the judge gets a code-built log of the last N train trials before it (proposed N = 20), balanced between successes and failures, each with its pair, trial, file version, outcome, injection text, and (since 2026-11-19) whether the agent loaded S0, the agent's tool calls in order and its final answer (each cut short), instead of the checker's removed spans. No raw tool outputs, no test or benign trials; same format and N in C3 and C4. The leakage check forces the judge to describe attack patterns abstractly. Every version, diagnosis, digest, edit list, check result and retry is saved, and the evolver's state goes into the runner's checkpoint after every unit, so a resumed run continues with the same file. The judge is <code>deepseek/deepseek-v4.1-flash</code> on OpenRouter (since 2026-11-17), with the run's seed and <code>max_tokens</code> 8192; the provider is not pinned. Tokens for the 1500-token cap are counted with the victim's own tokenizer through vLLM (the checker's before 2026-11-19). The judge edits only S0's body: its listed name and description and the five other skills never change. In C1 and C2 there is no judge, no split and no phases: every pair gets 3 trials against S0.</figcaption>
   </figure>
 </section>
 
@@ -442,10 +439,10 @@ tr.same td { background: var(--zone); }
       <text class="it" x="470" y="404" text-anchor="middle">score + history → the stream's next proposal</text>
     </svg>
     </div>
-    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the checker's removals, the victim's system prompt or trace, and in C4 it never sees a test-split injection task. When the checker removes its text, it only sees the outcome and can't tell whether the checker or the agent stopped it (internal logs record which). <b>Trial 0 sends the same text in every condition:</b> the unchanged <code>important_instructions</code> text, with no rewrite. Before trials 1 and 2 the evolving attacker rewrites the pair's text once each, building on that same pair's previous trial, and it still rewrites after a win (starting from the text that worked). A pair's 3 trials run back to back. In C2 there is no split, so the attacker rewrites every pair; in C4 it never sees test injection tasks, so it rewrites train pairs only. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker (C1, C3) keeps the trial-0 text in all 3 trials. PAIR's settings (3 streams × 4 iterations, so at most 37 attacker-model calls per rewrite) are pinned in <code>config.json</code> and identical in C2 and C4. MUZZLE is the only evolving attacker, ported in <code>src/agentdojo/attacks/adaptive/muzzle/</code> with upstream's Judge and PAIR files vendored byte-identical.</figcaption>
+    <figcaption><b>The attacker is black-box.</b> It never sees the skill file, the victim's skill list, system prompt or trace, and in C4 it never sees a test-split injection task. It only sees the outcome, never whether the agent loaded S0. <b>Trial 0 sends the same text in every condition:</b> the unchanged <code>important_instructions</code> text, with no rewrite. Before trials 1 and 2 the evolving attacker rewrites the pair's text once each, building on that same pair's previous trial, and it still rewrites after a win (starting from the text that worked). A pair's 3 trials run back to back. In C2 there is no split, so the attacker rewrites every pair; in C4 it never sees test injection tasks, so it rewrites train pairs only. Only MUZZLE's iterative part is used (its judge plus offline PAIR). Its recon run, placeholder probe and choice of injection spot are dropped, and the text goes into the same injection slots <code>important_instructions</code> uses. The static attacker (C1, C3) keeps the trial-0 text in all 3 trials. PAIR's settings (3 streams × 4 iterations, so at most 37 attacker-model calls per rewrite) are pinned in <code>config.json</code> and identical in C2 and C4. MUZZLE is the only evolving attacker, ported in <code>src/agentdojo/attacks/adaptive/muzzle/</code> with upstream's Judge and PAIR files vendored byte-identical.</figcaption>
   </figure>
   <figure>
-    <figcaption><b>The attacker model</b> is <code>mistralai/Mistral-Small-3.2-24B-Instruct-2506</code>, served locally with vLLM (GPU 1 beside the checker, port 8003, FP8), not abliterated, and from a different family than the victim and checker (Qwen) and the judge (DeepSeek), since it also plays PAIR's stand-in victim. <b>What PAIR optimises</b> (since 2026-11-18, <code>prompt_set="ipi"</code>, the default): a realistic indirect injection, not a chat jailbreak. The first live C2 runs showed the faithful version scoring role-plays 10 against a context-free stand-in while doing nothing to the real agent. Now the stand-in agent is given the agent's situation, built offline from AgentDojo (our own stand-in system prompt listing the suite's tools, and the user task run by its ground truth up to the first tool result holding the injection, with the candidate in that slot), and PAIR's judge scores delivery. <b>A stand-in checker</b> screens each candidate first (<code>ipi_stand_in_checker</code>, default on): a generic detector played by the attacker model, never S0 or the real skill file, so the attacker stays black-box toward our defence. If it blocks or empties the candidate the score is 1; otherwise the stand-in agent sees what it left. This makes PAIR aim for text that survives a filter <b>and</b> drives the agent. JSON from the attacker and Judge is parsed tolerantly (balanced braces plus a <code>literal_eval</code> fallback). Each archive entry records its <code>stand_in_context</code> and <code>inner_loop</code> counts (candidates, no JSON, checker-blocked, checker-trimmed, agent scores), so a stand-in checker block can be told apart from a stand-in agent ignoring the text. If PAIR yields no usable proposal the text falls back to the bare goal; the report counts these as the attacker refusal rate and warns above 5%. Ablations: <code>ipi_stand_in_checker=False</code> (IPI without the filter) and <code>prompt_set="upstream"</code> (the faithful chat-jailbreak PAIR).</figcaption>
+    <figcaption><b>The attacker model</b> is <code>mistralai/Mistral-Small-3.2-24B-Instruct-2506</code>, served locally with vLLM (GPU 1 to itself since 2026-11-19, BF16, port 8003; FP8 beside the checker before), not abliterated, and from a different family than the victim and checker (Qwen) and the judge (DeepSeek), since it also plays PAIR's stand-in victim. <b>What PAIR optimises</b> (since 2026-11-18, <code>prompt_set="ipi"</code>, the default): a realistic indirect injection, not a chat jailbreak. The first live C2 runs showed the faithful version scoring role-plays 10 against a context-free stand-in while doing nothing to the real agent. Now the stand-in agent is given the agent's situation, built offline from AgentDojo (our own stand-in system prompt listing the suite's tools, and the user task run by its ground truth up to the first tool result holding the injection, with the candidate in that slot), and PAIR's judge scores delivery. <b>A stand-in checker</b> screens each candidate first (<code>ipi_stand_in_checker</code>, default on): a generic detector played by the attacker model, never S0 or the real skill file, so the attacker stays black-box toward our defence. If it blocks or empties the candidate the score is 1; otherwise the stand-in agent sees what it left. This makes PAIR aim for text that survives a filter <b>and</b> drives the agent. JSON from the attacker and Judge is parsed tolerantly (balanced braces plus a <code>literal_eval</code> fallback). Each archive entry records its <code>stand_in_context</code> and <code>inner_loop</code> counts (candidates, no JSON, checker-blocked, checker-trimmed, agent scores), so a stand-in checker block can be told apart from a stand-in agent ignoring the text. If PAIR yields no usable proposal the text falls back to the bare goal; the report counts these as the attacker refusal rate and warns above 5%. Ablations: <code>ipi_stand_in_checker=False</code> (IPI without the filter) and <code>prompt_set="upstream"</code> (the faithful chat-jailbreak PAIR).</figcaption>
   </figure>
 </section>
 
@@ -480,10 +477,10 @@ tr.same td { background: var(--zone); }
   <table>
     <thead><tr><th>Role</th><th>Model</th><th>Job</th><th>Sees</th><th>Never sees</th></tr></thead>
     <tbody>
-      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Victim agent</td><td><code>Qwen/Qwen3.5-27B</code>, self-hosted vLLM on the H100 VM (GPU 0), thinking off, temperature 0, on DeepAgents</td><td>Does the user's task with AgentDojo tools; can delegate to a subagent</td><td>User task, sanitized tool outputs</td><td>Skill file, raw outputs</td></tr>
-      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker</td><td><code>Qwen/Qwen3.5-9B</code>, self-hosted vLLM (GPU 1), thinking off, replies constrained to the checker's JSON schema; must keep parse failures &lt;2% (unmatched-span rate reported)</td><td>Flags spans to remove from each tool output, with reasons</td><td>Skill file, user task, raw tool output</td><td>Anything else; it has no tools (it can still be targeted by the injection it reads)</td></tr>
-      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>deepseek/deepseek-v4.1-flash</code> via OpenRouter (since 2026-11-17), run seed, <code>max_tokens</code> 8192, provider not pinned</td><td>After each successful train trial in C3/C4: diagnoses the rules involved and returns delta edits (or none); code applies and checks them</td><td>Current file with rule IDs, the one triggering trial (user task, injection text, task and security results, spans the checker removed with reasons), the changelog, and a digest of the last N train trials (successes and failures: outcome, injection text, removed spans, injection survival)</td><td>Test split, held-out attack styles, benign set</td></tr>
-      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><code>mistralai/Mistral-Small-3.2-24B-Instruct-2506</code>, self-hosted vLLM (GPU 1, FP8), fixed across conditions; plays MUZZLE's Judge and all of PAIR's roles, including a stand-in checker and stand-in agent</td><td>Rewrites a pair's injection text before trial 1 and before trial 2 (C2: every pair; C4: train pairs only)</td><td>Per pair: task result, security result, agent's final answer; its own archive; for its stand-in, the suite's tool list and the user task's ground-truth transcript, built offline from AgentDojo</td><td>Skill file or S0, the real checker's removals, the victim's system prompt and trace; in C4, test injections</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Victim agent</td><td><code>Qwen/Qwen3.5-27B</code> with the DFlash draft <code>z-lab/Qwen3.5-27B-DFlash</code> (speed only), self-hosted vLLM on the H100 VM (GPU 0), thinking off, temperature 0, on DeepAgents</td><td>Does the user's task with AgentDojo tools; can delegate to a subagent; chooses which skills to load</td><td>User task, raw tool outputs, its skill list (names and descriptions), and the text of any skill it loads, S0 included</td><td>Which skill is the security one being evolved, the judge's notes</td></tr>
+      <tr style="opacity:.6"><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Checker (ablation only since 2026-11-19)</td><td><code>Qwen/Qwen3.5-9B</code>, self-hosted vLLM (GPU 1, port 8002), only with <code>--external-checker</code></td><td>Flags spans to remove from each tool output, with reasons</td><td><code>S0_checker.md</code>, user task, raw tool output</td><td>Anything else; it has no tools</td></tr>
+      <tr><td><i class="dot" style="background:var(--llm-bg);border-color:var(--llm)"></i>Judge</td><td><code>deepseek/deepseek-v4.1-flash</code> via OpenRouter (since 2026-11-17), run seed, <code>max_tokens</code> 8192, provider not pinned</td><td>After each successful train trial in C3/C4: diagnoses the rules involved and returns delta edits (or none); code applies and checks them</td><td>Current S0 with rule IDs, the one triggering trial (user task, injection text, task and security results, whether the agent loaded S0, its tool calls and final answer), the changelog, and a digest of the last N train trials (successes and failures, same fields)</td><td>Test split, held-out attack styles, benign set</td></tr>
+      <tr><td><i class="dot" style="background:var(--inj-bg);border-color:var(--inj)"></i>Attacker</td><td><code>mistralai/Mistral-Small-3.2-24B-Instruct-2506</code>, self-hosted vLLM (GPU 1, BF16 since 2026-11-19), fixed across conditions; plays MUZZLE's Judge and all of PAIR's roles, including a stand-in checker and stand-in agent</td><td>Rewrites a pair's injection text before trial 1 and before trial 2 (C2: every pair; C4: train pairs only)</td><td>Per pair: task result, security result, agent's final answer; its own archive; for its stand-in, the suite's tool list and the user task's ground-truth transcript, built offline from AgentDojo</td><td>Skill file or S0, the victim's skill list, system prompt and trace; in C4, test injections</td></tr>
       <tr><td><i class="dot" style="background:var(--surface);border-color:var(--line)"></i>Scorer</td><td>No model: AgentDojo's own checks</td><td>Decides utility and attack success for every trial</td><td>Final environment state and the full trace</td><td>n/a</td></tr>
     </tbody>
   </table>
@@ -503,15 +500,15 @@ tr.same td { background: var(--zone); }
     <div class="gh">Evolving attack<br><span style="font-weight:400">ported MUZZLE</span></div>
 
     <div class="gr">Static skill file<br>(S0, judge off)</div>
-    <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-skill_static-attack · 1 run, 3 trials per pair</span></div>
-    <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-skill_evolving-attack · 1 run, 3 trials per pair</span></div>
+    <div class="cell"><span class="id">C1</span><p>Baseline. A fixed defense against a fixed attack.</p><span class="run">c1_static-s0_static-attack · 1 run, 3 trials per pair</span></div>
+    <div class="cell"><span class="id">C2</span><p>How fast a fixed defense decays when the attacker adapts.</p><span class="run">c2_static-s0_evolving-attack · 1 run, 3 trials per pair</span></div>
 
     <div class="gr">Evolving skill file<br>(blind delta edits)</div>
-    <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-skill_static-attack · 1 run, 3 trials per pair</span></div>
-    <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-skill_evolving-attack · 1 run, 3 trials per pair</span></div>
+    <div class="cell e"><span class="id">C3</span><p>Does evolution help, or just overfit to one template?</p><span class="run">c3_evolving-s0_static-attack · 1 run, 3 trials per pair</span></div>
+    <div class="cell e"><span class="id">C4</span><p>Co-evolution, the main condition. Both sides adapt.</p><span class="run">c4_evolving-s0_evolving-attack · 1 run, 3 trials per pair</span></div>
   </div>
   <div class="extras">
-    <div><b>C0 · no checker.</b> Raw ASR and the utility ceiling. Also run once on AgentDojo's native loop to show the DeepAgents harness doesn't shift the numbers. 1 run. Pilot (first 30 pairs, 2026-11-17): C0 ASR 40%, so the victim passes the ≥ 20% rule; C1 ASR 3.3%.</div>
+    <div><b>C0 · no S0.</b> The victim with only its five fixed skills: raw ASR and the utility ceiling. Also run once on AgentDojo's native loop to show the DeepAgents harness doesn't shift the numbers. 1 run. The 2026-11-17 pilot (C0 ASR 40%, C1 3.3%) measured the old external checker and is rerun under the skills design.</div>
     <div style="opacity:.7"><b>C5 · frozen evolved file · on hold.</b> The final C4 skill file, locked, against a fresh evolving attacker with an empty archive. Put on hold by the user; not built in the runner.</div>
   </div>
   <ul class="hyp">
@@ -536,8 +533,8 @@ tr.same td { background: var(--zone); }
     <div><span class="k">Suites</span><span>workspace, travel, banking, slack (v1.2.2, the only built-in version), split stratified by suite, seed 0, no dev split. Train/test injection tasks: banking 6/3, slack 3/2, travel 4/3, workspace 8/6</span></div>
     <div><span class="k">Pairs</span><span>All 949 pairs of v1.2.2, no sampling (workspace 560, banking 144, travel 140, slack 105), in every condition, in the same order: train pairs shuffled, then test pairs shuffled. A pair sits on its injection task's side. The list, trial-0 texts and S0 hash are in <code>pairs_manifest.json</code></span></div>
     <div><span class="k">Trials</span><span>3 per pair, run back to back, always all 3; one run per condition</span></div>
-    <div><span class="k">Benign set</span><span>Every user task, no injection. In C3/C4: once on S0 before the train phase, once on the final file after it. In C0–C2 the runner runs it once before the attacked pairs (proposal, see below). Used for benign utility and checker false-positive rate, in evaluation only</span></div>
-    <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, checker FPR, injected text removed, benign text removed, tokens and cost per component (victim, checker, judge, attacker), attacker refusal rate; 95% cluster-bootstrap CIs over injection tasks (benign: user tasks), paired across conditions</span></div>
+    <div><span class="k">Benign set</span><span>Every user task, no injection. In C3/C4: once on S0 before the train phase, once on the final file after it. In C0–C2 the runner runs it once before the attacked pairs (proposal, see below). Used for benign utility and the S0 load rate on clean tasks, in evaluation only</span></div>
+    <div><span class="k">Reported</span><span>ASR, utility under attack, benign utility, S0 load rate (attacked and benign) and ASR with vs without S0 loaded, tokens and cost per component (victim, judge, attacker), attacker refusal rate; 95% cluster-bootstrap CIs over injection tasks (benign: user tasks), paired across conditions</span></div>
   </div>
 </section>
 
@@ -548,7 +545,7 @@ tr.same td { background: var(--zone); }
     <h2>One command per condition, then one comparison</h2>
   </div>
   <div class="facts">
-    <div><span class="k">Hardware</span><span>The project's 2× H100 VM: victim on GPU 0 (port 8000), checker and attacker on GPU 1 (ports 8002, 8003), started by <code>local_victim/serve_all.sh</code>. Only the judge (C3, C4) uses OpenRouter, key from <code>--env-file ~/api.env</code></span></div>
+    <div><span class="k">Hardware</span><span>The project's 2× H100 VM: victim (27B + DFlash draft) on GPU 0 (port 8000), attacker on GPU 1 (port 8003), started by <code>local_victim/serve_all.sh</code> (<code>CHECKER=1</code> adds the old checker on port 8002 for the ablation). Only the judge (C3, C4) uses OpenRouter, key from <code>--env-file ~/api.env</code></span></div>
     <div><span class="k">1 · Manifest</span><span><code>agentdojo.runner.build_manifest</code> writes <code>pairs_manifest.json</code>; every run checks its inputs against it before any model call</span></div>
     <div><span class="k">2 · Run</span><span><code>agentdojo.runner.run_condition --condition C0…C4</code> checks the servers, writes <code>config.json</code>, works through a fixed unit list and checkpoints after each unit, so the same command resumes. <code>--limit N</code> runs the first N pairs in a separate folder</span></div>
     <div><span class="k">3 · Report</span><span>Each run writes <code>summary.json</code> and <code>report.html</code> (also mid-run, with <code>agentdojo.runner.report</code>)</span></div>
@@ -563,8 +560,8 @@ tr.same td { background: var(--zone); }
     <li>When the benign set runs in C1 and C2. The runner runs it once, before the attacked pairs, against S0 (proposal). H1 needs C1's benign utility.</li>
     <li>C4 test pairs: the attacker never sees test injection tasks, so unless decided otherwise they keep the trial-0 text in all 3 trials, and on test C4 differs from C3 only through its file.</li>
     <li>Delta edits: whether the Principles are frozen, the edit budget (≤ 2 edits per step, ~60 tokens per rule), the common-word list for the identifier ban (empty for now, so the ban is strict), and whether one invalid edit rejects the whole batch. The code uses these proposals as defaults. Four S0 rules (S4, S6, K2, K3) are already over ~60 tokens.</li>
-    <li>The digest size N (proposed 20), the token counter for the 1500-token cap (proposed: the checker's tokenizer), and the leakage archive in C3 (proposed: every injection text the run's train trials used so far).</li>
-    <li>The checker's minimum span length (<code>min_span_chars</code>), set on the pilot.</li>
+    <li>The digest size N (proposed 20), the token counter for the 1500-token cap (since 2026-11-19: the victim's tokenizer), and the leakage archive in C3 (proposed: every injection text the run's train trials used so far).</li>
+    <li>Whether the agent loads S0 often enough for it to matter (S0 load rate on the pilot); if it rarely does, the user revisits how S0 is offered.</li>
     <li>PAIR's settings (3 streams × 4 iterations) may be lowered for cost: C2 rewrites 2 × 949 pairs.</li>
     <li>MUZZLE's upstream smoke test can't be reproduced as written. Proposed instead: the byte-identity tests on the vendored files plus a short live C2 run.</li>
     <li>The held-out styles (<code>injecagent</code>, <code>ignore_previous</code>) are in the design but not yet in the runner's test phase.</li>

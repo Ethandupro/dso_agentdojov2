@@ -25,6 +25,11 @@ class RunConfig(BaseModel):
     run_id: str
     seed: int
     checker: bool
+    """Whether the external checker runs (only with `--external-checker`, in C1-C4)."""
+    defense: str = "skills"
+    """`skills`: S0 is one of the victim's skills (default since 2026-11-19). `checker`: the external-checker ablation."""
+    skills: dict[str, Any] | None = None
+    """The victim's skill library: the fixed skills' hashes and S0's listed name and description."""
     skill_mode: str
     attack_mode: str
     trials_per_pair: int

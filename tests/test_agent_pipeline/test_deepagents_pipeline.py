@@ -647,11 +647,11 @@ def test_cli_defaults_to_the_project_victim_and_checker(monkeypatch: pytest.Monk
     assert config.model_id == "Qwen/Qwen3.5-27B"
     assert factory is not None
     (checker,) = factory("the user's task")
-    assert checker.skill_file == experiment_models.DEFAULT_SKILL_FILE.read_text()
+    assert checker.skill_file == experiment_models.CHECKER_SKILL_FILE.read_text()
 
 
 def test_checker_runs_get_their_own_trace_directory():
-    s0 = experiment_models.DEFAULT_SKILL_FILE.read_text()
+    s0 = experiment_models.CHECKER_SKILL_FILE.read_text()
     suffix = benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0)
     assert suffix.startswith("-checker-Qwen_Qwen3.5-9B-skill-")
     assert suffix != benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0 + "\nnew rule")

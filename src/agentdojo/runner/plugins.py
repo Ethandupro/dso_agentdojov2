@@ -1,9 +1,9 @@
-"""The two plug-in points of the runner: where a trial's injection text comes from, and which skill file the checker
-reads. Both are saved in the run's checkpoint through `state_dict` / `load_state`.
+"""The two plug-in points of the runner: where a trial's injection text comes from, and which skill file (S0 or an
+evolved version) the victim gets as its security skill (or the external checker reads, in the ablation). Both are saved in the run's checkpoint through `state_dict` / `load_state`.
 
 - `Attacker`: `StaticAttacker` here (C0, C1, C3, and C4 test pairs); `MuzzleAttacker` comes with the MUZZLE port
   (C2, C4 train pairs). The runner, not the attacker, keeps test pairs away from MUZZLE in C4.
-- `SkillFileSource`: `NoChecker` (C0) and `FixedSkillFile` (C1, C2) here; the evolving file (C3, C4) wraps
+- `SkillFileSource`: `NoChecker` (C0: no S0 in the skill list) and `FixedSkillFile` (C1, C2) here; the evolving file (C3, C4) wraps
   `agentdojo.skillfile.SkillFileEvolver`.
 """
 
@@ -66,12 +66,12 @@ class StaticAttacker:
 class SkillFileSource(Protocol):
     @property
     def version_name(self) -> str:
-        """The version name, for example S0 or S3; "none" without a checker."""
+        """The version name, for example S0 or S3; "none" without S0 (C0)."""
         ...
 
     @property
     def markdown(self) -> str | None:
-        """The file the checker reads in the next trial; None means no checker (C0)."""
+        """The security skill's body in the next trial; None means no S0 (C0)."""
         ...
 
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
@@ -86,6 +86,8 @@ class SkillFileSource(Protocol):
 
 
 class NoChecker:
+    """C0: no security skill (the name dates from the external-checker design)."""
+
     version_name = "none"
     markdown = None
 

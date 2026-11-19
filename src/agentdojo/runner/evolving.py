@@ -1,7 +1,8 @@
 """The evolving skill file of C3 and C4: a `SkillFileSource` over `agentdojo.skillfile.SkillFileEvolver`.
 
-After every attacked trial the runner's record becomes the judge's `TrialRecord` (the removed spans and injection
-survival come from that trial's checker lines). The evolver runs a judge step after a successful train trial
+After every attacked trial the runner's record becomes the judge's `TrialRecord`: whether the agent loaded the
+security skill, its tool calls and final answer (skills defence), or the removed spans and injection survival from
+that trial's checker lines (`--external-checker` ablation). The evolver runs a judge step after a successful train trial
 (injection goal achieved OR user task failed) and ignores test trials and benign tasks. Its state goes into the
 runner's checkpoint, so a resumed run continues from the same file, history, attack archive and changelog.
 """
@@ -15,6 +16,7 @@ from agentdojo.task_suite.load_suites import get_suite
 def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str) -> TrialRecord:
     suite = get_suite(benchmark_version, record["suite"])
     checker = record.get("checker") or {}
+    skills = record.get("skills") or {}
     return TrialRecord(
         pair=record["pair"],
         trial=record["trial"],
@@ -26,6 +28,10 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
         user_task_succeeded=bool(record["utility"]),
         removed_spans=[RemovedSpan(span=s["span"], reason=s["reason"]) for s in checker.get("removed_spans", [])],
         injection_survival=checker.get("injection_survival"),
+        defense="checker" if record.get("checker") is not None else "skills",
+        s0_loaded=skills.get("s0_loaded"),
+        agent_actions=list(record.get("agent_actions") or []),
+        final_answer=record.get("final_answer"),
     )
 
 

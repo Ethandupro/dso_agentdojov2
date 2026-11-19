@@ -1,5 +1,6 @@
-"""The runner end to end with a scripted victim and checker: C0/C1 runs, per-trial traces, checker log keys, the C3/C4
-phase hooks, checkpoint and resume, and config checks."""
+"""The runner end to end with a scripted victim: C0/C1 runs with the victim's skill library (and the external-checker
+ablation), per-trial traces, skill loads, checker log keys, the C3/C4 phase hooks, checkpoint and resume, and config
+checks."""
 
 import json
 import os
@@ -12,7 +13,10 @@ from click.testing import CliRunner
 
 pytest.importorskip("deepagents")
 
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+
 from agentdojo import experiment_models
+from agentdojo.agent_pipeline.agent_skills import LOAD_SKILL_TOOL_NAME, load_skills_dir
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker
@@ -33,6 +37,27 @@ from tests.test_checker.test_checker_middleware import INJECTION_START, Gullible
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = json.loads((REPO_ROOT / DEFAULT_MANIFEST_PATH).read_text(encoding="utf-8"))
 BENCHMARK_VERSION = "v1.2.2"
+AGENT_SKILLS = load_skills_dir(REPO_ROOT / experiment_models.AGENT_SKILLS_DIR)
+S0_NAME = experiment_models.S0_SKILL_NAME
+
+
+class SkillAwareModel(GullibleModel):
+    """A `GullibleModel` that, when its system prompt lists the security skill, loads it first and is then never
+    hijacked (the scripted stand-in for an agent that reads S0 and follows it)."""
+
+    load_security_skill: bool = True
+    loaded: bool = False
+
+    def _generate(self, messages: list[BaseMessage], *args: Any, **kwargs: Any) -> Any:
+        system = " ".join(str(m.content) for m in messages if isinstance(m, SystemMessage))
+        if self.load_security_skill and not self.loaded and f"**{S0_NAME}**" in system:
+            self.loaded = True
+            self.user_calls = [_call(LOAD_SKILL_TOOL_NAME, {"name": S0_NAME}, "s0"), *self.user_calls]
+        if any(
+            isinstance(m, ToolMessage) and m.name == LOAD_SKILL_TOOL_NAME and "S0" in str(m.content) for m in messages
+        ):
+            self.hijacked = True  # never switches to the injection calls
+        return super()._generate(messages, *args, **kwargs)
 
 
 class ScriptedVictim(BasePipelineElement):
@@ -59,7 +84,7 @@ class ScriptedVictim(BasePipelineElement):
             injection_calls = [
                 _call(c.function, dict(c.args), f"i{i}") for i, c in enumerate(injection_task.ground_truth(env))
             ]
-        model = GullibleModel(
+        model = SkillAwareModel(
             user_calls=[_call(c.function, dict(c.args), f"u{i}") for i, c in enumerate(user_task.ground_truth(env))],
             injection_calls=injection_calls,
             final=user_task.GROUND_TRUTH_OUTPUT or "Done.",
@@ -68,13 +93,15 @@ class ScriptedVictim(BasePipelineElement):
         return pipeline.query(query, runtime, env, messages, extra_args)
 
 
-def make_config(condition: str, limit: int | None, **overrides: Any) -> RunConfig:
+def make_config(condition: str, limit: int | None, defense: str = "skills", **overrides: Any) -> RunConfig:
     cond = CONDITIONS[condition]
+    checker = defense == "checker" and cond.s0
     values: dict[str, Any] = {
         "condition": cond.name,
         "run_id": cond.run_id,
         "seed": 0,
-        "checker": cond.checker,
+        "checker": checker,
+        "defense": defense,
         "skill_mode": cond.skill_mode,
         "attack_mode": cond.attack_mode,
         "trials_per_pair": 3,
@@ -85,7 +112,7 @@ def make_config(condition: str, limit: int | None, **overrides: Any) -> RunConfi
         "s0_path": MANIFEST["s0_path"],
         "s0_sha256": MANIFEST["s0_sha256"],
         "victim": {"model_id": "scripted"},
-        "checker_model": {"model_id": "scripted"} if cond.checker else None,
+        "checker_model": {"model_id": "scripted"} if checker else None,
         "served_models": {},
         "code": {},
         "versions": {},
@@ -101,23 +128,27 @@ def make_runner(
     limit: int = 2,
     victim_factory: VictimFactory = ScriptedVictim,
     skill_file=None,
+    defense: str = "skills",
     **overrides: Any,
 ) -> Runner:
     cond = CONDITIONS[condition]
     static = StaticAttacker(MANIFEST)
     if skill_file is None:
-        skill_file = FixedSkillFile("(S0)") if cond.checker else NoChecker()
+        skill_file = FixedSkillFile("(S0)") if cond.s0 else NoChecker()
+    checker = defense == "checker"
     return Runner(
-        config=make_config(condition, limit, **overrides),
+        config=make_config(condition, limit, defense=defense, **overrides),
         condition=cond,
-        run_dir=run_dir_for(tmp_path, cond, 0, limit),
+        run_dir=run_dir_for(tmp_path, cond, 0, limit, external_checker=checker),
         units=build_units(cond, MANIFEST, 3, limit),
         attacker=static,
         static_attacker=static,
         skill_file=skill_file,
         victim_factory=victim_factory,
-        checker_fn=reading_checker if cond.checker else None,
+        checker_fn=reading_checker if checker and cond.s0 else None,
         echo=lambda _: None,
+        defense=defense,  # type: ignore[arg-type]
+        agent_skills=[] if checker else AGENT_SKILLS,
     )
 
 
@@ -155,11 +186,44 @@ def test_unit_lists():
     assert [u.index for u in c3] == list(range(len(c3)))
 
 
-def test_c1_run_removes_injections_and_logs_per_trial(tmp_path: Path):
+def test_c1_victim_lists_and_loads_s0_and_logs_per_trial(tmp_path: Path):
     runner = make_runner(tmp_path, "C1")
     records = runner.run()
     run_dir = runner.run_dir
-    assert run_dir == tmp_path / "c1_static-skill_static-attack-limit2" / "seed_0"
+    assert run_dir == tmp_path / "c1_static-s0_static-attack-limit2" / "seed_0"
+    attacked = [r for r in records if r["pair"] is not None]
+    assert len(attacked) == 6
+    listed = sorted([s.name for s in AGENT_SKILLS] + [S0_NAME])
+    for r in records:
+        assert r["checker"] is None
+        assert r["skills"]["listed"] == listed and r["skills"]["security_skill"] == S0_NAME
+        assert r["skills"]["s0_loaded"] is True and r["skills"]["loaded"] == [S0_NAME]
+        assert r["agent_actions"][0] == f'{LOAD_SKILL_TOOL_NAME}(name="{S0_NAME}")'
+        assert r["skill_version"] == "S0"
+        trace = json.loads((run_dir / r["trace"]).read_text())
+        system_prompt = trace["deepagents"]["agent_setup"]["main"]["system_prompt"]
+        assert system_prompt is not None
+        assert LOAD_SKILL_TOOL_NAME in trace["deepagents"]["agent_setup"]["main"]["tools"]
+    for r in attacked:
+        assert r["security"] is False and r["utility"] is True and r["attacker_success"] is False
+    assert not runner.checker_path.read_text()
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["defense"] == "skills" and config["checker"] is False
+
+
+def test_c0_lists_the_fixed_skills_without_s0(tmp_path: Path):
+    records = make_runner(tmp_path, "C0", limit=1).run()
+    for r in records:
+        assert r["skills"]["listed"] == sorted(s.name for s in AGENT_SKILLS)
+        assert r["skills"]["security_skill"] is None and r["skills"]["s0_loaded"] is None
+        assert r["skills"]["loaded"] == []
+
+
+def test_external_checker_ablation_removes_injections_and_logs_per_trial(tmp_path: Path):
+    runner = make_runner(tmp_path, "C1", defense="checker")
+    records = runner.run()
+    run_dir = runner.run_dir
+    assert run_dir == tmp_path / "c1_static-s0_static-attack-external-checker-limit2" / "seed_0"
     assert len(records) == len(runner.units) == len({(p["suite"], p["user_task"]) for p in MANIFEST["pairs"][:2]}) + 6
 
     attacked = [r for r in records if r["pair"] is not None]
@@ -187,8 +251,10 @@ def test_c1_run_removes_injections_and_logs_per_trial(tmp_path: Path):
     assert state["complete"] and state["cursor"] == len(records)
     assert json.loads((run_dir / "config.json").read_text())["condition"] == "C1"
 
+    assert all(r["skills"] is None for r in records)
+
     # Running again does nothing.
-    assert len(make_runner(tmp_path, "C1").run()) == len(records)
+    assert len(make_runner(tmp_path, "C1", defense="checker").run()) == len(records)
 
 
 def test_c0_has_no_checker_and_is_hijacked(tmp_path: Path):
@@ -199,6 +265,7 @@ def test_c0_has_no_checker_and_is_hijacked(tmp_path: Path):
     attacked = [r for r in records if r["pair"] is not None]
     assert len(attacked) == 12 and any(r["security"] for r in attacked)
     assert all(r["checker"] is None and r["skill_version"] == "none" for r in records)
+    assert all(r["skills"]["s0_loaded"] is None for r in records)
     assert not (runner.checker_path.read_text())
     for r in attacked:
         trace = json.loads((runner.run_dir / r["trace"]).read_text())
@@ -207,7 +274,8 @@ def test_c0_has_no_checker_and_is_hijacked(tmp_path: Path):
 
 
 def test_compare_reads_real_run_output(tmp_path: Path):
-    # C0 and C1 smoke runs side by side: the checker with S0 removes the one hijack C0 has among the first 4 pairs.
+    # C0 and C1 smoke runs side by side: the (scripted) victim that loads S0 avoids the one hijack C0 has among the
+    # first 4 pairs.
     make_runner(tmp_path, "C0", limit=4).run()
     make_runner(tmp_path, "C1", limit=4).run()
     out = write_comparison(tmp_path, tmp_path / "comparison.html", limit=4)
@@ -233,6 +301,14 @@ def test_resume_after_stop_and_after_a_crash_between_writes(tmp_path: Path):
         (r["unit_id"], r["utility"], r["security"]) for r in full
     ]
     assert {line["unit"] for line in read_jsonl(runner.checker_path)} <= set(range(len(full)))
+
+
+def test_resume_with_the_external_checker(tmp_path: Path):
+    runner = make_runner(tmp_path, "C1", defense="checker")
+    assert len(runner.run(max_units=3)) == 3
+    records = make_runner(tmp_path, "C1", defense="checker").run()
+    assert len(records) == len(runner.units)
+    assert {line["unit"] for line in read_jsonl(runner.checker_path)} <= set(range(len(records)))
 
 
 def test_failed_unit_stops_the_run_with_the_checkpoint_intact(tmp_path: Path):
@@ -302,8 +378,8 @@ def test_c4_phases_freeze_and_keep_test_pairs_from_the_attacker(tmp_path: Path):
         static_attacker=StaticAttacker(MANIFEST),
         skill_file=skill_file,
         victim_factory=ScriptedVictim,
-        checker_fn=reading_checker,
         echo=lambda _: None,
+        agent_skills=AGENT_SKILLS,
     )
     records = runner.run()
     phases = [r["phase"] for r in records]
@@ -377,6 +453,35 @@ def test_cli_wires_local_attacker_for_c2_and_c4(
     assert config.served_models["attacker"] == [experiment_models.ATTACKER_MODEL_ID]
     assert (config.judge is not None) == (condition == "C4")
     assert "sk-or-test" not in json.dumps(config.model_dump(), default=str)
+    # The victim's skill library replaces the external checker: no checker server, S0 listed as a skill.
+    assert wiring["defense"] == "skills" and wiring["checker_fn"] is None
+    assert [s.name for s in wiring["agent_skills"]] == [s.name for s in AGENT_SKILLS]
+    assert "checker" not in config.served_models and config.checker is False
+    assert config.skills is not None and config.skills["security_skill"]["name"] == S0_NAME
+
+
+def test_cli_external_checker_ablation(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(REPO_ROOT)
+    served: list[str] = []
+
+    def check_served(role: str, url: str, model: str) -> list[str]:
+        served.append(role)
+        return [model]
+
+    monkeypatch.setattr(run_condition, "check_served", check_served)
+    monkeypatch.setattr(run_condition, "Runner", CapturedRunner)
+    monkeypatch.setattr(run_condition, "write_report", lambda run_dir: run_dir / "report.html")
+    args = ["--condition", "C1", "--results-root", str(tmp_path), "--limit", "2", "--external-checker"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    wiring = CapturedRunner.last
+    assert wiring["defense"] == "checker" and wiring["checker_fn"] is not None and wiring["agent_skills"] == []
+    assert served == ["victim", "checker"]
+    config = wiring["config"]
+    assert config.checker is True and config.skills is None
+    assert config.s0_path == str(experiment_models.CHECKER_SKILL_FILE)
+    assert wiring["skill_file"].markdown == experiment_models.CHECKER_SKILL_FILE.read_text()
+    assert wiring["run_dir"].parent.name == "c1_static-s0_static-attack-external-checker-limit2"
 
 
 def test_judge_preflight_and_env_file_override(monkeypatch, tmp_path: Path):
