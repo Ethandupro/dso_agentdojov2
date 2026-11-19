@@ -8,9 +8,10 @@ from typing import Any
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 
-from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
+from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings, prompts
 from agentdojo.attacks.adaptive.autodojo.attacker import GENERATE_MAX_ATTEMPTS
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig
+from agentdojo.attacks.adaptive.muzzle.attacker import sha256_text
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, load_pairs, trial0_injections
 from agentdojo.runner.plugins import AttemptFeedback
 
@@ -68,7 +69,9 @@ class FailingOptimizer:
         self.closed = True
 
 
-def make_attacker(reply: str | None = None) -> tuple[AutoDojoAttacker, list[Any], list[dict[str, Any]]]:
+def make_attacker(
+    reply: str | None = None, **settings_kw: Any
+) -> tuple[AutoDojoAttacker, list[Any], list[dict[str, Any]]]:
     clients: list[Any] = []
     log: list[dict[str, Any]] = []
 
@@ -76,7 +79,7 @@ def make_attacker(reply: str | None = None) -> tuple[AutoDojoAttacker, list[Any]
         clients.append(ScriptedOptimizer(log, reply=reply))
         return clients[-1]
 
-    settings = AutoDojoSettings(attacker=AttackerModelConfig(model="scripted/attacker"))
+    settings = AutoDojoSettings(attacker=AttackerModelConfig(model="scripted/attacker"), **settings_kw)
     return AutoDojoAttacker(MANIFEST, settings, llm_factory=factory), clients, log
 
 
@@ -97,7 +100,7 @@ def test_rewrite_uses_the_leaderboard_and_evolves():
     attacker.text_for(PAIR, 0, [])
     seed = attacker.archive[0]["text"]
     t1 = attacker.text_for(PAIR, 1, [fb(0, seed)])
-    t2 = attacker.text_for(PAIR, 2, [fb(0, seed), fb(1, t1, security=True)])
+    t2 = attacker.text_for(PAIR, 2, [fb(0, seed, security=True), fb(1, t1)])
     assert t1 != seed and t2 != t1
     assert len(clients) == 2
     # The second optimizer call's user message carries the leaderboard with the prior texts and their real outcome.
@@ -106,7 +109,35 @@ def test_rewrite_uses_the_leaderboard_and_evolves():
     entry = attacker.archive[-1]
     assert entry["source"] == "generated" and entry["diagnosis"] == "be quieter"
     # Highest-scoring prior trial (the one that broke security) is first on the leaderboard the optimizer saw.
-    assert entry["leaderboard"][0]["trial"] == 1 and entry["leaderboard"][0]["security"] is True
+    assert entry["leaderboard"][0]["trial"] == 0 and entry["leaderboard"][0]["security"] is True
+
+
+def test_text_that_just_succeeded_is_reused_until_it_fails():
+    attacker, clients, _ = make_attacker()
+    seed = attacker.text_for(PAIR, 0, [])
+    assert attacker.text_for(PAIR, 1, [fb(0, seed, security=True)]) == seed
+    assert clients == [] and attacker.archive[-1]["source"] == "kept_success"
+    t2 = attacker.text_for(PAIR, 2, [fb(0, seed, security=True), fb(1, seed)])
+    assert t2 != seed and len(clients) == 1 and attacker.archive[-1]["source"] == "generated"
+
+
+def test_reuse_success_off_always_generates():
+    attacker, clients, _ = make_attacker(reuse_success=False)
+    seed = attacker.text_for(PAIR, 0, [])
+    assert attacker.text_for(PAIR, 1, [fb(0, seed, security=True)]) != seed
+    assert len(clients) == 1
+
+
+def test_target_picks_the_optimizer_prompt():
+    for target in ("agent", "filter"):
+        attacker, _, log = make_attacker(target=target)
+        seed = attacker.text_for(PAIR, 0, [])
+        attacker.text_for(PAIR, 1, [fb(0, seed)])
+        system = log[-1]["messages"][0]["content"]
+        assert system == prompts.SYSTEM_PROMPTS[target]
+        assert attacker.config()["prompt_sha256"]["system"] == sha256_text(system)
+    assert "There is no separate filter" in prompts.SYSTEM_PROMPTS["agent"]
+    assert "Do not address" in prompts.SYSTEM_PROMPTS["filter"]
 
 
 def test_cached_text_is_returned_without_a_model_call():
@@ -123,7 +154,7 @@ def test_unparseable_reply_then_failure_falls_back_to_the_best_leaderboard_text(
     attacker, clients, _ = make_attacker(reply="not json at all")
     attacker.text_for(PAIR, 0, [])
     seed = attacker.archive[0]["text"]
-    out = attacker.text_for(PAIR, 1, [fb(0, seed, security=True)])
+    out = attacker.text_for(PAIR, 1, [fb(0, seed)])
     assert out == seed  # the only (and best) leaderboard entry
     entry = attacker.archive[-1]
     assert entry["source"] == "goal_fallback"

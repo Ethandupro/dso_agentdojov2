@@ -101,8 +101,10 @@ def muzzle_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
     return MuzzleSettings(attacker=attacker_model_config(model_id, base_url, seed))
 
 
-def autodojo_settings(model_id: str, base_url: str, seed: int) -> AutoDojoSettings:
-    return AutoDojoSettings(attacker=attacker_model_config(model_id, base_url, seed))
+def autodojo_settings(model_id: str, base_url: str, seed: int, external_checker: bool = False) -> AutoDojoSettings:
+    return AutoDojoSettings(
+        attacker=attacker_model_config(model_id, base_url, seed), target="filter" if external_checker else "agent"
+    )
 
 
 @click.command()
@@ -247,7 +249,9 @@ def main(
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
         else:
-            attacker = AutoDojoAttacker(manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed))
+            attacker = AutoDojoAttacker(
+                manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed, external_checker)
+            )
     run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple, external_checker, skills_prompt_style)
     config = RunConfig(
         condition=cond.name,

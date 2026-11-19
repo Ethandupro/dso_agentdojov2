@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -55,6 +55,8 @@ DEVIATIONS = (
     "runner's own definition; the optimizer sees success/partial/failure, never the checker or victim internals.",
     "No stand-in checker, no stand-in agent and no cross-pair success library (all MUZZLE-port additions): the "
     "leaderboard of real outcomes is the only signal, so the attacker stays black-box with nothing simulated.",
+    "After a successful trial the same text is reused (no optimizer call) until it fails (`reuse_success`); AutoDojo "
+    "always generates. The optimizer prompt names the defence it faces (`target`: the agent itself, or a filter).",
 )
 
 
@@ -69,6 +71,13 @@ class AutoDojoSettings(BaseModel):
     top_p: float = 0.9
     max_tries: int = 5
     """Parse/JSON retries inside one optimizer call before that call is treated as failed."""
+    target: Literal["agent", "filter"] = "agent"
+    """Which defence the optimizer is told it faces: `agent` (skills design, default since 2026-11-19: no filter, the
+    agent may be addressed directly) or `filter` (external-checker design: text must pass as ordinary data)."""
+    reuse_success: bool = True
+    """If the pair's previous trial succeeded, hand out the same text again without an optimizer call (archive source
+    `kept_success`) and only generate a new one after a failure. The first C2 pilot (2026-11-19) replaced texts that
+    had just worked with variants that all failed."""
 
 
 class AutoDojoAttacker:
@@ -141,6 +150,10 @@ class AutoDojoAttacker:
             return text
         if not history or history[-1].trial != trial - 1:
             raise ValueError(f"trial {trial} of {pair.id} needs the feedback of trial {trial - 1}")
+        if self.settings.reuse_success and history[-1].security:
+            text = history[-1].injection_text
+            self.archive.append({"pair": pair.id, "trial": trial, "text": text, "source": "kept_success"})
+            return text
         entry = self._generate_with_fallback(pair, trial, history)
         self.archive.append(entry)
         return entry["text"]
@@ -198,7 +211,7 @@ class AutoDojoAttacker:
         goal = self.goal(pair)
         data_slot = self._data_slot(pair)
         messages = [
-            {"role": "system", "content": prompts.SYSTEM_PROMPT},
+            {"role": "system", "content": prompts.SYSTEM_PROMPTS[s.target]},
             {"role": "user", "content": prompts.user_prompt(goal, data_slot, prompts.leaderboard_block(leaderboard))},
         ]
         llm = self.llm_factory()
@@ -248,7 +261,7 @@ class AutoDojoAttacker:
             "paper": "arXiv:2606.15057 (AutoDojo), MIT",
             "upstream": upstream_pin(),
             "prompt_sha256": {
-                "system": sha256_text(prompts.SYSTEM_PROMPT),
+                "system": sha256_text(prompts.SYSTEM_PROMPTS[self.settings.target]),
             },
             "deviations": list(DEVIATIONS),
             "on_api_failure": (
