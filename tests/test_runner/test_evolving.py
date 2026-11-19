@@ -1,4 +1,4 @@
-"""C3 through the runner with a scripted victim, checker and judge: the judge runs only after successful train trials,
+"""C3 through the runner with a scripted victim and judge: the judge runs only after successful train trials,
 the file freezes before the test phase, and a run stopped mid-train resumes with the same file and judge history."""
 
 import json
@@ -21,7 +21,7 @@ from agentdojo.skillfile.checks import approx_token_count
 from agentdojo.skillfile.judge import JudgeCall, RemovedSpan, SkillFileEvolver, TrialRecord
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.types import ChatMessage
-from tests.test_checker.test_checker_middleware import GullibleModel, reading_checker
+from tests.test_checker.test_checker_middleware import GullibleModel
 from tests.test_runner.test_run import MANIFEST, REPO_ROOT, make_config
 
 S0_PATH = REPO_ROOT / MANIFEST["s0_path"]
@@ -74,7 +74,6 @@ def make_c3_runner(tmp_path: Path, judge: DeterministicJudge, limit: int = 1) ->
         static_attacker=static,
         skill_file=EvolvingSkillFile(evolver, "v1.2.2"),
         victim_factory=GivingUpVictim,
-        checker_fn=reading_checker,
         echo=lambda _: None,
     )
 

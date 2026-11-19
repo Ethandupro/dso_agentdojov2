@@ -20,9 +20,9 @@ from tests.test_runner.test_run import RecordingSkillFile, ScriptedVictim, make_
 def make_runner(tmp_path: Path, condition: str, attacker: Any, trials: int = 3, limit: int = 1) -> Runner:
     cond = CONDITIONS[condition]
     return Runner(
-        config=make_config(condition, limit, trials_per_pair=trials, attacker={"name": "autodojo"}),
+        config=make_config(condition, limit, defense="checker", trials_per_pair=trials, attacker={"name": "autodojo"}),
         condition=cond,
-        run_dir=run_dir_for(tmp_path, cond, 0, limit),
+        run_dir=run_dir_for(tmp_path, cond, 0, limit, external_checker=True),
         units=build_units(cond, MANIFEST, trials, limit),
         attacker=attacker,
         static_attacker=StaticAttacker(MANIFEST),
@@ -30,6 +30,7 @@ def make_runner(tmp_path: Path, condition: str, attacker: Any, trials: int = 3, 
         victim_factory=ScriptedVictim,
         checker_fn=reading_checker,
         echo=lambda _: None,
+        defense="checker",
     )
 
 

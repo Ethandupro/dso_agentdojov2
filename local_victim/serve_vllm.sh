@@ -17,6 +17,16 @@ VENV=${VENV:-$HOME/venvs/vllm}
 DP=${DP:-2}
 TP=${TP:-1}
 GPU_MEM=${GPU_MEM:-0.90}
+# Speculative decoding (optional): DRAFT=<draft model id> adds a DFlash draft model, e.g. z-lab/Qwen3.5-27B-DFlash for
+# Qwen/Qwen3.5-27B. The draft only proposes tokens that the target verifies, so answers stay the same; only speed changes.
+# SPEC_TOKENS is the number of tokens drafted per step (the model card recommends block size 8 for many parallel
+# requests; vLLM's num_speculative_tokens is the block size minus one).
+DRAFT=${DRAFT:-none}
+SPEC_TOKENS=${SPEC_TOKENS:-7}
+SPEC_ARGS=()
+if [ "$DRAFT" != "none" ]; then
+  SPEC_ARGS=(--speculative-config "{\"method\": \"dflash\", \"model\": \"$DRAFT\", \"num_speculative_tokens\": $SPEC_TOKENS}")
+fi
 
 case "$MODEL" in
   *Qwen3.5*|*Qwen3.6*) TOOL_PARSER=${TOOL_PARSER:-qwen3_coder}; REASONING_PARSER=${REASONING_PARSER:-qwen3}; MAX_LEN=${MAX_LEN:-131072} ;;
@@ -46,7 +56,7 @@ fi
 mkdir -p "${LOG_DIR:-$HOME/vllm_logs}"
 INFO="${LOG_DIR:-$HOME/vllm_logs}/server_$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
-  echo "model=$MODEL port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER reasoning_parser=$REASONING_PARSER model_args=$MODEL_ARGS extra=${EXTRA_ARGS:-}"
+  echo "model=$MODEL draft=$DRAFT spec_tokens=$SPEC_TOKENS port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER reasoning_parser=$REASONING_PARSER model_args=$MODEL_ARGS extra=${EXTRA_ARGS:-}"
   "$VENV/bin/python" -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 } | tee "$INFO"
@@ -61,4 +71,5 @@ INFO="${LOG_DIR:-$HOME/vllm_logs}/server_$(date -u +%Y%m%dT%H%M%SZ).txt"
   "${REASONING_ARGS[@]}" \
   "${THINKING_ARGS[@]}" \
   --generation-config vllm \
+  "${SPEC_ARGS[@]}" \
   $MODEL_ARGS ${EXTRA_ARGS:-} 2>&1 | tee -a "$INFO"

@@ -3,12 +3,17 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
-Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): victim on port 8000, checker on
-port 8002. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke runs). Run the
-same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
+Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Qwen3.5-27B with the
+DFlash draft) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
+runs). Run the same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
-All five conditions run here. C2 and C4 also need the MUZZLE attacker's local vLLM server (started by
-`local_victim/serve_all.sh` next to the checker). C3 and C4 also need the judge's OpenRouter key (`OPENROUTER_API_KEY`,
+Defence (redesign of 2026-11-19): the victim has a skill library, the fixed skills in
+`skillfile_evolution/skill_files/agent_skills/` plus, in C1-C4, the security skill S0 (evolved by the judge in C3/C4).
+`--external-checker` runs the earlier design instead (no skills; S0_checker.md read by the Qwen3.5-9B checker on
+port 8002) and writes to its own `-external-checker` results directory.
+
+All five conditions run here. C2 and C4 also need the attacker's local vLLM server (started by
+`local_victim/serve_all.sh` on GPU 1). C3 and C4 also need the judge's OpenRouter key (`OPENROUTER_API_KEY`,
 e.g. from `--env-file ~/api.env`, whose values win over variables already set in the shell); the key is never written
 to the run directory.
 """
@@ -26,6 +31,7 @@ import openai
 from dotenv import load_dotenv
 
 from agentdojo import experiment_models
+from agentdojo.agent_pipeline.agent_skills import load_skills_dir
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
@@ -41,7 +47,7 @@ from agentdojo.skillfile.checks import EditPolicy
 from agentdojo.skillfile.judge import (
     DEFAULT_JUDGE_MAX_TOKENS,
     DEFAULT_JUDGE_MODEL,
-    JUDGE_SYSTEM_PROMPT,
+    JUDGE_SYSTEM_PROMPTS,
     SkillFileEvolver,
     openrouter_client,
     openrouter_judge_fn,
@@ -115,7 +121,20 @@ def autodojo_settings(model_id: str, base_url: str, seed: int) -> AutoDojoSettin
 @click.option("--victim-base-url", default=experiment_models.VICTIM_BASE_URL, show_default=True)
 @click.option("--checker-model-id", default=experiment_models.CHECKER_MODEL_ID, show_default=True)
 @click.option("--checker-base-url", default=experiment_models.CHECKER_BASE_URL, show_default=True)
-@click.option("--min-span-chars", type=int, default=0, show_default=True)
+@click.option("--min-span-chars", type=int, default=0, show_default=True, help="External checker only.")
+@click.option(
+    "--external-checker",
+    is_flag=True,
+    default=False,
+    help="Ablation: the design before 2026-11-19. No skills; S0_checker.md goes to the external checker model.",
+)
+@click.option(
+    "--skills-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=experiment_models.AGENT_SKILLS_DIR,
+    show_default=True,
+    help="The victim's fixed skills (<name>/SKILL.md), listed next to S0.",
+)
 @click.option("--env-file", type=click.Path(path_type=Path), default=None, help="Loads API keys (judge, attacker).")
 @click.option("--judge-model", default=DEFAULT_JUDGE_MODEL, show_default=True, help="C3/C4 only.")
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
@@ -143,6 +162,8 @@ def main(
     checker_model_id: str,
     checker_base_url: str,
     min_span_chars: int,
+    external_checker: bool,
+    skills_dir: Path,
     env_file: Path | None,
     judge_model: str,
     digest_size: int,
@@ -173,6 +194,12 @@ def main(
             raise click.ClickException(f"unknown suite(s) {unknown}; the manifest has {sorted(known)}")
         suites_tuple = requested or None
 
+    use_checker = external_checker and cond.s0
+    defense = "checker" if external_checker else "skills"
+    agent_skills = [] if external_checker else load_skills_dir(skills_dir)
+    if any(s.name == experiment_models.S0_SKILL_NAME for s in agent_skills):
+        raise click.ClickException(f"{skills_dir} already has a skill named {experiment_models.S0_SKILL_NAME}")
+
     victim_config = DeepAgentsConfig(
         model_id=victim_model_id,
         base_url=victim_base_url,
@@ -180,7 +207,7 @@ def main(
     )
     try:
         served = {"victim": check_served("victim", victim_base_url, victim_model_id)}
-        if cond.checker:
+        if use_checker:
             served["checker"] = check_served("checker", checker_base_url, checker_model_id)
         if cond.evolving_skill:
             check_judge(judge_model)
@@ -190,7 +217,11 @@ def main(
     except PreflightError as e:
         raise click.ClickException(str(e)) from e
 
-    s0_path = Path(manifest_data["s0_path"])
+    token_model_id, token_base_url = (
+        (checker_model_id, checker_base_url) if external_checker else (victim_model_id, victim_base_url)
+    )
+    s0_path = experiment_models.CHECKER_SKILL_FILE if external_checker else Path(manifest_data["s0_path"])
+    s0_text = s0_path.read_text(encoding="utf-8")
     policy = EditPolicy()
     static = StaticAttacker(manifest_data)
     attacker: Attacker = static
@@ -199,12 +230,30 @@ def main(
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
         else:
             attacker = AutoDojoAttacker(manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed))
-    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple)
+    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple, external_checker)
     config = RunConfig(
         condition=cond.name,
         run_id=cond.run_id,
         seed=seed,
-        checker=cond.checker,
+        checker=use_checker,
+        defense=defense,
+        skills=(
+            None
+            if external_checker
+            else {
+                "dir": str(skills_dir),
+                "fixed": {s.name: s.sha256 for s in agent_skills},
+                "security_skill": (
+                    {
+                        "name": experiment_models.S0_SKILL_NAME,
+                        "description": experiment_models.S0_SKILL_DESCRIPTION,
+                    }
+                    if cond.s0
+                    else None
+                ),
+                "load_tool": "load_skill",
+            }
+        ),
         skill_mode=cond.skill_mode,
         attack_mode=cond.attack_mode,
         trials_per_pair=trials_per_pair,
@@ -214,7 +263,7 @@ def main(
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
         s0_path=str(s0_path),
-        s0_sha256=manifest_data["s0_sha256"],
+        s0_sha256=sha256_text(s0_text) if external_checker else manifest_data["s0_sha256"],
         victim=victim_config.model_dump(),
         checker_model=(
             {
@@ -225,7 +274,7 @@ def main(
                 "user_template_sha256": sha256_text(CHECKER_USER_TEMPLATE),
                 "reply_schema_sha256": sha256_text(json.dumps(CHECKER_REPLY_SCHEMA, sort_keys=True)),
             }
-            if cond.checker
+            if use_checker
             else None
         ),
         judge=(
@@ -236,11 +285,11 @@ def main(
                 "api_key_env": JUDGE_KEY_ENV,
                 "max_tokens": DEFAULT_JUDGE_MAX_TOKENS,
                 "seed": seed,
-                "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPT),
+                "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPTS[defense]),
                 "digest_size": digest_size,
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
                 "common_words": len(policy.common_words),
-                "token_counter": f"vLLM /tokenize of {checker_model_id}",
+                "token_counter": f"vLLM /tokenize of {token_model_id}",
                 "on_api_failure": "retry 5 times, then stop the run (resumable)",
             }
             if cond.evolving_skill
@@ -255,22 +304,24 @@ def main(
 
     skill_file: SkillFileSource
     if cond.evolving_skill:
+        # File length is counted with the tokenizer of the model that reads the file: the victim, or the checker.
         evolver = SkillFileEvolver(
             load_skill_file(s0_path),
             openrouter_judge_fn(judge_model, seed=seed),
             run_dir / "skill_files",
-            vllm_token_counter(checker_base_url, checker_model_id),
+            vllm_token_counter(token_base_url, token_model_id),
             policy=policy,
             digest_size=digest_size,
+            defense=defense,
         )
         skill_file = EvolvingSkillFile(evolver, manifest_data["benchmark_version"])
-    elif cond.checker:
-        skill_file = FixedSkillFile(s0_path.read_text(encoding="utf-8"))
+    elif cond.s0:
+        skill_file = FixedSkillFile(s0_text)
     else:
         skill_file = NoChecker()
     checker_fn = (
         local_checker_fn(checker_model_id, checker_base_url, enable_thinking=experiment_models.CHECKER_ENABLE_THINKING)
-        if cond.checker
+        if use_checker
         else None
     )
 
@@ -289,6 +340,8 @@ def main(
         checker_fn=checker_fn,
         min_span_chars=min_span_chars,
         echo=click.echo,
+        defense=defense,
+        agent_skills=agent_skills,
     )
     try:
         records = runner.run()

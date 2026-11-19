@@ -240,7 +240,7 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     default=False,
     help="With `--harness deepagents`: screen every tool output with the checker (C1-style run). Defaults to "
     f"`{experiment_models.CHECKER_MODEL_ID}` at `{experiment_models.CHECKER_BASE_URL}` with the skill file "
-    f"`{experiment_models.DEFAULT_SKILL_FILE}`. Checker calls are logged to `<logdir>/checker_calls.jsonl`.",
+    f"`{experiment_models.CHECKER_SKILL_FILE}`. Checker calls are logged to `<logdir>/checker_calls.jsonl`.",
 )
 @click.option(
     "--checker-model-id",
@@ -392,7 +392,7 @@ def main(
             checker_base_url = checker_base_url or experiment_models.CHECKER_BASE_URL
         if checker_base_url == "openrouter":
             checker_base_url = None
-        skill_file = skill_file or experiment_models.DEFAULT_SKILL_FILE
+        skill_file = skill_file or experiment_models.CHECKER_SKILL_FILE
         if not skill_file.is_file():
             raise ValueError(f"Skill file not found: {skill_file}")
     else:

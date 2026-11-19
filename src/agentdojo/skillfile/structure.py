@@ -1,8 +1,9 @@
 """The skill file as structured data (`skillfile_evolution/DESIGN.md`, "Evolving the skill file: delta edits").
 
-The checker reads plain Markdown. The judge edits numbered rules. This module holds the file as sections of rules
-with stable IDs and renders it back to the Markdown the checker reads. Rule IDs and origins are metadata: they are
-never rendered for the checker, only in the judge's view (`render(with_ids=True)`).
+The victim agent reads plain Markdown (S0 is one of its skills; the optional external checker reads `S0_checker.md`).
+The judge edits numbered rules. This module holds the file as sections of rules with stable IDs and renders it back to
+the Markdown the agent reads. Rule IDs and origins are metadata: they are never rendered for the agent, only in the
+judge's view (`render(with_ids=True)`).
 
 `parse_markdown` maps a Markdown skill file onto the structure. For S0 the mapping is fixed by DESIGN.md:
 
@@ -12,7 +13,7 @@ never rendered for the checker, only in the judge's view (`render(with_ids=True)
 | Principles              | rules, frozen unless the policy allows editing them   | P1-P4 |
 | Signs of injected text  | editable rules; opening and closing sentences frozen  | S1-S7 |
 | What to keep            | editable rules                                        | K1-K3 |
-| How much to remove      | editable rules                                        | R1-R5 |
+| How to respond          | editable rules                                        | R1-R5 |
 | When unsure             | frozen prose                                          | none  |
 
 Rendering what `parse_markdown` produced reproduces the input byte for byte (tested on S0), so C1 and C2, which use
@@ -34,9 +35,11 @@ SECTION_ID_PREFIXES: dict[str, str] = {
     "Principles": "P",
     "Signs of injected text": "S",
     "What to keep": "K",
+    "How to respond": "R",
     "How much to remove": "R",
 }
-"""Rule sections of S0 and the letter their rule IDs start with. Every other `##` section is frozen prose."""
+"""Rule sections of S0 and the letter their rule IDs start with. Every other `##` section is frozen prose. S0 (the
+victim's skill) has "How to respond"; the external checker's file `S0_checker.md` has "How much to remove"."""
 
 PRINCIPLES_SECTION = "Principles"
 

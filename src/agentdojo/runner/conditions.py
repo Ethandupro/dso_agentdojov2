@@ -18,8 +18,9 @@ Phase = Literal["benign", "benign_before", "benign_after", "attack", "train", "t
 class Condition:
     name: ConditionName
     run_id: str
-    checker: bool
-    """C0 has no checker."""
+    s0: bool
+    """Whether the security skill S0 is in play: in the victim's skill list (default), or given to the external
+    checker (`--external-checker` ablation). C0 has no S0."""
     skill_mode: Literal["none", "static", "evolving"]
     attack_mode: Literal["static", "evolving"]
 
@@ -31,13 +32,11 @@ class Condition:
 CONDITIONS: dict[str, Condition] = {
     c.name: c
     for c in [
-        Condition("C0", "c0_no-checker_static-attack", checker=False, skill_mode="none", attack_mode="static"),
-        Condition("C1", "c1_static-skill_static-attack", checker=True, skill_mode="static", attack_mode="static"),
-        Condition("C2", "c2_static-skill_evolving-attack", checker=True, skill_mode="static", attack_mode="evolving"),
-        Condition("C3", "c3_evolving-skill_static-attack", checker=True, skill_mode="evolving", attack_mode="static"),
-        Condition(
-            "C4", "c4_evolving-skill_evolving-attack", checker=True, skill_mode="evolving", attack_mode="evolving"
-        ),
+        Condition("C0", "c0_no-s0_static-attack", s0=False, skill_mode="none", attack_mode="static"),
+        Condition("C1", "c1_static-s0_static-attack", s0=True, skill_mode="static", attack_mode="static"),
+        Condition("C2", "c2_static-s0_evolving-attack", s0=True, skill_mode="static", attack_mode="evolving"),
+        Condition("C3", "c3_evolving-s0_static-attack", s0=True, skill_mode="evolving", attack_mode="static"),
+        Condition("C4", "c4_evolving-s0_evolving-attack", s0=True, skill_mode="evolving", attack_mode="evolving"),
     ]
 }
 
