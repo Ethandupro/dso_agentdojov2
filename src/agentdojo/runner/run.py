@@ -30,7 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from agentdojo.agent_pipeline.agent_skills import AgentSkill, AgentSkillsMiddleware, SkillLibrary
+from agentdojo.agent_pipeline.agent_skills import AgentSkill, AgentSkillsMiddleware, SkillLibrary, SkillsPromptStyle
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import ToolMiddlewareFactory
 from agentdojo.checker.middleware import CheckerFn, make_checker_factory
@@ -79,10 +79,13 @@ def run_dir_for(
     limit: int | None,
     suites: tuple[str, ...] | None = None,
     external_checker: bool = False,
+    skills_prompt_style: str = "nudge",
 ) -> Path:
     name = condition.run_id
     if external_checker:
         name = f"{name}-external-checker"
+    elif skills_prompt_style != "nudge":
+        name = f"{name}-{skills_prompt_style}-skills"
     if suites:
         name = f"{name}-{'+'.join(sorted(suites))}"
     if limit is not None:
@@ -164,6 +167,7 @@ class Runner:
         echo: Callable[[str], None] = print,
         defense: Defense = "skills",
         agent_skills: list[AgentSkill] | None = None,
+        skills_prompt_style: SkillsPromptStyle = "nudge",
         security_skill_name: str = S0_SKILL_NAME,
         security_skill_description: str = S0_SKILL_DESCRIPTION,
     ) -> None:
@@ -173,6 +177,7 @@ class Runner:
             raise ValueError("a checker model is only used with defense='checker'")
         self.defense = defense
         self.agent_skills = list(agent_skills or [])
+        self.skills_prompt_style: SkillsPromptStyle = skills_prompt_style
         self.security_skill_name = security_skill_name
         self.security_skill_description = security_skill_description
         self.config = config
@@ -326,7 +331,7 @@ class Runner:
                 skills.append(AgentSkill(self.security_skill_name, self.security_skill_description, markdown))
             if skills:
                 library = SkillLibrary(skills)
-                middleware = AgentSkillsMiddleware(library)
+                middleware = AgentSkillsMiddleware(library, self.skills_prompt_style)
                 factory = lambda _query: [middleware]
         elif markdown is not None:
             assert self.checker_fn is not None

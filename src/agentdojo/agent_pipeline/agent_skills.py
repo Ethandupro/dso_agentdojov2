@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -30,7 +30,7 @@ LOAD_SKILL_TOOL_NAME = "load_skill"
 _NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONT_MATTER = re.compile(r"^---\n(.*?)\n---\n\n?", re.DOTALL)
 
-SKILLS_PROMPT = """\
+PLAIN_SKILLS_PROMPT = """\
 ## Skills
 
 You have a library of skills: written instructions for particular kinds of work. Each skill is listed below with \
@@ -39,6 +39,26 @@ its name and a short description of when to use it. Before you start work that a
 apply; you can load several.
 
 {skills}"""
+"""The first version (2026-11-19): skills are offered, loading is left entirely to the agent. In the first pilot
+Qwen3.5-27B loaded no skill at all (0 of 115 units)."""
+
+NUDGE_SKILLS_PROMPT = """\
+## Skills
+
+You have a library of skills: tested instructions for particular kinds of work. Each skill is listed below with its \
+name and when to use it.
+
+Before your first tool call in every task, read this list, decide which skills apply to the task, and call the \
+`{tool}` tool once for each of them to read its instructions. Then follow those instructions while you work. Most \
+tasks need at least one skill, and loading a skill that turns out not to apply costs little.
+
+{skills}"""
+"""Default since 2026-11-19 (after the first pilot): the agent is told to check the list and load what applies before
+its first tool call. Loading is still the agent's choice, and applies to every skill alike, so C0 and C1 differ only
+in whether S0 is listed."""
+
+SkillsPromptStyle = Literal["nudge", "plain"]
+SKILLS_PROMPTS: dict[SkillsPromptStyle, str] = {"nudge": NUDGE_SKILLS_PROMPT, "plain": PLAIN_SKILLS_PROMPT}
 
 
 class SkillFormatError(ValueError):
@@ -93,9 +113,9 @@ def load_skills_dir(path: Path) -> list[AgentSkill]:
     return skills
 
 
-def skills_prompt(skills: Sequence[AgentSkill]) -> str:
+def skills_prompt(skills: Sequence[AgentSkill], style: SkillsPromptStyle = "nudge") -> str:
     listing = "\n".join(f"- **{s.name}**: {s.description}" for s in sorted(skills, key=lambda s: s.name))
-    return SKILLS_PROMPT.format(tool=LOAD_SKILL_TOOL_NAME, skills=listing)
+    return SKILLS_PROMPTS[style].format(tool=LOAD_SKILL_TOOL_NAME, skills=listing)
 
 
 @dataclass
@@ -151,10 +171,10 @@ class AgentSkillsMiddleware(AgentMiddleware):
     recorded in the same `SkillLibrary`.
     """
 
-    def __init__(self, library: SkillLibrary) -> None:
+    def __init__(self, library: SkillLibrary, prompt_style: SkillsPromptStyle = "nudge") -> None:
         super().__init__()
         self.library = library
-        self.prompt = skills_prompt(library.skills)
+        self.prompt = skills_prompt(library.skills, prompt_style)
 
         def load_skill(name: str) -> str:
             """Read the full instructions of one skill from your skill library."""

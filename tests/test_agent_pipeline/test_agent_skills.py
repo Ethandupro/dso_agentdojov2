@@ -58,6 +58,16 @@ def test_prompt_lists_names_and_descriptions_alphabetically_not_bodies():
     assert "SECRET BODY" not in prompt and LOAD_SKILL_TOOL_NAME in prompt
 
 
+def test_nudge_prompt_is_the_default_and_plain_keeps_the_first_wording():
+    skills = [AgentSkill("alpha", "Use for a.", "body")]
+    nudge, plain = skills_prompt(skills), skills_prompt(skills, "plain")
+    assert "Before your first tool call in every task" in nudge
+    assert "Before your first tool call" not in plain and "Load only the skills that apply" in plain
+    assert "**alpha**: Use for a." in nudge and "**alpha**: Use for a." in plain
+    assert AgentSkillsMiddleware(SkillLibrary(skills)).prompt == nudge
+    assert AgentSkillsMiddleware(SkillLibrary(skills), "plain").prompt == plain
+
+
 def test_library_records_loads():
     library = SkillLibrary([AgentSkill("alpha", "Use for a.", "body a"), AgentSkill("s-zero", "Security.", "S0 body")])
     assert library.load("s-zero") == "S0 body"
