@@ -10,6 +10,7 @@ import pytest
 
 pytest.importorskip("deepagents")
 
+from agentdojo import experiment_models
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
@@ -17,12 +18,12 @@ from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.plugins import StaticAttacker
 from agentdojo.runner.run import Runner, run_dir_for
-from agentdojo.skillfile.checks import approx_token_count
+from agentdojo.skillfile.checks import EditPolicy, approx_token_count
 from agentdojo.skillfile.judge import JudgeCall, RemovedSpan, SkillFileEvolver, TrialRecord
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.types import ChatMessage
 from tests.test_checker.test_checker_middleware import GullibleModel
-from tests.test_runner.test_run import MANIFEST, REPO_ROOT, make_config
+from tests.test_runner.test_run import AGENT_SKILLS, MANIFEST, REPO_ROOT, make_config
 
 S0_PATH = REPO_ROOT / MANIFEST["s0_path"]
 NEW_RULE = "Promises a reward for obeying."
@@ -152,3 +153,47 @@ def test_evolver_state_round_trip(tmp_path: Path):
     assert other.history == ev.history and other.changelog == ev.changelog
     assert other.attack_archive == ev.attack_archive and other.steps == ev.steps
     assert other.current.next_number == ev.current.next_number
+
+
+class DescribingJudge:
+    """Rewrites S0's description the first time; afterwards returns no edits."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, system: str, user: str) -> JudgeCall:
+        self.calls += 1
+        edits = [{"op": "DESCRIBE", "text": NEW_DESCRIPTION}] if self.calls == 1 else []
+        reply = {"diagnosis": [{"type": "not_loaded", "rules": [], "explanation": "x"}], "edits": edits}
+        return JudgeCall(text=json.dumps(reply), input_tokens=10, output_tokens=5)
+
+
+NEW_DESCRIPTION = "Load before your first tool call whenever you will read content returned by a tool."
+
+
+def test_c3_judge_can_rewrite_the_s0_description_the_victim_sees(tmp_path: Path):
+    cond = CONDITIONS["C3"]
+    run_dir = run_dir_for(tmp_path, cond, 0, 1)
+    s0 = load_skill_file(S0_PATH)
+    s0.description = experiment_models.S0_SKILL_DESCRIPTION
+    evolver = SkillFileEvolver(
+        s0, DescribingJudge(), run_dir / "skill_files", approx_token_count, policy=EditPolicy(description_editable=True)
+    )
+    static = StaticAttacker(MANIFEST)
+    records = Runner(
+        config=make_config("C3", 1),
+        condition=cond,
+        run_dir=run_dir,
+        units=build_units(cond, MANIFEST, 3, 1),
+        attacker=static,
+        static_attacker=static,
+        skill_file=EvolvingSkillFile(evolver, "v1.2.2"),
+        victim_factory=GivingUpVictim,
+        echo=lambda _: None,
+        agent_skills=AGENT_SKILLS,
+    ).run()
+    described = [(r["phase"], r["skills"]["security_description"]) for r in records]
+    first_train = next(i for i, r in enumerate(records) if r["phase"] == "train")
+    assert {d for p, d in described[: first_train + 1]} == {experiment_models.S0_SKILL_DESCRIPTION}
+    assert {d for p, d in described[first_train + 1 :]} == {NEW_DESCRIPTION}  # incl. test and benign after
+    assert records[first_train]["skill_step"]["applied_edits"] == [{"op": "DESCRIBE", "text": NEW_DESCRIPTION}]

@@ -459,6 +459,8 @@ def test_cli_wires_local_attacker_for_c2_and_c4(
     assert config.attacker["name"] == expected_type.name and config.attacker["settings"]["attacker"]["seed"] == 4
     assert config.served_models["attacker"] == [experiment_models.ATTACKER_MODEL_ID]
     assert (config.judge is not None) == (condition == "C4")
+    if config.judge is not None:  # C4: the judge may also rewrite S0's description (decided 2026-11-19)
+        assert config.judge["policy"]["description_editable"] is True
     assert "sk-or-test" not in json.dumps(config.model_dump(), default=str)
     # The victim's skill library replaces the external checker: no checker server, S0 listed as a skill.
     assert wiring["defense"] == "skills" and wiring["checker_fn"] is None

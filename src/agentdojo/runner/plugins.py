@@ -74,6 +74,12 @@ class SkillFileSource(Protocol):
         """The security skill's body in the next trial; None means no S0 (C0)."""
         ...
 
+    @property
+    def description(self) -> str | None:
+        """The security skill's one-line description in the next trial, if the judge has set one; None means the
+        run's default (`experiment_models.S0_SKILL_DESCRIPTION`)."""
+        ...
+
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         """Called after every unit with its trial record; returns a summary of an evolution step, if one ran."""
         ...
@@ -90,6 +96,7 @@ class NoChecker:
 
     version_name = "none"
     markdown = None
+    description = None
 
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         return None
@@ -108,6 +115,7 @@ class FixedSkillFile:
     """S0 in every trial: the skill-file step after a trial does nothing."""
 
     version_name = "S0"
+    description = None
 
     def __init__(self, text: str) -> None:
         self._text = text

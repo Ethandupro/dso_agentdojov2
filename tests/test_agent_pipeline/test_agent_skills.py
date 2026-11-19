@@ -78,6 +78,7 @@ def test_library_records_loads():
         "loaded": ["s-zero"],
         "failed_loads": ["missing"],
         "security_skill": "s-zero",
+        "security_description": "Security.",
         "s0_loaded": True,
     }
     assert library.summary(None)["s0_loaded"] is None
@@ -123,6 +124,7 @@ def test_load_skill_through_a_deepagents_run():
         "loaded": ["alpha"],
         "failed_loads": [],
         "security_skill": "s-zero",
+        "security_description": "Security.",
         "s0_loaded": False,
     }
     assert "**alpha**: Use for a." in model.systems[0] and "ALPHA BODY" not in model.systems[0]

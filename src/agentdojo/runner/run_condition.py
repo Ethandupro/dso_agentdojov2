@@ -146,6 +146,13 @@ def autodojo_settings(model_id: str, base_url: str, seed: int) -> AutoDojoSettin
 )
 @click.option("--env-file", type=click.Path(path_type=Path), default=None, help="Loads API keys (judge, attacker).")
 @click.option("--judge-model", default=DEFAULT_JUDGE_MODEL, show_default=True, help="C3/C4 only.")
+@click.option(
+    "--judge-edits-description/--judge-keeps-description",
+    default=True,
+    show_default=True,
+    help="C3/C4 skills runs: whether the judge may also rewrite S0's one-line description, which decides how often "
+    "the agent loads S0 (decided 2026-11-19 by user). Never with --external-checker.",
+)
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
 @click.option("--attacker-model-id", default=experiment_models.ATTACKER_MODEL_ID, show_default=True, help="C2/C4.")
 @click.option("--attacker-base-url", default=experiment_models.ATTACKER_BASE_URL, show_default=True, help="C2/C4.")
@@ -176,6 +183,7 @@ def main(
     skills_dir: Path,
     env_file: Path | None,
     judge_model: str,
+    judge_edits_description: bool,
     digest_size: int,
     attacker_model_id: str,
     attacker_base_url: str,
@@ -232,7 +240,7 @@ def main(
     )
     s0_path = experiment_models.CHECKER_SKILL_FILE if external_checker else Path(manifest_data["s0_path"])
     s0_text = s0_path.read_text(encoding="utf-8")
-    policy = EditPolicy()
+    policy = EditPolicy(description_editable=judge_edits_description and not external_checker)
     static = StaticAttacker(manifest_data)
     attacker: Attacker = static
     if evolving_attack:
@@ -316,9 +324,12 @@ def main(
 
     skill_file: SkillFileSource
     if cond.evolving_skill:
+        s0_file = load_skill_file(s0_path)
+        if not external_checker:
+            s0_file.description = experiment_models.S0_SKILL_DESCRIPTION
         # File length is counted with the tokenizer of the model that reads the file: the victim, or the checker.
         evolver = SkillFileEvolver(
-            load_skill_file(s0_path),
+            s0_file,
             openrouter_judge_fn(judge_model, seed=seed),
             run_dir / "skill_files",
             vllm_token_counter(token_base_url, token_model_id),

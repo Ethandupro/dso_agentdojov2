@@ -5,7 +5,9 @@ The judge never writes the file. It returns a diagnosis and a list of edits:
 - `ADD` a rule to a section,
 - `MODIFY` a rule by ID,
 - `DELETE` a rule by ID,
-- `MERGE` two or more rules of one section into one new rule.
+- `MERGE` two or more rules of one section into one new rule,
+- `DESCRIBE`: replace the skill's one-line description, which the victim sees in its skill list before deciding
+  whether to load the skill (only when `EditPolicy.description_editable`; decided 2026-11-19 by user).
 
 `apply_edits` applies them to a copy of the file. Everything the edits don't name stays byte-identical. A new or
 merged rule gets the next unused ID of its section; deleted and merged IDs are retired and never reused.
@@ -19,8 +21,17 @@ from typing import Any, Literal
 
 from agentdojo.skillfile.structure import Rule, SkillFile
 
-DiagnosisType = Literal["missing", "vague", "conflict", "not_applied", "over_removed"]
-DIAGNOSIS_TYPES: tuple[str, ...] = ("missing", "vague", "conflict", "not_applied", "over_removed")
+DiagnosisType = Literal["missing", "vague", "conflict", "not_applied", "over_removed", "not_loaded", "over_restrictive"]
+DIAGNOSIS_TYPES: tuple[str, ...] = (
+    "missing",
+    "vague",
+    "conflict",
+    "not_applied",
+    "over_removed",
+    "not_loaded",
+    "over_restrictive",
+)
+"""`over_removed` belongs to the external-checker prompt; `not_loaded` and `over_restrictive` to the skills prompt."""
 
 
 @dataclass
@@ -62,7 +73,14 @@ class MergeRules:
     op: Literal["MERGE"] = "MERGE"
 
 
-Edit = AddRule | ModifyRule | DeleteRule | MergeRules
+@dataclass
+class DescribeSkill:
+    text: str
+    """The new one-line description of the skill."""
+    op: Literal["DESCRIBE"] = "DESCRIBE"
+
+
+Edit = AddRule | ModifyRule | DeleteRule | MergeRules | DescribeSkill
 
 
 @dataclass
@@ -143,8 +161,10 @@ def parse_judge_reply(reply: str) -> JudgeReply:
             if not isinstance(ids, list) or len(ids) < 2 or not all(isinstance(i, str) for i in ids):
                 raise JudgeReplyError("MERGE: 'ids' must list at least two rule IDs")
             edits.append(MergeRules(ids=ids, text=_str(item, "text"), keeps=keeps))
+        elif op == "DESCRIBE":
+            edits.append(DescribeSkill(text=_str(item, "text")))
         else:
-            raise JudgeReplyError(f"edit 'op' must be ADD, MODIFY, DELETE or MERGE; got {op!r}")
+            raise JudgeReplyError(f"edit 'op' must be ADD, MODIFY, DELETE, MERGE or DESCRIBE; got {op!r}")
     return JudgeReply(diagnosis=diagnosis, edits=edits)
 
 
@@ -155,6 +175,8 @@ def edit_to_dict(edit: Edit) -> dict[str, Any]:
         return {"op": "MODIFY", "id": edit.id, "text": edit.text, "keeps": edit.keeps}
     if isinstance(edit, DeleteRule):
         return {"op": "DELETE", "id": edit.id}
+    if isinstance(edit, DescribeSkill):
+        return {"op": "DESCRIBE", "text": edit.text}
     return {"op": "MERGE", "ids": list(edit.ids), "text": edit.text, "keeps": edit.keeps}
 
 
@@ -192,6 +214,8 @@ def apply_edits(skill_file: SkillFile, edits: list[Edit], origin: EditOrigin) ->
             section, index = _locate(result, edit.id)
             del section.rules[index]
             result.retired_ids.append(edit.id)
+        elif isinstance(edit, DescribeSkill):
+            result.description = edit.text
         else:
             located = [_locate(result, rule_id) for rule_id in edit.ids]
             section = located[0][0]
