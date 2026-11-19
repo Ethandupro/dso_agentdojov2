@@ -23,6 +23,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict
 from importlib import resources
@@ -45,6 +46,16 @@ from agentdojo.task_suite.load_suites import get_suite
 logger = logging.getLogger(__name__)
 
 STATE_FORMAT = 1
+
+# A whole per-trial rewrite is retried this many times on any error before it falls back (see
+# `MuzzleAttacker._rewrite_with_fallback`). Inside one rewrite, unparseable or empty attacker/checker/judge replies
+# are already handled (the stream is skipped, the candidate kept, or the score floored), so what reaches here is a
+# genuinely failing rewrite -- almost always a transient model-server/transport error on a shared GPU box. Rather
+# than abort the whole run (and leave the pilot half-done), MUZZLE retries, then reuses the previous trial's text so
+# the run always completes; every fallback is logged and recorded in the archive as `source="rewrite_failed"`.
+# Kept a module constant, not a setting, so it never changes `config.json` and an in-progress run stays resumable.
+REWRITE_MAX_ATTEMPTS = 3
+REWRITE_RETRY_BACKOFF_SECONDS = 3.0
 
 NO_VESSEL_ATTACK_METHOD: dict[str, Any] = {"element": "", "why": "", "how": "", "confidence": 0.0}
 """Upstream's `_attack_method(None)`. Placement is AgentDojo's and never changes, so no vessel is described."""
@@ -311,9 +322,69 @@ class MuzzleAttacker:
             return text
         if not history or history[-1].trial != trial - 1:
             raise ValueError(f"trial {trial} of {pair.id} needs the feedback of trial {trial - 1}")
-        entry = run_sync(lambda: self._rewrite(pair, trial, history[-1]))
+        entry = self._rewrite_with_fallback(pair, trial, history[-1])
         self.archive.append(entry)
         return entry["text"]
+
+    def _rewrite_with_fallback(self, pair: Pair, trial: int, last: AttemptFeedback) -> dict[str, Any]:
+        """Run `_rewrite`, retrying a few times on any error, then fall back to the previous trial's text.
+
+        A rewrite makes many model calls (Judge + the whole PAIR loop: attacker, stand-in checker, stand-in victim,
+        delivery judge, across streams and iterations). Unparseable or empty replies are already handled inside that
+        loop, so an exception escaping to here is a genuinely failing rewrite -- on a shared GPU box almost always a
+        transient server/transport error. Aborting would kill the whole pilot, so we retry, then reuse `last`'s text
+        (a payload already delivered for this pair). `BudgetExhaustedError` still propagates: it means the attacker
+        model's own budget is spent, which retrying cannot fix.
+        """
+        errors: list[str] = []
+        for attempt in range(1, REWRITE_MAX_ATTEMPTS + 1):
+            try:
+                return run_sync(lambda: self._rewrite(pair, trial, last))
+            except upstream_judge.BudgetExhaustedError:
+                raise
+            except Exception as exc:  # any rewrite failure must degrade, never abort the run
+                errors.append(f"{type(exc).__name__}: {exc}")
+                logger.warning(
+                    "MUZZLE rewrite failed for %s trial %d (attempt %d/%d): %s",
+                    pair.id,
+                    trial,
+                    attempt,
+                    REWRITE_MAX_ATTEMPTS,
+                    exc,
+                    exc_info=True,
+                )
+                if attempt < REWRITE_MAX_ATTEMPTS:
+                    time.sleep(REWRITE_RETRY_BACKOFF_SECONDS)
+        logger.error(
+            "MUZZLE rewrite gave up for %s trial %d after %d attempts; reusing trial %d's text so the run continues",
+            pair.id,
+            trial,
+            REWRITE_MAX_ATTEMPTS,
+            last.trial,
+        )
+        return {
+            "pair": pair.id,
+            "trial": trial,
+            "text": last.injection_text,
+            "source": "rewrite_failed",
+            "prompt_set": self.settings.prompt_set,
+            "stand_in_context": False,
+            "feedback": {
+                "trial": last.trial,
+                "injection_text": last.injection_text,
+                "utility": last.utility,
+                "security": last.security,
+                "attacker_success": last.attacker_success,
+                "final_answer": last.final_answer,
+            },
+            "judge": None,
+            "pair_result": None,
+            "inner_loop": None,
+            "examples_used": [],
+            "angle_order": None,
+            "usage": None,
+            "rewrite_errors": errors,
+        }
 
     async def _rewrite(self, pair: Pair, trial: int, last: AttemptFeedback) -> dict[str, Any]:
         s = self.settings
@@ -417,7 +488,11 @@ class MuzzleAttacker:
             "upstream": upstream_pin(),
             "prompt_sha256": prompt_hashes(),
             "deviations": list(DEVIATIONS),
-            "on_api_failure": "the OpenAI SDK retries; then the error stops the run (resumable)",
+            "on_api_failure": (
+                f"the OpenAI SDK retries each call; a whole rewrite that still fails is retried "
+                f"{REWRITE_MAX_ATTEMPTS}x, then falls back to the previous trial's text (archive source "
+                f"'rewrite_failed') so the run never aborts; BudgetExhaustedError still stops the run (resumable)"
+            ),
         }
 
     def state_dict(self) -> dict[str, Any]:

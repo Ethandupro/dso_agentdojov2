@@ -14,7 +14,8 @@ from openai.types.chat.chat_completion import Choice
 
 from agentdojo import experiment_models
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, BudgetExhaustedError, MuzzleAttacker, MuzzleSettings
-from agentdojo.attacks.adaptive.muzzle.attacker import judge_user_prompt
+from agentdojo.attacks.adaptive.muzzle import attacker as muzzle_attacker
+from agentdojo.attacks.adaptive.muzzle.attacker import REWRITE_MAX_ATTEMPTS, judge_user_prompt
 from agentdojo.attacks.adaptive.muzzle.ipi import PromptSet, _parse_score
 from agentdojo.attacks.adaptive.muzzle.llm import OPENROUTER_BASE_URL, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor.json_utils import load_system_prompt_by_name
@@ -125,6 +126,25 @@ def make_attacker(
         ipi_stand_in_checker=stand_in_checker,
     )
     return MuzzleAttacker(MANIFEST, settings, llm_factory=factory), clients
+
+
+class FailingLLM:
+    """A rewrite LLM whose every `complete` raises, to exercise the retry-then-fall-back path in `text_for`."""
+
+    def __init__(self, exc_factory: Any) -> None:
+        self.exc_factory = exc_factory
+        self.calls = 0
+        self.closed = False
+
+    async def complete(self, messages: list[dict[str, str]], **kwargs: Any) -> ChatCompletion:
+        self.calls += 1
+        raise self.exc_factory()
+
+    def usage(self) -> dict[str, Any]:
+        return {"calls": self.calls}
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def feedback(trial: int, text: str, utility: bool = True, security: bool = False) -> AttemptFeedback:
@@ -288,6 +308,46 @@ def test_missing_feedback_is_an_error():
     attacker, _ = make_attacker([])
     with pytest.raises(ValueError):
         attacker.text_for(PAIRS[0], 1, [])
+
+
+def test_rewrite_failure_retries_then_reuses_previous_text_without_aborting(monkeypatch):
+    # A rewrite that keeps erroring (e.g. the model server dropping on a shared GPU box) must never abort the run:
+    # it retries REWRITE_MAX_ATTEMPTS times, then reuses the previous trial's text so the pilot keeps going.
+    monkeypatch.setattr(muzzle_attacker, "REWRITE_RETRY_BACKOFF_SECONDS", 0.0)
+    clients: list[FailingLLM] = []
+
+    def factory() -> FailingLLM:
+        clients.append(FailingLLM(lambda: RuntimeError("model server down")))
+        return clients[-1]
+
+    settings = MuzzleSettings(attacker=AttackerModelConfig(model="scripted/attacker"), prompt_set="ipi")
+    attacker = MuzzleAttacker(MANIFEST, settings, llm_factory=factory)
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    t1 = attacker.text_for(pair, 1, [feedback(0, t0)])  # must not raise
+
+    assert t1 == t0  # reused the previous trial's (already-delivered) text
+    entry = attacker.archive[-1]
+    assert entry["source"] == "rewrite_failed"
+    assert len(entry["rewrite_errors"]) == REWRITE_MAX_ATTEMPTS
+    assert all("RuntimeError" in e for e in entry["rewrite_errors"])
+    assert len(clients) == REWRITE_MAX_ATTEMPTS  # a fresh client per retry
+    assert all(c.closed for c in clients)  # each closed in _rewrite's finally
+
+
+def test_budget_exhausted_still_propagates(monkeypatch):
+    # The attacker model's own budget running out is not something retrying can fix, so it must still stop the run.
+    monkeypatch.setattr(muzzle_attacker, "REWRITE_RETRY_BACKOFF_SECONDS", 0.0)
+
+    def factory() -> FailingLLM:
+        return FailingLLM(BudgetExhaustedError)
+
+    settings = MuzzleSettings(attacker=AttackerModelConfig(model="scripted/attacker"), prompt_set="ipi")
+    attacker = MuzzleAttacker(MANIFEST, settings, llm_factory=factory)
+    pair = PAIRS[0]
+    t0 = attacker.text_for(pair, 0, [])
+    with pytest.raises(BudgetExhaustedError):
+        attacker.text_for(pair, 1, [feedback(0, t0)])
 
 
 def test_config_has_no_secret_and_pins_upstream(monkeypatch):

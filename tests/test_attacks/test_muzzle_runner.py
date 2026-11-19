@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-import openai
 import pytest
 
 pytest.importorskip("deepagents")
@@ -161,18 +160,21 @@ def test_c2_over_http_sends_upstreams_arguments(tmp_path: Path, stand_in: StandI
     assert usage["empty_replies"] == 0 and usage["served_models"] == ["scripted"]
 
 
-def test_api_failure_stops_the_run_and_resume_continues(tmp_path: Path, stand_in: StandInServer):
+def test_attacker_api_failure_degrades_instead_of_aborting_the_run(tmp_path: Path, stand_in: StandInServer):
+    # A model-server outage during the rewrite (here a persistent 500) must NOT kill the whole run: each rewrite is
+    # retried, then falls back to the previous trial's already-delivered text, so every trial still runs.
     stand_in.fail_with = 500
-    runner = make_runner(tmp_path, "C2", http_attacker(stand_in, api_key_env="OPENROUTER_API_KEY"))
-    with pytest.raises(openai.InternalServerError):
-        runner.run()
-    done = [json.loads(line) for line in (runner.run_dir / "trials.jsonl").read_text().splitlines()]
-    assert [r["trial"] for r in done if r["pair"]] == [0]  # stopped before trial 1, nothing half-written
+    attacker = http_attacker(stand_in, api_key_env="OPENROUTER_API_KEY")
+    runner = make_runner(tmp_path, "C2", attacker)
+    records = [r for r in runner.run() if r["pair"]]  # must not raise
 
+    assert [r["trial"] for r in records] == [0, 1, 2]
+    # Trial 0 is the manifest text; both rewrites could not reach the server, so each reused the prior text.
+    assert [e["source"] for e in attacker.archive] == ["trial0", "rewrite_failed", "rewrite_failed"]
+    texts = [e["text"] for e in attacker.archive]
+    assert texts[0] == texts[1] == texts[2]
     assert {r["auth"] for r in stand_in.requests} == {"Bearer sk-test"}
-    stand_in.fail_with = None
-    attacker = http_attacker(stand_in, reasoning={"enabled": False})
-    records = make_runner(tmp_path, "C2", attacker).run()
-    assert [r["trial"] for r in records if r["pair"]] == [0, 1, 2]
-    assert [e["trial"] for e in attacker.archive] == [0, 1, 2]
-    assert stand_in.requests[-1]["body"]["reasoning"] == {"enabled": False}
+
+    write_report(runner.run_dir)
+    summary = json.loads((runner.run_dir / "summary.json").read_text())
+    assert summary["attacker"]["rewrite_failed"] == 2
