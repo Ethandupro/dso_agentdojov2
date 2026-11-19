@@ -123,17 +123,21 @@ def attacker_metrics(state: dict[str, Any]) -> dict[str, Any] | None:
 
     A rewrite "falls back" (`source == "goal_fallback"`) when PAIR returned no usable prompt and MUZZLE hands the
     victim the bare injection goal instead. That is how an attacker model refusing to write attacks shows up; it
-    also covers replies that never parsed. Empty and cut-off replies are counted per model call."""
+    also covers replies that never parsed. Empty and cut-off replies are counted per model call. A rewrite
+    "failed" (`source == "rewrite_failed"`) when the whole rewrite kept erroring (usually a transient model-server
+    outage) and MUZZLE reused the previous trial's text to keep the run alive rather than abort it."""
     archive = (state.get("attacker") or {}).get("archive")
     if archive is None:
         return None
     rewrites = [e for e in archive if e.get("source") != "trial0"]
     fallbacks = sum(e.get("source") == "goal_fallback" for e in rewrites)
+    rewrite_failed = sum(e.get("source") == "rewrite_failed" for e in rewrites)
     usage = [e.get("usage") or {} for e in rewrites]
     rate = (fallbacks / len(rewrites)) if rewrites else None
     return {
         "rewrites": len(rewrites),
         "goal_fallbacks": fallbacks,
+        "rewrite_failed": rewrite_failed,
         "refusal_rate": rate,
         "refusal_warning": rate is not None and rate > REFUSAL_WARN_RATE,
         "jailbroken_per_pair_judge": sum(bool((e.get("pair_result") or {}).get("is_jailbroken")) for e in rewrites),
