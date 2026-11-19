@@ -170,6 +170,13 @@ def test_suites_filter_keeps_only_those_suites_and_names_the_dir(tmp_path: Path)
     assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-banking+travel-limit5"
 
 
+def test_plain_skills_prompt_runs_get_their_own_directory(tmp_path: Path):
+    c1 = CONDITIONS["C1"]
+    assert run_dir_for(tmp_path, c1, 0, 30).parent.name == "c1_static-s0_static-attack-limit30"
+    plain = run_dir_for(tmp_path, c1, 0, 30, skills_prompt_style="plain")
+    assert plain.parent.name == "c1_static-s0_static-attack-plain-skills-limit30"
+
+
 def test_unit_lists():
     c1 = build_units(CONDITIONS["C1"], MANIFEST)
     assert len(c1) == 97 + 949 * 3
@@ -458,6 +465,7 @@ def test_cli_wires_local_attacker_for_c2_and_c4(
     assert [s.name for s in wiring["agent_skills"]] == [s.name for s in AGENT_SKILLS]
     assert "checker" not in config.served_models and config.checker is False
     assert config.skills is not None and config.skills["security_skill"]["name"] == S0_NAME
+    assert config.skills["prompt_style"] == "nudge" and wiring["skills_prompt_style"] == "nudge"
 
 
 def test_cli_external_checker_ablation(monkeypatch, tmp_path: Path):

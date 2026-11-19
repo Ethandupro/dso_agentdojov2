@@ -31,7 +31,7 @@ import openai
 from dotenv import load_dotenv
 
 from agentdojo import experiment_models
-from agentdojo.agent_pipeline.agent_skills import load_skills_dir
+from agentdojo.agent_pipeline.agent_skills import SKILLS_PROMPTS, load_skills_dir
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepAgentsPipeline, ToolMiddlewareFactory
 from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
@@ -129,6 +129,15 @@ def autodojo_settings(model_id: str, base_url: str, seed: int) -> AutoDojoSettin
     help="Ablation: the design before 2026-11-19. No skills; S0_checker.md goes to the external checker model.",
 )
 @click.option(
+    "--skills-prompt",
+    "skills_prompt_style",
+    type=click.Choice(sorted(SKILLS_PROMPTS)),
+    default="nudge",
+    show_default=True,
+    help="How the skill list is introduced: 'nudge' tells the agent to load the skills that apply before its first "
+    "tool call; 'plain' (the first pilot's prompt) only offers them. 'plain' runs get a '-plain-skills' directory.",
+)
+@click.option(
     "--skills-dir",
     type=click.Path(path_type=Path, file_okay=False),
     default=experiment_models.AGENT_SKILLS_DIR,
@@ -163,6 +172,7 @@ def main(
     checker_base_url: str,
     min_span_chars: int,
     external_checker: bool,
+    skills_prompt_style: str,
     skills_dir: Path,
     env_file: Path | None,
     judge_model: str,
@@ -230,7 +240,7 @@ def main(
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
         else:
             attacker = AutoDojoAttacker(manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed))
-    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple, external_checker)
+    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple, external_checker, skills_prompt_style)
     config = RunConfig(
         condition=cond.name,
         run_id=cond.run_id,
@@ -252,6 +262,8 @@ def main(
                     else None
                 ),
                 "load_tool": "load_skill",
+                "prompt_style": skills_prompt_style,
+                "prompt_sha256": sha256_text(SKILLS_PROMPTS[skills_prompt_style]),  # type: ignore[index]
             }
         ),
         skill_mode=cond.skill_mode,
@@ -342,6 +354,7 @@ def main(
         echo=click.echo,
         defense=defense,
         agent_skills=agent_skills,
+        skills_prompt_style=skills_prompt_style,  # type: ignore[arg-type]
     )
     try:
         records = runner.run()
