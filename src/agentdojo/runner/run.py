@@ -328,7 +328,8 @@ class Runner:
         if self.defense == "skills":
             skills = list(self.agent_skills)
             if markdown is not None:
-                skills.append(AgentSkill(self.security_skill_name, self.security_skill_description, markdown))
+                description = getattr(self.skill_file, "description", None) or self.security_skill_description
+                skills.append(AgentSkill(self.security_skill_name, description, markdown))
             if skills:
                 library = SkillLibrary(skills)
                 middleware = AgentSkillsMiddleware(library, self.skills_prompt_style)

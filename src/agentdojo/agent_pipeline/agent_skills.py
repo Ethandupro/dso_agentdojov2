@@ -160,6 +160,11 @@ class SkillLibrary:
             "loaded": [load.name for load in self.loads if load.found],
             "failed_loads": [load.name for load in self.loads if not load.found],
             "security_skill": security_skill,
+            "security_description": (
+                skill.description
+                if security_skill is not None and (skill := self.get(security_skill)) is not None
+                else None
+            ),
             "s0_loaded": None if security_skill is None else self.loaded(security_skill),
         }
 

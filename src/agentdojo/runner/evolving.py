@@ -48,6 +48,11 @@ class EvolvingSkillFile:
     def markdown(self) -> str:
         return self.evolver.current_markdown
 
+    @property
+    def description(self) -> str | None:
+        """S0's description as the judge last left it (C3/C4 may edit it since 2026-11-19); None if unset."""
+        return self.evolver.current.description or None
+
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         if record["pair"] is None:
             return None

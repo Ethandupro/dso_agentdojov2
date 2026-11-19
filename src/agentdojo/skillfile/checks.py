@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agentdojo.skillfile.edits import AddRule, DeleteRule, Edit, MergeRules, ModifyRule
+from agentdojo.skillfile.edits import AddRule, DeleteRule, DescribeSkill, Edit, MergeRules, ModifyRule
 from agentdojo.skillfile.structure import PRINCIPLES_SECTION, SkillFile
 
 TokenCounter = Callable[[str], int]
@@ -66,6 +66,10 @@ class EditPolicy:
     """One invalid edit rejects the batch (proposed). If False, only the invalid edits are dropped."""
     leakage_n: int = 8
     min_digit_run: int = 4
+    description_editable: bool = False
+    """Whether the judge may replace the skill's one-line description (`DESCRIBE`). On for the victim-skills design
+    (decided 2026-11-19 by user: the description decides how often the agent loads S0); the checker has none."""
+    max_description_tokens: int = 80
     common_words: frozenset[str] = field(default_factory=frozenset)
     """Common-English word list for the identifier ban. Open in DESIGN.md. Empty means strictest: any word from the
     triggering trial that is not in S0 is banned."""
@@ -87,7 +91,7 @@ class EditContext:
     """All text of the triggering trial the judge saw: user task, injection text, removed spans and reasons."""
 
     def __post_init__(self) -> None:
-        rendered = self.s0.render()
+        rendered = self.s0.render() + "\n" + self.s0.description
         self.s0_words = frozenset(_LETTERS.findall(rendered.lower()))
         self.s0_quotes = frozenset(_QUOTED.findall(rendered))
         self.trial_words = frozenset(_LETTERS.findall(self.trial_text.lower()))
@@ -130,6 +134,17 @@ def _edit_problems(
     seen_ids: set[str],
 ) -> list[str]:
     problems: list[str] = []
+    if isinstance(edit, DescribeSkill):
+        if not policy.description_editable:
+            return ["the skill's description cannot be edited in this run"]
+        if "__description__" in seen_ids:
+            problems.append("the description is changed by more than one edit")
+        seen_ids.add("__description__")
+        problems.extend(p.replace("rule text", "description") for p in identifier_ban(edit.text, context, policy))
+        tokens = count_tokens(edit.text)
+        if tokens > policy.max_description_tokens:
+            problems.append(f"description is {tokens} tokens; the limit is {policy.max_description_tokens}")
+        return problems
     ids = [edit.id] if isinstance(edit, ModifyRule | DeleteRule) else edit.ids if isinstance(edit, MergeRules) else []
     sections = set()
     for rule_id in ids:
@@ -203,7 +218,7 @@ def check_rendered(
                 "Make room by merging, shortening or deleting rules"
             )
         )
-    leak = leaked_ngram(rendered, attack_archive, policy.leakage_n)
+    leak = leaked_ngram(rendered + "\n" + skill_file.description, attack_archive, policy.leakage_n)
     if leak is not None:
         failures.append(
             CheckFailure(

@@ -95,6 +95,9 @@ class SkillFile:
     next_number: dict[str, int] = field(default_factory=dict)
     """Next free number per ID prefix. Only grows, so IDs are never reused."""
     retired_ids: list[str] = field(default_factory=list)
+    description: str = ""
+    """The skill's one-line description in the victim's skill list (empty for the checker's file). Not part of the
+    rendered body; the judge may change it only when `EditPolicy.description_editable`."""
 
     def render(self, with_ids: bool = False) -> str:
         """The Markdown the checker reads (`with_ids=False`), or the judge's view with `[ID]` tags."""
@@ -146,6 +149,7 @@ class SkillFile:
             ],
             "next_number": dict(self.next_number),
             "retired_ids": list(self.retired_ids),
+            "description": self.description,
         }
 
     @classmethod
@@ -168,6 +172,7 @@ class SkillFile:
             sections=sections,
             next_number=dict(data["next_number"]),
             retired_ids=list(data["retired_ids"]),
+            description=data.get("description", ""),
         )
 
 
