@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 from agentdojo import experiment_models
 from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepAgentsPipeline, ToolMiddlewareFactory
+from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
@@ -85,9 +86,17 @@ def check_judge(model: str) -> None:
         raise PreflightError(f"the judge model {model} did not answer on OpenRouter: {e}") from e
 
 
-def attacker_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
-    """MUZZLE on the local attacker server (decided 2026-11-17 by the user: no API)."""
-    return MuzzleSettings(attacker=AttackerModelConfig(model=model_id, base_url=base_url, api_key_env=None, seed=seed))
+def attacker_model_config(model_id: str, base_url: str, seed: int) -> AttackerModelConfig:
+    """The local attacker model (decided 2026-11-17 by the user: no API), shared by both evolving attackers."""
+    return AttackerModelConfig(model=model_id, base_url=base_url, api_key_env=None, seed=seed)
+
+
+def muzzle_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
+    return MuzzleSettings(attacker=attacker_model_config(model_id, base_url, seed))
+
+
+def autodojo_settings(model_id: str, base_url: str, seed: int) -> AutoDojoSettings:
+    return AutoDojoSettings(attacker=attacker_model_config(model_id, base_url, seed))
 
 
 @click.command()
@@ -112,6 +121,15 @@ def attacker_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
 @click.option("--attacker-model-id", default=experiment_models.ATTACKER_MODEL_ID, show_default=True, help="C2/C4.")
 @click.option("--attacker-base-url", default=experiment_models.ATTACKER_BASE_URL, show_default=True, help="C2/C4.")
+@click.option(
+    "--attacker",
+    "attacker_loop",
+    type=click.Choice(["autodojo", "muzzle"]),
+    default="autodojo",
+    show_default=True,
+    help="C2/C4 evolving attacker: 'autodojo' scores each rewrite on the real pipeline (leaderboard of the pair's "
+    "own trials); 'muzzle' is the earlier offline stand-in loop, kept for ablation.",
+)
 def main(
     condition: str,
     seed: int,
@@ -130,6 +148,7 @@ def main(
     digest_size: int,
     attacker_model_id: str,
     attacker_base_url: str,
+    attacker_loop: str,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -165,17 +184,21 @@ def main(
             served["checker"] = check_served("checker", checker_base_url, checker_model_id)
         if cond.evolving_skill:
             check_judge(judge_model)
-        muzzle_settings = None
-        if cond.attack_mode == "evolving":
+        evolving_attack = cond.attack_mode == "evolving"
+        if evolving_attack:
             served["attacker"] = check_served("attacker", attacker_base_url, attacker_model_id)
-            muzzle_settings = attacker_settings(attacker_model_id, attacker_base_url, seed)
     except PreflightError as e:
         raise click.ClickException(str(e)) from e
 
     s0_path = Path(manifest_data["s0_path"])
     policy = EditPolicy()
     static = StaticAttacker(manifest_data)
-    attacker: Attacker = static if muzzle_settings is None else MuzzleAttacker(manifest_data, muzzle_settings)
+    attacker: Attacker = static
+    if evolving_attack:
+        if attacker_loop == "muzzle":
+            attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
+        else:
+            attacker = AutoDojoAttacker(manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed))
     run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple)
     config = RunConfig(
         condition=cond.name,
@@ -223,7 +246,7 @@ def main(
             if cond.evolving_skill
             else None
         ),
-        attacker=attacker.config() if isinstance(attacker, MuzzleAttacker) else None,
+        attacker=attacker.config() if isinstance(attacker, MuzzleAttacker | AutoDojoAttacker) else None,
         served_models=served,
         code=git_state(),
         versions=package_versions(),
