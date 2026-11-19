@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 STATE_FORMAT = 1
 
+
+def _clip(text: str | None, limit: int) -> str | None:
+    if text is None:
+        return None
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + " ...[truncated]"
+
+
 # One optimizer call per trial is retried this many times on any error before the trial falls back to the best text
 # on the leaderboard (`source="goal_fallback"`), so a transient model-server error on the shared GPU box never aborts
 # the whole run. A module constant, like the MUZZLE port's, so it never changes `config.json` and resume stays valid.
@@ -60,6 +68,9 @@ DEVIATIONS = (
     "always generates. The optimizer prompt names the defence it faces (`target`: the agent itself, or a filter).",
     "A generated text missing one of the goal's literal values (email, URL, long account number) is sent back to the "
     "optimizer with the values named, within `max_tries`; the first C2 pilot's rewrites mangled the IBAN.",
+    "The leaderboard shows the agent's own final response on each past attempt (`show_agent_response`), truncated; "
+    "AutoDojo's outcome feedback is the binary result, but the first pilots showed the optimizer could not adapt to "
+    "refusals it could not see. Still black-box: the agent's output only, never the skill file or its reasoning.",
 )
 
 
@@ -87,6 +98,13 @@ class AutoDojoSettings(BaseModel):
     top_p: float = 0.9
     max_tries: int = 5
     """Parse/JSON retries inside one optimizer call before that call is treated as failed."""
+    show_agent_response: bool = True
+    """Show the optimizer what the agent actually did on each past attempt (its final response), not just
+    success/failure. The first C2 pilots gave only the binary outcome, so the optimizer could not see why a text was
+    ignored and only reshuffled wording. Kept black-box: the agent's own output, never the skill file or its reasoning
+    trace."""
+    agent_response_chars: int = 600
+    """Each shown agent response is truncated to this many characters."""
     target: Literal["agent", "filter"] = "agent"
     """Which defence the optimizer is told it faces: `agent` (skills design, default since 2026-11-19: no filter, the
     agent may be addressed directly) or `filter` (external-checker design: text must pass as ordinary data)."""
@@ -147,8 +165,15 @@ class AutoDojoAttacker:
     def _leaderboard(self, history: list[AttemptFeedback]) -> list[dict[str, Any]]:
         """The pair's earlier trials as leaderboard entries, best first (success, then the user task surviving, then
         most recent), capped at `leaderboard_size`."""
+        limit = self.settings.agent_response_chars
         entries = [
-            {"text": fb.injection_text, "security": fb.security, "utility": fb.utility, "trial": fb.trial}
+            {
+                "text": fb.injection_text,
+                "security": fb.security,
+                "utility": fb.utility,
+                "trial": fb.trial,
+                "response": _clip(fb.final_answer, limit) if self.settings.show_agent_response else None,
+            }
             for fb in history
         ]
         entries.sort(key=lambda e: (e["security"], not e["utility"], e["trial"]), reverse=True)
