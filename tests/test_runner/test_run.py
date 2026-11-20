@@ -24,7 +24,7 @@ from agentdojo.attacks.adaptive.muzzle import MuzzleAttacker
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
 from agentdojo.runner import run_condition
 from agentdojo.runner.compare import write_comparison
-from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
+from agentdojo.runner.conditions import CONDITIONS, PairFilter, Unit, build_units, load_subset
 from agentdojo.runner.config import RunConfig
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, Pair
 from agentdojo.runner.plugins import AttemptFeedback, FixedSkillFile, NoChecker, StaticAttacker
@@ -168,6 +168,47 @@ def test_suites_filter_keeps_only_those_suites_and_names_the_dir(tmp_path: Path)
     assert len({u.pair.id for u in limited if u.pair}) == 5
     rd = run_dir_for(tmp_path, CONDITIONS["C2"], 0, 5, ("travel", "banking"))
     assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-banking+travel-limit5"
+
+
+SUBSET_FILE = REPO_ROOT / "skillfile_evolution" / "subsets" / "banking_travel_64.txt"
+
+
+def test_committed_subset_is_64_single_point_pairs_with_every_injection_task(tmp_path: Path):
+    tasks = load_subset(SUBSET_FILE, MANIFEST)
+    pair_filter = PairFilter(user_tasks=tasks, single_injection_point=True)
+    c2 = build_units(CONDITIONS["C2"], MANIFEST, 9, pair_filter=pair_filter)
+    pairs = {u.pair.id: u.pair for u in c2 if u.pair}
+    assert len(pairs) == 64 and len(c2) == 8 + 64 * 9  # 8 benign user tasks, then 9 trials (8 evolutions) a pair
+    assert all(len(p.vectors) == 1 for p in pairs.values())
+    for suite in ("banking", "travel"):
+        all_injections = {p["injection_task"] for p in MANIFEST["pairs"] if p["suite"] == suite}
+        assert {p.injection_task for p in pairs.values() if p.suite == suite} == all_injections
+    assert {u.user_task for u in c2 if u.pair is None} == {t.split("/")[1] for t in tasks}
+    c4 = build_units(CONDITIONS["C4"], MANIFEST, 9, pair_filter=pair_filter)
+    assert {u.pair.id for u in c4 if u.pair} == set(pairs)
+    rd = run_dir_for(tmp_path, CONDITIONS["C2"], 0, None, subset=SUBSET_FILE.stem, single_injection_point=True)
+    assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-subset-banking_travel_64-single-point"
+    off = run_dir_for(tmp_path, CONDITIONS["C2"], 0, None, subset=SUBSET_FILE.stem, no_attacker_memory=True)
+    assert off.parent.name == f"{CONDITIONS['C2'].run_id}-no-memory-subset-banking_travel_64"
+
+
+def test_single_injection_point_filter_drops_multi_vector_pairs():
+    units = build_units(CONDITIONS["C1"], MANIFEST, 1, pair_filter=PairFilter(single_injection_point=True))
+    pairs = [u.pair for u in units if u.pair]
+    assert len(pairs) == sum(1 for p in MANIFEST["pairs"] if len(p["vectors"]) == 1) == 700
+    assert all(len(p.vectors) == 1 for p in pairs)
+
+
+def test_subset_file_rejects_unknown_tasks_and_skips_comments(tmp_path: Path):
+    path = tmp_path / "s.txt"
+    path.write_text("# a comment\n\nbanking/user_task_0  # trailing\n")
+    assert load_subset(path, MANIFEST) == frozenset({"banking/user_task_0"})
+    path.write_text("banking/user_task_99\n")
+    with pytest.raises(ValueError, match="not in the manifest"):
+        load_subset(path, MANIFEST)
+    path.write_text("# nothing\n")
+    with pytest.raises(ValueError, match="no user tasks"):
+        load_subset(path, MANIFEST)
 
 
 def test_plain_skills_prompt_runs_get_their_own_directory(tmp_path: Path):

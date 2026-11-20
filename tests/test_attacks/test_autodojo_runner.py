@@ -95,3 +95,29 @@ def test_c0e_runs_the_evolving_attacker_against_the_victim_without_s0(tmp_path: 
     for r in records:
         assert r["skills"]["security_skill"] is None and r["skills"]["s0_loaded"] is None
         assert r["skills"]["listed"] == sorted(s.name for s in AGENT_SKILLS)
+
+
+def test_runner_reports_every_evolving_trial_to_the_playbook(tmp_path: Path):
+    attacker, _, _ = make_attacker()
+    runner = make_runner(tmp_path, "C2", attacker, trials=9)
+    records = [r for r in runner.run() if r["pair"]]
+    wins = [r for r in records if r["security"]]
+    assert [(e["pair"], e["trial"], e["skill_version"]) for e in attacker.playbook] == [
+        (r["pair"], r["trial"], r["skill_version"]) for r in wins
+    ]
+    state = json.loads((runner.run_dir / "state.json").read_text())
+    assert state["attacker"]["playbook"] == attacker.playbook
+
+
+def test_c4_test_pairs_are_never_reported_to_the_playbook(tmp_path: Path):
+    attacker, _, _ = make_attacker()
+    seen: list[str] = []
+    original = attacker.observe
+
+    def spy(pair: Any, feedback: Any, skill_version: str | None) -> None:
+        seen.append(pair.split)
+        original(pair, feedback, skill_version)
+
+    attacker.observe = spy  # type: ignore[method-assign]
+    make_runner(tmp_path, "C4", attacker, trials=3).run()
+    assert seen == ["train"] * 3

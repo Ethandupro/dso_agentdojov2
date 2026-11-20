@@ -264,3 +264,71 @@ def test_config_names_the_paper_and_hides_secrets():
     config = attacker.config()
     assert config["name"] == "autodojo" and "2606.15057" in config["paper"]
     assert "api_key" not in json.dumps(config).lower() or "api_key_env" in json.dumps(config)
+
+
+def _two_pairs_same_target():
+    """Two banking pairs with the same injection task and different user tasks, plus one from another suite."""
+    pairs = load_pairs(MANIFEST)
+    a = next(p for p in pairs if p.suite == "banking" and p.injection_task == "injection_task_0")
+    b = next(p for p in pairs if p.injection_task == a.injection_task and p.suite == a.suite and p.id != a.id)
+    other = next(p for p in pairs if p.suite == "travel")
+    return a, b, other
+
+
+def test_memory_shows_winners_and_lessons_from_other_pairs_only():
+    a, b, other = _two_pairs_same_target()
+    attacker, _, log = make_attacker()
+    assert attacker.settings.memory is True  # on by default (user decision 2026-11-20)
+    seed_a = attacker.text_for(a, 0, [])
+    rewrite_a = attacker.text_for(a, 1, [fb(0, seed_a)])  # archive gets a diagnosis ("be quieter")
+    attacker.observe(a, fb(1, rewrite_a, security=True), "S0")
+    attacker.observe(a, fb(1, rewrite_a, security=True), "S0")  # a rerun unit is not stored twice
+    attacker.observe(a, fb(0, seed_a), "S0")  # failures are not stored as winners
+    assert [(e["pair"], e["trial"], e["skill_version"]) for e in attacker.playbook] == [(a.id, 1, "S0")]
+
+    seed_b = attacker.text_for(b, 0, [])
+    attacker.text_for(b, 1, [fb(0, seed_b)])
+    user_msg = log[-1]["messages"][1]["content"]
+    assert prompts.MEMORY_HEADER in user_msg and rewrite_a in user_msg and "be quieter" in user_msg
+    assert attacker.archive[-1]["memory_shown"] == {"winners": 1, "lessons": 1}
+    # The pair's own winners stay on its leaderboard, not in its memory block; another suite gets nothing.
+    assert attacker.memory_for(a)[0] == []
+    assert attacker.memory_for(other) == ([], [])
+
+
+def test_memory_off_shows_nothing_and_stores_nothing():
+    a, b, _ = _two_pairs_same_target()
+    attacker, _, log = make_attacker(memory=False)
+    seed_a = attacker.text_for(a, 0, [])
+    rewrite_a = attacker.text_for(a, 1, [fb(0, seed_a)])
+    attacker.observe(a, fb(1, rewrite_a, security=True), "S0")
+    assert attacker.playbook == []
+    seed_b = attacker.text_for(b, 0, [])
+    attacker.text_for(b, 1, [fb(0, seed_b)])
+    assert prompts.MEMORY_HEADER not in log[-1]["messages"][1]["content"]
+
+
+def test_memory_is_capped_and_same_target_comes_first():
+    a, b, _ = _two_pairs_same_target()
+    pairs = load_pairs(MANIFEST)
+    same_suite = [p for p in pairs if p.suite == a.suite and p.injection_task != a.injection_task][:4]
+    attacker, _, _ = make_attacker(memory_examples=2)
+    attacker.observe(a, fb(0, "SAME TARGET WIN"), None)
+    attacker.observe(a, fb(1, "SAME TARGET WIN", security=True), None)
+    for i, p in enumerate(same_suite):
+        attacker.observe(p, fb(0, f"SUITE WIN {i}", security=True), None)
+    winners, _ = attacker.memory_for(b)
+    assert winners == ["SAME TARGET WIN", "SUITE WIN 3"]
+
+
+def test_playbook_survives_the_checkpoint_and_old_state_loads():
+    a, _, _ = _two_pairs_same_target()
+    attacker, _, _ = make_attacker()
+    attacker.observe(a, fb(0, "WIN", security=True), "S0")
+    state = json.loads(json.dumps(attacker.state_dict()))
+    restored, _, _ = make_attacker()
+    restored.load_state(state)
+    assert restored.playbook == attacker.playbook
+    old, _, _ = make_attacker()
+    old.load_state({"format": 1, "archive": []})
+    assert old.playbook == []

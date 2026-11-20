@@ -38,7 +38,7 @@ from agentdojo.experiment_models import S0_SKILL_DESCRIPTION, S0_SKILL_NAME
 from agentdojo.logging import NullLogger, TraceLogger
 from agentdojo.runner.conditions import Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
-from agentdojo.runner.plugins import Attacker, AttemptFeedback, SkillFileSource, StaticAttacker
+from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -80,6 +80,9 @@ def run_dir_for(
     suites: tuple[str, ...] | None = None,
     external_checker: bool = False,
     skills_prompt_style: str = "nudge",
+    subset: str | None = None,
+    single_injection_point: bool = False,
+    no_attacker_memory: bool = False,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -88,6 +91,12 @@ def run_dir_for(
         name = f"{name}-{skills_prompt_style}-skills"
     if suites:
         name = f"{name}-{'+'.join(sorted(suites))}"
+    if no_attacker_memory:
+        name = f"{name}-no-memory"
+    if subset:
+        name = f"{name}-subset-{subset}"
+    if single_injection_point:
+        name = f"{name}-single-point"
     if limit is not None:
         name = f"{name}-limit{limit}"
     return results_root / name / f"seed_{seed}"
@@ -267,17 +276,17 @@ class Runner:
     def history(self, unit: Unit) -> list[AttemptFeedback]:
         """The pair's earlier trials in this run, as the attacker may see them."""
         assert unit.pair is not None
-        return [
-            AttemptFeedback(
-                trial=r["trial"],
-                injection_text=r["injection_text"],
-                utility=r["utility"],
-                security=r["security"],
-                final_answer=r["final_answer"],
-            )
-            for r in self.records
-            if r["pair"] == unit.pair.id and r["phase"] == unit.phase
-        ]
+        return [self._feedback(r) for r in self.records if r["pair"] == unit.pair.id and r["phase"] == unit.phase]
+
+    @staticmethod
+    def _feedback(record: dict[str, Any]) -> AttemptFeedback:
+        return AttemptFeedback(
+            trial=record["trial"],
+            injection_text=record["injection_text"],
+            utility=record["utility"],
+            security=record["security"],
+            final_answer=record["final_answer"],
+        )
 
     def attacker_for(self, unit: Unit) -> Attacker:
         # C4: the evolving attacker never sees test-split injection tasks; test pairs keep the trial-0 text.
@@ -403,6 +412,11 @@ class Runner:
             "duration_s": round(time.time() - start, 3),
             "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
+        if unit.pair is not None:
+            attacker = self.attacker_for(unit)
+            if attacker is not self.static_attacker and isinstance(attacker, ObservingAttacker):
+                # Cross-pair memory: what this trial's text achieved against the skill-file version it faced.
+                attacker.observe(unit.pair, self._feedback(record), skill_version)
         record["skill_step"] = self.skill_file.after_trial(record)
         record["skill_version_after"] = self.skill_file.version_name
         return record, checker_lines
