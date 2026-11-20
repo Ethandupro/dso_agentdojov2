@@ -1,33 +1,36 @@
 """The models and skills of the skill-file experiments and where they are served (decided 2026-11-16 by the user;
-victim redesign 2026-11-19; victim upgraded to Qwen3.8-27B 2026-11-20).
+victim redesign 2026-11-19; 2026-11-20: victim back to Qwen3.5-27B, attacker now Qwen3.8-27B).
 
 The victim and the attacker run on the project's GPU VM behind vLLM's OpenAI-compatible server (see
-`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Qwen3.8-27B on GPU 0 (port 8000), sped up with
-the z-lab/Qwen3.8-27B-DFlash2 draft model (speculative decoding: same outputs, faster), and the attacker on GPU 1
-(port 8003). Since 2026-11-19 there is no external checker by default: S0 is one of the victim's skills. The old
-checker (Qwen3.5-9B, port 8002) is kept for ablation behind `run_condition --external-checker`. Each setting is
+`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Qwen3.5-27B on GPU 0 (port 8000), sped up with
+the z-lab/Qwen3.5-27B-DFlash draft model (speculative decoding: same outputs, faster), and the attacker Qwen3.8-27B
+(with the z-lab/Qwen3.8-27B-DFlash2 draft) on GPU 1 (port 8003). Since 2026-11-19 there is no external checker by
+default: S0 is one of the victim's skills. The old checker (Qwen3.5-9B, port 8002) is kept for ablation behind `run_condition --external-checker`. Each setting is
 overridable from the CLI. The skill-file judge runs on OpenRouter.
 """
 
 from pathlib import Path
 
-VICTIM_MODEL_ID = "Qwen/Qwen3.8-27B"
-"""Changed 2026-11-20 by the user (was Qwen/Qwen3.5-27B). Qwen3.8 is built on the Qwen3.5 architecture and is served
-the same way (qwen3_coder tool parser, qwen3 reasoning parser, `enable_thinking` chat-template switch)."""
+VICTIM_MODEL_ID = "Qwen/Qwen3.5-27B"
+"""Back to Qwen/Qwen3.5-27B on 2026-11-20 by the user (it was Qwen/Qwen3.8-27B for a few hours, PR #40)."""
 VICTIM_BASE_URL = "http://localhost:8000/v1"
 VICTIM_ENABLE_THINKING = False
-"""Thinking off, as before. Qwen3.8 thinks by default; `enable_thinking: false` turns it off (its model card)."""
-VICTIM_DRAFT_MODEL_ID = "z-lab/Qwen3.8-27B-DFlash2"
-"""Speculative-decoding draft for the victim (user's choice 2026-11-19; DFlash 2 for Qwen3.8 since 2026-11-20). It only proposes tokens that the 27B model
+"""Published AgentDojo numbers for Qwen3.5-27B are non-thinking."""
+VICTIM_DRAFT_MODEL_ID = "z-lab/Qwen3.5-27B-DFlash"
+"""Speculative-decoding draft for the victim (user's choice 2026-11-19). It only proposes tokens that the 27B model
 verifies, so it changes speed, not answers. Set in `local_victim/serve_all.sh`, not by the runner."""
 
 CHECKER_MODEL_ID = "Qwen/Qwen3.5-9B"
 CHECKER_BASE_URL = "http://localhost:8002/v1"
 CHECKER_ENABLE_THINKING = False
 
-ATTACKER_MODEL_ID = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
-"""The MUZZLE attacker of C2/C4 (decided 2026-11-17 by the user: Mistral Small 24B, local, no API). It plays MUZZLE's
-judge and all three PAIR roles. Non-reasoning, so upstream's PAIR token caps work as they are."""
+ATTACKER_MODEL_ID = "Qwen/Qwen3.8-27B"
+"""The C2/C4 attacker (AutoDojo optimizer by default; MUZZLE's judge and PAIR roles in the ablation). Changed
+2026-11-20 by the user from mistralai/Mistral-Small-3.2-24B-Instruct-2506 to the official Qwen/Qwen3.8-27B release,
+local, no API. Served with thinking off (`serve_vllm.sh` passes `enable_thinking: false` as the default chat-template
+kwarg), so upstream's PAIR token caps still leave room for the answer."""
+ATTACKER_DRAFT_MODEL_ID = "z-lab/Qwen3.8-27B-DFlash2"
+"""Speculative-decoding draft for the attacker (speed only). Set in `local_victim/serve_all.sh`, not by the runner."""
 ATTACKER_BASE_URL = "http://localhost:8003/v1"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

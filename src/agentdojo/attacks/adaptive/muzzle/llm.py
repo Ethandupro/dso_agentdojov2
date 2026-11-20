@@ -3,7 +3,7 @@
 Upstream imports `LLMClient` from `superred.core.llm` (a litellm wrapper) and `BudgetExhaustedError` from
 `superred.core.types.llm`. The vendored files only ever call `await llm.complete(messages, **kwargs)` and read
 `result.choices[0].message.content`, so this is all they need. Calls go to any OpenAI-compatible server. The
-default is the project's local attacker (Mistral Small 24B on the GPU VM's vLLM, decided 2026-11-17, no API key);
+default is the project's local attacker (Qwen3.8-27B on the GPU VM's vLLM since 2026-11-20, Mistral Small 24B before; no API key);
 OpenRouter works too, with `base_url=OPENROUTER_BASE_URL` and `api_key_env="OPENROUTER_API_KEY"`.
 """
 

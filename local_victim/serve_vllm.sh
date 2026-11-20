@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Serve a local victim model with vLLM's OpenAI-compatible server (no admin rights, no nvcc needed).
 #
-#   bash local_victim/serve_vllm.sh            # Qwen/Qwen3.8-27B, one copy per GPU, port 8000
+#   bash local_victim/serve_vllm.sh            # Qwen/Qwen3.5-27B, one copy per GPU, port 8000
 #   MODEL=Qwen/Qwen3-32B bash local_victim/serve_vllm.sh
 #
 # Then run the benchmark with:
@@ -9,7 +9,7 @@
 # See local_victim/README.md.
 set -euo pipefail
 
-MODEL=${MODEL:-Qwen/Qwen3.8-27B}
+MODEL=${MODEL:-Qwen/Qwen3.5-27B}
 PORT=${PORT:-8000}
 VENV=${VENV:-$HOME/venvs/vllm}
 # Two H100s: by default one full BF16 copy per GPU behind one endpoint (data parallel). Set DP=1 TP=2 to split one
@@ -17,8 +17,8 @@ VENV=${VENV:-$HOME/venvs/vllm}
 DP=${DP:-2}
 TP=${TP:-1}
 GPU_MEM=${GPU_MEM:-0.90}
-# Speculative decoding (optional): DRAFT=<draft model id> adds a DFlash draft model, e.g. z-lab/Qwen3.8-27B-DFlash2 for
-# Qwen/Qwen3.8-27B (or z-lab/Qwen3.5-27B-DFlash for Qwen/Qwen3.5-27B). The draft only proposes tokens that the target verifies, so answers stay the same; only speed changes.
+# Speculative decoding (optional): DRAFT=<draft model id> adds a DFlash draft model, e.g. z-lab/Qwen3.5-27B-DFlash for
+# Qwen/Qwen3.5-27B (the victim) or z-lab/Qwen3.8-27B-DFlash2 for Qwen/Qwen3.8-27B (the attacker). The draft only proposes tokens that the target verifies, so answers stay the same; only speed changes.
 # SPEC_TOKENS is the number of tokens drafted per step (the model card recommends block size 8 for many parallel
 # requests; vLLM's num_speculative_tokens is the block size minus one).
 DRAFT=${DRAFT:-none}
@@ -35,7 +35,7 @@ case "$MODEL" in
   # Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template (pass it with
   # EXTRA_ARGS="--chat-template /path/to/tool_chat_template_gemma4.jinja", see local_victim/README.md).
   *gemma-4*)           TOOL_PARSER=${TOOL_PARSER:-gemma4};      REASONING_PARSER=${REASONING_PARSER:-gemma4}; MAX_LEN=${MAX_LEN:-131072} ;;
-  # Mistral Small (the MUZZLE attacker): no reasoning, loaded in Mistral's own format as its model card recommends.
+  # Mistral Small (the attacker until 2026-11-20): no reasoning, loaded in Mistral's own format as its model card recommends.
   # Its chat template is mistral_common's, so no enable_thinking switch is passed.
   *Mistral-Small*)     TOOL_PARSER=${TOOL_PARSER:-mistral};     REASONING_PARSER=${REASONING_PARSER:-none}; MAX_LEN=${MAX_LEN:-32768}
                        THINKING_KWARGS=${THINKING_KWARGS:-none}
