@@ -368,3 +368,37 @@ def test_progress_none_keeps_the_old_order():
     history = [fbp(0, "A", utility=True), fbp(1, "B", utility=False)]
     # No progress anywhere: the user-task-failed entry ranks above the clean failure, as before graded scoring.
     assert [e["text"] for e in attacker._leaderboard(history)] == ["B", "A"]
+
+
+def test_strategy_bank_is_shown_and_the_named_strategy_is_recorded():
+    from agentdojo.attacks.adaptive.autodojo.strategies import strategies_for
+
+    goal = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=AttackerModelConfig(model="x"))).goal(PAIR)
+    values = " ".join(goal_literals(goal))
+    reply = json.dumps({"diagnosis": "d", "strategy": "data_record", "prompt": f"a note {values}".strip()})
+    attacker, _, log = make_attacker(reply=reply)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    user_msg = log[-1]["messages"][1]["content"]
+    assert "STRATEGY BANK" in user_msg and "data_record:" in user_msg
+    assert attacker.archive[-1]["strategy"] == "data_record"
+    # The agent design shows more strategies than the filter design, and both are non-empty.
+    assert len(strategies_for("agent")) > len(strategies_for("filter")) > 0
+
+
+def test_an_unknown_strategy_name_is_dropped():
+    goal = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=AttackerModelConfig(model="x"))).goal(PAIR)
+    values = " ".join(goal_literals(goal))
+    reply = json.dumps({"diagnosis": "d", "strategy": "made_up", "prompt": f"a note {values}".strip()})
+    attacker, _, _ = make_attacker(reply=reply)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    assert attacker.archive[-1]["strategy"] is None
+
+
+def test_strategy_bank_off_hides_it():
+    attacker, _, log = make_attacker(strategy_bank=False)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    assert "STRATEGY BANK" not in log[-1]["messages"][1]["content"]
+    assert attacker.archive[-1]["strategy"] is None

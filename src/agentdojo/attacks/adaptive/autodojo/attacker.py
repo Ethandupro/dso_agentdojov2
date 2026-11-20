@@ -29,6 +29,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from agentdojo.attacks.adaptive.autodojo import prompts
+from agentdojo.attacks.adaptive.autodojo.strategies import STRATEGY_NAMES, strategies_for
 from agentdojo.attacks.adaptive.muzzle.attacker import RewriteLLM, run_sync, sha256_text, upstream_pin
 from agentdojo.attacks.adaptive.muzzle.ipi import (
     MAX_CONTEXT_CHARS,
@@ -82,6 +83,9 @@ DEVIATIONS = (
     "Cross-pair memory (`memory`, on by default since 2026-11-20): winning texts and the optimizer's diagnoses from "
     "other pairs of the same run are shown to the optimizer; AutoDojo shares across user tasks through its case set "
     "instead. Identical in C2 and C4, empty at the start of every run.",
+    "Named strategy bank (`strategy_bank`, on by default since 2026-11-20): the optimizer picks and names one of "
+    "~12 fixed injection strategies (`autodojo.strategies`) each round, recorded for a wins-by-strategy report; "
+    "AutoDojo invents a framing each round with no fixed menu. Identical in C2 and C4.",
 )
 
 
@@ -130,6 +134,9 @@ class AutoDojoSettings(BaseModel):
     """Winning texts from other pairs shown per optimizer call (same injection task first, then same suite)."""
     memory_lessons: int = 5
     """Optimizer diagnoses from other pairs shown per optimizer call (same injection task first, then same suite)."""
+    strategy_bank: bool = True
+    """Show the optimizer the named strategy bank (`autodojo.strategies`) and record the strategy it names. On by
+    default (user decision 2026-11-20); `run_condition --no-strategy-bank` turns it off for the ablation."""
 
 
 class AutoDojoAttacker:
@@ -330,17 +337,25 @@ class AutoDojoAttacker:
         data_slot = self._data_slot(pair)
         winners, lessons = self.memory_for(pair)
         memory = prompts.memory_block(winners, lessons)
+        bank = strategies_for(s.target) if s.strategy_bank else ()
         messages = [
             {"role": "system", "content": prompts.SYSTEM_PROMPTS[s.target]},
             {
                 "role": "user",
-                "content": prompts.user_prompt(goal, data_slot, prompts.leaderboard_block(leaderboard), memory),
+                "content": prompts.user_prompt(
+                    goal,
+                    data_slot,
+                    prompts.leaderboard_block(leaderboard),
+                    memory,
+                    prompts.strategy_bank_block(bank),
+                ),
             },
         ]
         literals = goal_literals(goal)
         llm = self.llm_factory()
         diagnosis: str | None = None
         text: str | None = None
+        strategy: str | None = None
         literal_retries = 0
         try:
             for attempt in range(s.max_tries):
@@ -371,6 +386,13 @@ class AutoDojoAttacker:
                 text = candidate
                 raw_diag = parsed.get("diagnosis")
                 diagnosis = raw_diag.strip() if isinstance(raw_diag, str) else None
+                raw_strategy = parsed.get("strategy")
+                # Record the strategy only when it names a real bank entry, so the wins-by-strategy report is clean.
+                strategy = (
+                    raw_strategy.strip()
+                    if isinstance(raw_strategy, str) and raw_strategy.strip() in STRATEGY_NAMES
+                    else None
+                )
                 break
             usage = llm.usage()
         finally:
@@ -383,6 +405,7 @@ class AutoDojoAttacker:
             "text": text,
             "source": "generated",
             "diagnosis": diagnosis,
+            "strategy": strategy,
             "leaderboard": [
                 {"trial": e["trial"], "security": e["security"], "utility": e["utility"]} for e in leaderboard
             ],

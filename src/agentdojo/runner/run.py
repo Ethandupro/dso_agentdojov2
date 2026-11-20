@@ -85,6 +85,7 @@ def run_dir_for(
     single_injection_point: bool = False,
     no_attacker_memory: bool = False,
     no_graded_score: bool = False,
+    no_strategy_bank: bool = False,
     smoke: bool = False,
 ) -> Path:
     name = condition.run_id
@@ -98,6 +99,8 @@ def run_dir_for(
         name = f"{name}-no-memory"
     if no_graded_score:
         name = f"{name}-binary-score"
+    if no_strategy_bank:
+        name = f"{name}-no-strategies"
     if subset:
         name = f"{name}-subset-{subset}"
     if smoke:
