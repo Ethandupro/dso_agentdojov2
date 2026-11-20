@@ -418,12 +418,12 @@ class CapturedRunner:
         return []
 
 
-@pytest.mark.parametrize("condition", ["C2", "C4"])
+@pytest.mark.parametrize("condition", ["C0E", "C2", "C4"])
 @pytest.mark.parametrize(
     ("attacker_flag", "expected_type"),
     [(None, AutoDojoAttacker), ("autodojo", AutoDojoAttacker), ("muzzle", MuzzleAttacker)],
 )
-def test_cli_wires_local_attacker_for_c2_and_c4(
+def test_cli_wires_local_attacker_for_c0e_c2_and_c4(
     monkeypatch, tmp_path: Path, condition: str, attacker_flag: str | None, expected_type: type
 ):
     monkeypatch.chdir(REPO_ROOT)
@@ -454,7 +454,7 @@ def test_cli_wires_local_attacker_for_c2_and_c4(
     assert model.api_key_env is None and model.seed == 4
     # Preflight checks the local attacker server like the victim and checker; only C4 pings the judge.
     assert ("attacker", experiment_models.ATTACKER_BASE_URL, experiment_models.ATTACKER_MODEL_ID) in served
-    assert judged == ([] if condition == "C2" else [experiment_models.JUDGE_MODEL_ID])
+    assert judged == ([experiment_models.JUDGE_MODEL_ID] if condition == "C4" else [])
     config = wiring["config"]
     assert config.attacker["name"] == expected_type.name and config.attacker["settings"]["attacker"]["seed"] == 4
     assert config.served_models["attacker"] == [experiment_models.ATTACKER_MODEL_ID]
@@ -466,8 +466,13 @@ def test_cli_wires_local_attacker_for_c2_and_c4(
     assert wiring["defense"] == "skills" and wiring["checker_fn"] is None
     assert [s.name for s in wiring["agent_skills"]] == [s.name for s in AGENT_SKILLS]
     assert "checker" not in config.served_models and config.checker is False
-    assert config.skills is not None and config.skills["security_skill"]["name"] == S0_NAME
-    assert config.skills["prompt_style"] == "nudge" and wiring["skills_prompt_style"] == "nudge"
+    assert config.skills is not None and config.skills["prompt_style"] == "nudge"
+    assert wiring["skills_prompt_style"] == "nudge"
+    if condition == "C0E":  # C0's victim: the fixed skills only, no S0, against the evolving attacker
+        assert config.skills["security_skill"] is None and isinstance(wiring["skill_file"], NoChecker)
+        assert wiring["run_dir"].parent.name == "c0e_no-s0_evolving-attack-limit2"
+    else:
+        assert config.skills["security_skill"]["name"] == S0_NAME
 
 
 def test_cli_external_checker_ablation(monkeypatch, tmp_path: Path):

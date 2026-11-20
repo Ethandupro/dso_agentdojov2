@@ -317,7 +317,9 @@ The main experiment is **4 separate runs**, one per cell of skill file × attack
 
 *Run IDs changed 2026-11-19* (were `c1_static-skill_static-attack` etc.) with the victim-skills redesign, so runs of the old checker design are never resumed as new ones. `--external-checker` runs add `-external-checker`. In every condition the "skill file" is S0 as the victim's security skill; C0 lists only the 5 fixed skills.
 
-C0 (no S0; "no checker" before 2026-11-19) and C5 (final C4 file frozen vs a fresh evolving attacker) are reference runs outside this 2×2.
+C0 (no S0; "no checker" before 2026-11-19), C0E and C5 (final C4 file frozen vs a fresh evolving attacker) are reference runs outside this 2×2.
+
+*C0E (added 2026-11-20 by the user):* C0's victim (the 5 fixed skills, no S0) against C2's evolving attacker (AutoDojo, same settings), run id `c0e_no-s0_evolving-attack`. C2 vs C0E shows what S0 adds under adaptive attack, as C1 vs C0 does under the static attack. No split, like C0–C2; run it with the same `--trials-per-pair` as C2.
 
 *On hold (noted 2026-11-18, user decision):* C5 is on hold. Work focuses on C0–C4, and the runner does not build C5.
 
