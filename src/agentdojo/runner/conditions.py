@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from agentdojo.runner.manifest import Pair, load_pairs, task_sort_key
 
-ConditionName = Literal["C0", "C1", "C2", "C3", "C4"]
+ConditionName = Literal["C0", "C0E", "C1", "C2", "C3", "C4"]
 Phase = Literal["benign", "benign_before", "benign_after", "attack", "train", "test"]
 
 
@@ -33,6 +33,9 @@ CONDITIONS: dict[str, Condition] = {
     c.name: c
     for c in [
         Condition("C0", "c0_no-s0_static-attack", s0=False, skill_mode="none", attack_mode="static"),
+        # Added 2026-11-20 by the user: C0's victim (5 general skills, no S0) against C2's evolving attacker, so C2
+        # vs C0E shows what S0 adds under adaptive attack.
+        Condition("C0E", "c0e_no-s0_evolving-attack", s0=False, skill_mode="none", attack_mode="evolving"),
         Condition("C1", "c1_static-s0_static-attack", s0=True, skill_mode="static", attack_mode="static"),
         Condition("C2", "c2_static-s0_evolving-attack", s0=True, skill_mode="static", attack_mode="evolving"),
         Condition("C3", "c3_evolving-s0_static-attack", s0=True, skill_mode="evolving", attack_mode="static"),

@@ -9,12 +9,12 @@ import pytest
 pytest.importorskip("deepagents")
 
 from agentdojo.runner.conditions import CONDITIONS, build_units
-from agentdojo.runner.plugins import FixedSkillFile, StaticAttacker
+from agentdojo.runner.plugins import FixedSkillFile, NoChecker, StaticAttacker
 from agentdojo.runner.report import write_report
 from agentdojo.runner.run import Runner, run_dir_for
 from tests.test_attacks.test_autodojo import MANIFEST, make_attacker
 from tests.test_checker.test_checker_middleware import reading_checker
-from tests.test_runner.test_run import RecordingSkillFile, ScriptedVictim, make_config, read_jsonl
+from tests.test_runner.test_run import AGENT_SKILLS, RecordingSkillFile, ScriptedVictim, make_config, read_jsonl
 
 
 def make_runner(tmp_path: Path, condition: str, attacker: Any, trials: int = 3, limit: int = 1) -> Runner:
@@ -72,3 +72,26 @@ def test_resume_reuses_the_archive(tmp_path: Path):
     texts = [e["text"] for e in attacker.archive]
     assert len(read_jsonl(runner.run_dir / "trials.jsonl")) == len(runner.units)
     assert texts == [e["text"] for e in attacker.archive]
+
+
+def test_c0e_runs_the_evolving_attacker_against_the_victim_without_s0(tmp_path: Path):
+    attacker, _, _ = make_attacker()
+    cond = CONDITIONS["C0E"]
+    runner = Runner(
+        config=make_config("C0E", 1, trials_per_pair=3, attacker={"name": "autodojo"}),
+        condition=cond,
+        run_dir=run_dir_for(tmp_path, cond, 0, 1),
+        units=build_units(cond, MANIFEST, 3, 1),
+        attacker=attacker,
+        static_attacker=StaticAttacker(MANIFEST),
+        skill_file=NoChecker(),
+        victim_factory=ScriptedVictim,
+        echo=lambda _: None,
+        agent_skills=AGENT_SKILLS,
+    )
+    assert runner.run_dir.parent.name == "c0e_no-s0_evolving-attack-limit1"
+    records = [r for r in runner.run() if r["pair"]]
+    assert [r["attack"] for r in records] == ["autodojo"] * 3 and len(attacker.archive) == 3
+    for r in records:
+        assert r["skills"]["security_skill"] is None and r["skills"]["s0_loaded"] is None
+        assert r["skills"]["listed"] == sorted(s.name for s in AGENT_SKILLS)
