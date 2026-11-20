@@ -16,6 +16,7 @@
 #   bash local_victim/serve_all.sh          # victim + attacker (logs in ~/vllm_logs)
 #   ATTACKER=0 bash local_victim/serve_all.sh   # victim only (C0, C1, C3)
 #   CHECKER=1 bash local_victim/serve_all.sh    # also the old external checker (ablation)
+#   ONE_GPU=1 bash local_victim/serve_all.sh    # victim AND attacker both on GPU 1, both in FP8 (frees GPU 0)
 #   bash local_victim/serve_all.sh stop     # stop all
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -64,10 +65,33 @@ wait_for() {  # name port
   echo "port $port ready: $(curl -s "localhost:$port/v1/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')"
 }
 
+# ONE_GPU=<n> (added 2026-11-20 by the user's request): put the victim and the attacker on the same GPU n. Both are then
+# loaded in FP8 so they fit in one 96 GB H100 together: victim ~28 GB + DFlash2 draft ~4 GB in 0.50 of the GPU,
+# attacker ~24 GB in 0.40, the rest for their KV caches. The attacker starts only once the victim is up, so each
+# server sees the other's memory as used. Use the same setting for every condition you compare: FP8 changes the
+# victim's answers slightly against BF16, and the run's config.json does not record the server's quantization.
+ONE_GPU=${ONE_GPU:-}
+if [ -n "$ONE_GPU" ]; then
+  if [ "${CHECKER:-0}" = "1" ]; then
+    echo "ONE_GPU and CHECKER=1 can't be combined (three models don't fit on one GPU)" >&2
+    exit 1
+  fi
+  VICTIM_GPU=${VICTIM_GPU:-$ONE_GPU}
+  ATTACKER_GPU=${ATTACKER_GPU:-$ONE_GPU}
+  VICTIM_QUANT=${VICTIM_QUANT-fp8}
+  VICTIM_GPU_MEM=${VICTIM_GPU_MEM:-0.50}
+  ATTACKER_QUANT=${ATTACKER_QUANT-fp8}
+  ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.40}
+fi
+VICTIM_GPU=${VICTIM_GPU:-0}
+ATTACKER_GPU=${ATTACKER_GPU:-1}
+VICTIM_QUANT=${VICTIM_QUANT-}
+
 VICTIM_PORT=${VICTIM_PORT:-8000}
 CHECKER_PORT=${CHECKER_PORT:-8002}
 ATTACKER_PORT=${ATTACKER_PORT:-8003}
-start victim 0 "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.8-27B}" "${VICTIM_GPU_MEM:-0.90}" "" \
+start victim "$VICTIM_GPU" "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.8-27B}" "${VICTIM_GPU_MEM:-0.90}" \
+  "${VICTIM_QUANT:+--quantization $VICTIM_QUANT}" \
   "${VICTIM_DRAFT-z-lab/Qwen3.8-27B-DFlash2}" "${VICTIM_VENV:-${VENV:-$HOME/venvs/vllm}}"
 if [ "${CHECKER:-0}" = "1" ]; then
   start checker 1 "$CHECKER_PORT" "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
@@ -79,7 +103,9 @@ if [ "${CHECKER:-0}" = "1" ]; then
   wait_for checker "$CHECKER_PORT"
 fi
 if [ "${ATTACKER:-1}" != "0" ]; then
-  if [ "${CHECKER:-0}" = "1" ]; then
+  if [ -n "$ONE_GPU" ]; then
+    : # set above: FP8 in 0.40 of the GPU it shares with the victim
+  elif [ "${CHECKER:-0}" = "1" ]; then
     # Shares GPU 1 with the checker: FP8 weights (~24 GB) in 0.42 of the GPU, started once the checker is up.
     ATTACKER_QUANT=${ATTACKER_QUANT-fp8}
     ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.42}
@@ -88,7 +114,7 @@ if [ "${ATTACKER:-1}" != "0" ]; then
     ATTACKER_QUANT=${ATTACKER_QUANT-}
     ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.90}
   fi
-  start attacker 1 "$ATTACKER_PORT" "${ATTACKER_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}" \
+  start attacker "$ATTACKER_GPU" "$ATTACKER_PORT" "${ATTACKER_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}" \
     "$ATTACKER_GPU_MEM" "${ATTACKER_QUANT:+--quantization $ATTACKER_QUANT}"
   wait_for attacker "$ATTACKER_PORT"
 fi
