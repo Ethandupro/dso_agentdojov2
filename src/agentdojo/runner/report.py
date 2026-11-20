@@ -184,6 +184,17 @@ def attacker_metrics(state: dict[str, Any], records: list[dict[str, Any]] | None
     rewrite_failed = sum(e.get("source") == "rewrite_failed" for e in rewrites)
     usage = [e.get("usage") or {} for e in rewrites]
     rate = (fallbacks / len(rewrites)) if rewrites else None
+    # Item 7 skill-file attacker: the library saved in the checkpoint, plus how often the agent wrote/loaded notes.
+    skills_state = (state.get("attacker") or {}).get("skills")
+    skill_library = None
+    if skills_state is not None:
+        notes = skills_state.get("skills", [])
+        skill_library = {
+            "notes": len(notes),
+            "names": sorted(n["name"] for n in notes),
+            "rewrites_writing_a_note": sum(bool(e.get("skills_written")) for e in rewrites),
+            "rewrites_loading_a_note": sum(bool(e.get("skills_loaded")) for e in rewrites),
+        }
     return {
         "rewrites": len(rewrites),
         "goal_fallbacks": fallbacks,
@@ -195,6 +206,7 @@ def attacker_metrics(state: dict[str, Any], records: list[dict[str, Any]] | None
         "empty_replies": sum(u.get("empty_replies") or 0 for u in usage),
         "truncated_replies": sum(u.get("truncated_replies") or 0 for u in usage),
         "by_strategy": strategy_wins(rewrites, records or []),
+        "skill_library": skill_library,
     }
 
 

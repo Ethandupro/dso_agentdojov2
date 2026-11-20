@@ -39,7 +39,12 @@ from agentdojo.agent_pipeline.deepagents_pipeline import (
     ToolMiddlewareFactory,
     fetch_hf_text,
 )
-from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
+from agentdojo.attacks.adaptive.autodojo import (
+    AutoDojoAttacker,
+    AutoDojoSettings,
+    SkillAgentAttacker,
+    SkillAgentSettings,
+)
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
 from agentdojo.runner.conditions import CONDITIONS, PairFilter, Unit, build_units, load_subset
@@ -62,6 +67,9 @@ from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 
 JUDGE_KEY_ENV = experiment_models.JUDGE_API_KEY_ENV
+
+AUTODOJO_LOOPS = ("autodojo", "skill-agent")
+"""Evolving attacker loops that share AutoDojo's settings (memory, strategy bank, victim trace); 'muzzle' does not."""
 
 
 class PreflightError(Exception):
@@ -153,6 +161,23 @@ def autodojo_settings(
     )
 
 
+def skill_agent_settings(
+    model_id: str,
+    base_url: str,
+    seed: int,
+    memory: bool = True,
+    strategy_bank: bool = True,
+) -> SkillAgentSettings:
+    """Item 7 (D2): the evolving attacker as a tool-using agent with its own skill files. Only the skills design
+    (`target='agent'`), so it is never paired with --external-checker."""
+    return SkillAgentSettings(
+        attacker=attacker_model_config(model_id, base_url, seed),
+        target="agent",
+        memory=memory,
+        strategy_bank=strategy_bank,
+    )
+
+
 @click.command()
 @click.option("--condition", type=click.Choice(sorted(CONDITIONS)), required=True)
 @click.option("--seed", type=int, default=0, show_default=True)
@@ -228,11 +253,13 @@ def autodojo_settings(
 @click.option(
     "--attacker",
     "attacker_loop",
-    type=click.Choice(["autodojo", "muzzle"]),
+    type=click.Choice(["autodojo", "skill-agent", "muzzle"]),
     default="autodojo",
     show_default=True,
     help="C2/C4 evolving attacker: 'autodojo' scores each rewrite on the real pipeline (leaderboard of the pair's "
-    "own trials); 'muzzle' is the earlier offline stand-in loop, kept for ablation.",
+    "own trials); 'skill-agent' (item 7, D2) runs that optimizer as a tool-using agent that reads and writes its own "
+    "strategy skill files across pairs, and gets a '-skill-agent' results directory; 'muzzle' is the earlier offline "
+    "stand-in loop, kept for ablation.",
 )
 @click.option(
     "--attacker-memory/--no-attacker-memory",
@@ -372,6 +399,13 @@ def main(
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
+        elif attacker_loop == "skill-agent":
+            if external_checker:
+                raise click.ClickException("--attacker skill-agent is a skills-design loop; drop --external-checker")
+            attacker = SkillAgentAttacker(
+                manifest_data,
+                skill_agent_settings(attacker_model_id, attacker_base_url, seed, attacker_memory, strategy_bank),
+            )
         else:
             attacker = AutoDojoAttacker(
                 manifest_data,
@@ -395,10 +429,11 @@ def main(
         subset=subset_path.stem if subset_path is not None else None,
         single_injection_point=single_injection_point,
         smoke=smoke,
-        no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
+        no_attacker_memory=evolving_attack and attacker_loop in AUTODOJO_LOOPS and not attacker_memory,
         no_graded_score=evolving_attack and not graded_score,
-        no_strategy_bank=evolving_attack and attacker_loop == "autodojo" and not strategy_bank,
-        no_victim_trace=evolving_attack and attacker_loop == "autodojo" and not show_victim_trace,
+        no_strategy_bank=evolving_attack and attacker_loop in AUTODOJO_LOOPS and not strategy_bank,
+        no_victim_trace=evolving_attack and attacker_loop in AUTODOJO_LOOPS and not show_victim_trace,
+        skill_agent=evolving_attack and attacker_loop == "skill-agent",
     )
     config = RunConfig(
         condition=cond.name,

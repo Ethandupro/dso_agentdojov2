@@ -89,6 +89,7 @@ def run_dir_for(
     no_strategy_bank: bool = False,
     no_victim_trace: bool = False,
     smoke: bool = False,
+    skill_agent: bool = False,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -101,6 +102,8 @@ def run_dir_for(
         name = f"{name}-no-memory"
     if no_graded_score:
         name = f"{name}-binary-score"
+    if skill_agent:
+        name = f"{name}-skill-agent"
     if no_strategy_bank:
         name = f"{name}-no-strategies"
     if no_victim_trace:
