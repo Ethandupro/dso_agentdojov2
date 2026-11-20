@@ -121,3 +121,35 @@ def test_c4_test_pairs_are_never_reported_to_the_playbook(tmp_path: Path):
     attacker.observe = spy  # type: ignore[method-assign]
     make_runner(tmp_path, "C4", attacker, trials=3).run()
     assert seen == ["train"] * 3
+
+
+def test_record_carries_the_graded_progress_score(tmp_path: Path):
+    attacker, _, _ = make_attacker()
+    records = [r for r in make_runner(tmp_path, "C2", attacker, trials=3).run() if r["pair"]]
+    assert all(isinstance(r["progress"], int) and 0 <= r["progress"] <= 4 for r in records)
+
+
+def test_graded_score_off_leaves_progress_none(tmp_path: Path):
+    from agentdojo.runner.conditions import CONDITIONS, build_units
+    from agentdojo.runner.plugins import FixedSkillFile, StaticAttacker
+    from agentdojo.runner.run import Runner, run_dir_for
+    from tests.test_checker.test_checker_middleware import reading_checker
+
+    attacker, _, _ = make_attacker()
+    cond = CONDITIONS["C2"]
+    runner = Runner(
+        config=make_config("C2", 1, defense="checker", trials_per_pair=3, attacker={"name": "autodojo"}),
+        condition=cond,
+        run_dir=run_dir_for(tmp_path, cond, 0, 1, external_checker=True, no_graded_score=True),
+        units=build_units(cond, MANIFEST, 3, 1),
+        attacker=attacker,
+        static_attacker=StaticAttacker(MANIFEST),
+        skill_file=FixedSkillFile("(S0)"),
+        victim_factory=make_runner.__globals__["ScriptedVictim"],
+        checker_fn=reading_checker,
+        echo=lambda _: None,
+        defense="checker",
+        graded_score=False,
+    )
+    assert "-binary-score" in runner.run_dir.parent.name
+    assert all(r["progress"] is None for r in runner.run() if r["pair"])

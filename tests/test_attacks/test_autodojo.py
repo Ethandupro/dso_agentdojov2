@@ -332,3 +332,39 @@ def test_playbook_survives_the_checkpoint_and_old_state_loads():
     old, _, _ = make_attacker()
     old.load_state({"format": 1, "archive": []})
     assert old.playbook == []
+
+
+def fbp(trial, text, security=False, utility=True, progress=None, final_answer="done"):
+    return AttemptFeedback(
+        trial=trial,
+        injection_text=text,
+        utility=utility,
+        security=security,
+        final_answer=final_answer,
+        progress=progress,
+    )
+
+
+def test_leaderboard_sorts_by_graded_progress_when_binary_outcome_ties():
+    attacker, _, _ = make_attacker()
+    history = [fbp(0, "A", progress=1), fbp(1, "B", progress=3), fbp(2, "C", progress=0)]
+    board = attacker._leaderboard(history)
+    assert [e["text"] for e in board] == ["B", "A", "C"]  # all failed; higher progress ranks first
+    # A real success still beats any graded near miss.
+    history.append(fbp(3, "D", security=True, progress=None))
+    assert attacker._leaderboard(history)[0]["text"] == "D"
+
+
+def test_leaderboard_block_shows_the_graded_score_to_the_optimizer():
+    attacker, _, log = make_attacker()
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed, progress=2)])
+    user_msg = log[-1]["messages"][1]["content"]
+    assert "how far it got: 2/4" in user_msg
+
+
+def test_progress_none_keeps_the_old_order():
+    attacker, _, _ = make_attacker()
+    history = [fbp(0, "A", utility=True), fbp(1, "B", utility=False)]
+    # No progress anywhere: the user-task-failed entry ranks above the clean failure, as before graded scoring.
+    assert [e["text"] for e in attacker._leaderboard(history)] == ["B", "A"]

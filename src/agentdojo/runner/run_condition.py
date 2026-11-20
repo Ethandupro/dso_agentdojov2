@@ -236,6 +236,14 @@ def autodojo_settings(
     "of the same run). On by default since 2026-11-20 (user decision); --no-attacker-memory is the ablation and gets "
     "a '-no-memory' results directory.",
 )
+@click.option(
+    "--graded-score/--no-graded-score",
+    default=True,
+    show_default=True,
+    help="Score each attacked trial 0-4 from the victim's trace (runner.score) as a finer signal for the evolving "
+    "attacker's leaderboard; the attacker success rate still uses only the binary security result. On by default "
+    "(user decision 2026-11-20); --no-graded-score is the ablation and gets a '-binary-score' results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -263,6 +271,7 @@ def main(
     attacker_base_url: str,
     attacker_loop: str,
     attacker_memory: bool,
+    graded_score: bool,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -356,6 +365,7 @@ def main(
         single_injection_point=single_injection_point,
         smoke=smoke,
         no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
+        no_graded_score=evolving_attack and not graded_score,
     )
     config = RunConfig(
         condition=cond.name,
@@ -398,6 +408,7 @@ def main(
         ),
         single_injection_point=single_injection_point,
         smoke=smoke or None,
+        graded_score=graded_score if evolving_attack else None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -485,6 +496,7 @@ def main(
         defense=defense,
         agent_skills=agent_skills,
         skills_prompt_style=skills_prompt_style,  # type: ignore[arg-type]
+        graded_score=graded_score,
     )
     try:
         records = runner.run()

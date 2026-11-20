@@ -238,11 +238,22 @@ class AutoDojoAttacker:
                 "security": fb.security,
                 "utility": fb.utility,
                 "trial": fb.trial,
+                "progress": fb.progress,
                 "response": _clip(fb.final_answer, limit) if self.settings.show_agent_response else None,
             }
             for fb in history
         ]
-        entries.sort(key=lambda e: (e["security"], not e["utility"], e["trial"]), reverse=True)
+        # Best first: a real breach, then (when graded scoring is on) how far the injection got, then the user task
+        # surviving, then most recent. `progress` is None when graded scoring is off; -1 sorts it below any real 0-4.
+        entries.sort(
+            key=lambda e: (
+                e["security"],
+                e["progress"] if e["progress"] is not None else -1,
+                not e["utility"],
+                e["trial"],
+            ),
+            reverse=True,
+        )
         return entries[: self.settings.leaderboard_size]
 
     def text_for(self, pair: Pair, trial: int, history: list[AttemptFeedback]) -> str:
