@@ -163,8 +163,11 @@ def leaderboard_block(entries: list[dict]) -> str:
         if progress is not None and not e["security"]:
             outcome += f"; how far it got: {progress}/4 ({_PROGRESS_MEANING[progress]})"
         lines.append(f"{i}. [{outcome}] {e['text']}")
+        trace = e.get("trace")
         response = e.get("response")
-        if response:
+        if trace:
+            lines.append(f"   What the agent did that time (its run, step by step):\n   {trace}")
+        elif response:
             lines.append(f"   The agent's response that time: {response}")
     return "\n".join(lines)
 

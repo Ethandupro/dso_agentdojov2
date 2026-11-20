@@ -1,0 +1,96 @@
+"""A compact, S0-redacted digest of the victim's run, shown to the evolving attacker (item 4, decided 2026-11-20).
+
+The attacker already sees the victim's final answer (PR #38). The victim now reasons (Magistral), so its step-by-step
+run -- its thinking, what it said, the tools it called and what they returned -- shows *why* an injection was ignored
+or refused, which a flat "failed" never did. `victim_trace_digest` turns the run's messages into that digest.
+
+It is a deliberate grey-box signal: the attacker sees the victim's reasoning, not only its output. To keep the
+evolving defence from leaking into the attacker (above all in C4, where S0 changes during the run), any wording the
+victim copied from the current S0 skill is redacted first: exact lines and any 6-word span shared with S0 become
+`[S0 redacted]`. Identical in C2 and C4.
+"""
+
+import re
+from collections.abc import Sequence
+from typing import Any
+
+MASK = "[S0 redacted]"
+_REDACT_NGRAM = 6
+"""Shared word-span length that triggers redaction. Short enough to catch a paraphrased S0 rule, long enough that
+ordinary shared phrases ("I will not") survive."""
+
+_WORD = re.compile(r"\S+")
+
+
+def _ngrams(words: list[str], n: int) -> set[tuple[str, ...]]:
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)} if len(words) >= n else set()
+
+
+def redact_s0(text: str, s0_markdown: str | None, n: int = _REDACT_NGRAM) -> str:
+    """Replace any `n`-word span that `text` shares with the S0 skill body with `MASK`, merging adjacent masked
+    spans. Case-insensitive on words; the rest of `text` is returned unchanged. No-op when there is no S0."""
+    if not s0_markdown:
+        return text
+    banned = _ngrams(s0_markdown.lower().split(), n)
+    if not banned:
+        return text
+    tokens = list(_WORD.finditer(text))
+    lowered = [m.group().lower() for m in tokens]
+    masked = [False] * len(tokens)
+    for i in range(len(tokens) - n + 1):
+        if tuple(lowered[i : i + n]) in banned:
+            for j in range(i, i + n):
+                masked[j] = True
+    if not any(masked):
+        return text
+    out: list[str] = []
+    pos = 0
+    i = 0
+    while i < len(tokens):
+        if masked[i]:
+            start = tokens[i].start()
+            while i < len(tokens) and masked[i]:
+                i += 1
+            end = tokens[i - 1].end()
+            out.append(text[pos:start])
+            out.append(MASK)
+            pos = end
+        else:
+            i += 1
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _clip(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + " ...[truncated]"
+
+
+def victim_trace_digest(
+    messages: Sequence[Any],
+    s0_markdown: str | None,
+    max_chars: int = 2000,
+    step_chars: int = 400,
+) -> str:
+    """A short, ordered digest of the victim's run for the attacker's leaderboard: each assistant step's thinking and
+    text, the tools it called, and each tool result, S0-redacted and truncated. Capped at `max_chars`."""
+    lines: list[str] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            for block in message.get("content") or []:
+                kind = block.get("type")
+                body = (block.get("content") or "").strip()
+                if not body:
+                    continue
+                label = "thought" if kind in ("thinking", "redacted_thinking") else "said"
+                lines.append(f"{label}: {_clip(body, step_chars)}")
+            for call in message.get("tool_calls") or []:
+                args = ", ".join(f"{k}={v!r}" for k, v in dict(call.args).items())
+                lines.append(_clip(f"called: {call.function}({args})", step_chars))
+        elif role == "tool":
+            body = " ".join(b.get("content") or "" for b in message.get("content") or []).strip()
+            if body:
+                lines.append(f"tool result: {_clip(body, step_chars)}")
+    digest = redact_s0("\n".join(lines), s0_markdown)
+    return digest if len(digest) <= max_chars else digest[:max_chars] + " ...[truncated]"

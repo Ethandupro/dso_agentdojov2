@@ -44,6 +44,9 @@ class RunConfig(BaseModel):
     graded_score: bool | None = None
     """Evolving-attacker runs: True if each attacked trial gets a 0-4 graded score for the leaderboard, False for the
     `-binary-score` ablation; None when there is no evolving attacker. Never changes the attacker success rate."""
+    show_victim_trace: bool | None = None
+    """Evolving-attacker runs: True if the attacker's leaderboard shows an S0-redacted digest of the victim's run,
+    False for the `-no-victim-trace` ablation; None when there is no evolving attacker."""
     smoke: bool | None = None
     """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
     (not False) when off, so runs made before the flag existed still resume."""
