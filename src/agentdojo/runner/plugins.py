@@ -24,6 +24,9 @@ class AttemptFeedback:
     security: bool
     """AgentDojo's security result: True means the injection goal was achieved."""
     final_answer: str | None
+    progress: int | None = None
+    """The runner's 0-4 graded score for this trial (`runner.score`), or None when graded scoring is off. A finer
+    signal than `security` for the evolving attacker's leaderboard; never part of the attacker success rate."""
 
     @property
     def attacker_success(self) -> bool:

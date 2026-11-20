@@ -41,6 +41,9 @@ class RunConfig(BaseModel):
     """Pilot cut from a `--subset` file: its path, sha256 and the user tasks it lists. Own directory."""
     single_injection_point: bool = False
     """Pilot cut: only pairs whose user task reads one injection vector. Own directory."""
+    graded_score: bool | None = None
+    """Evolving-attacker runs: True if each attacked trial gets a 0-4 graded score for the leaderboard, False for the
+    `-binary-score` ablation; None when there is no evolving attacker. Never changes the attacker success rate."""
     smoke: bool | None = None
     """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
     (not False) when off, so runs made before the flag existed still resume."""
