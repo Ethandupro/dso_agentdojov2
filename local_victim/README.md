@@ -11,11 +11,13 @@ not used (the `deepagents` extra needs Python >= 3.11).
 
 | Model | BF16 weights | Fits one H100 NVL | Tool parser | Published AgentDojo ASR (no defense) |
 | --- | --- | --- | --- | --- |
-| `Qwen/Qwen3.5-27B` (default) | ~54 GB | yes, ~30 GB left for KV cache | `qwen3_coder` | ~26% (banking ~52%) |
+| `mistralai/Magistral-Small-2509` (default since 2026-11-20, thinks) | ~48 GB | yes, ~36 GB left | `mistral` | none published for AgentDojo |
+| `Qwen/Qwen3.5-27B` (default until 2026-11-20) | ~54 GB | yes, ~30 GB left for KV cache | `qwen3_coder` | ~26% (banking ~52%) |
 | `Qwen/Qwen3-32B` | ~65 GB | yes, ~20 GB left | `hermes` | ~30% (important_instructions) |
 | `google/gemma-4-26B-A4B-it` | ~52 GB (MoE, ~4B active) | yes | `gemma4` | none published for AgentDojo |
 
-Both clear the C0 rule (ASR >= 20%) in the literature, but only the pilot on this setup counts. Both models think by
+The Qwen models clear the C0 rule (ASR >= 20%) in the literature; Magistral has no published number, so its C0
+pilot decides. Only the pilot on this setup counts. Both models think by
 default; the published numbers are non-thinking, so the server turns thinking off by default and the benchmark is
 run with `--no-thinking` (sent per request, so it is in every request even if the server default changes).
 
@@ -94,22 +96,32 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
-## The project setup: victim and attacker (both with DFlash drafts)
+## The project setup: victim (Magistral, thinking) and attacker (Qwen3.8 + DFlash2)
 
 Since the victim redesign of 2026-11-19 there is no external checker: the security skill S0 is one of the victim's
 skills (`skillfile_evolution/DESIGN.md`, "Victim skills"). The project's models (`src/agentdojo/experiment_models.py`,
-as set on 2026-11-20) are the victim `Qwen/Qwen3.5-27B` on GPU 0 (port 8000) and, for C2 and C4, the attacker
-`Qwen/Qwen3.8-27B` on GPU 1 (port 8003, BF16, the GPU to itself). The attacker was
-`mistralai/Mistral-Small-3.2-24B-Instruct-2506` until 2026-11-20, and the victim was `Qwen/Qwen3.8-27B` for a few hours
-that day (PR #40). None of them thinks.
+as set on 2026-11-20) are the victim `mistralai/Magistral-Small-2509` (Magistral Small 1.2) on GPU 0 (port 8000, BF16
+~48 GB, the GPU to itself) and, for C2 and C4, the attacker `Qwen/Qwen3.8-27B` on GPU 1 (port 8003, BF16, the GPU to
+itself). Earlier that day the victim was `Qwen/Qwen3.5-27B` (PR #42) and, for a few hours, `Qwen/Qwen3.8-27B`
+(PR #40); the attacker was `mistralai/Mistral-Small-3.2-24B-Instruct-2506` until PR #42.
 
-Each model is served with a speculative-decoding draft (~2B): `z-lab/Qwen3.5-27B-DFlash` for the victim and
-`z-lab/Qwen3.8-27B-DFlash2` (DFlash 2) for the attacker. The draft guesses several tokens ahead and the 27B model
-checks them in one pass, so the answers are the same as plain 27B and only the speed changes. The runner still talks
-to `Qwen/Qwen3.5-27B` and `Qwen/Qwen3.8-27B`; the draft is a server setting
+**The victim thinks; the attacker does not.** Magistral Small 1.2 is Mistral Small 3.2 (24B) trained to reason
+(Mistral Small 3.2 itself has no thinking mode). It reasons when its model card's system prompt (`SYSTEM_PROMPT.txt` in
+the model repo, with a `[THINK]...[/THINK]` example) comes first: the runner downloads that file once (to
+`~/.cache/agentdojo/hf/`, `HF_TOKEN` if needed), sends it ahead of the agent's system prompt in every request with the
+`[THINK]` part as a `thinking` content chunk (so Mistral's tokenizer uses the special tokens), and records it in the
+run's `config.json`. Sampling is the card's (temperature 0.7, top_p 0.95). `serve_vllm.sh` serves it in Mistral's
+own format (`--tokenizer-mode mistral --config-format mistral --load-format mistral`, tool parser `mistral`,
+reasoning parser `mistral`, images off, 64k context); the card needs `mistral_common >= 1.8.5`
+(`$VENV/bin/pip install -U "mistral_common>=1.8.5"` if the log complains). The attacker's thinking is off twice: the
+server default (`enable_thinking: false`) and the same flag in every attacker request.
+
+The attacker is served with a speculative-decoding draft (~2B), `z-lab/Qwen3.8-27B-DFlash2` (DFlash 2). The draft
+guesses several tokens ahead and the 27B model checks them in one pass, so the answers are the same as plain 27B and
+only the speed changes. The runner still talks to `Qwen/Qwen3.8-27B`; the draft is a server setting
 (`--speculative-config '{"method": "dflash", "model": "<draft>", "num_speculative_tokens": 7}'`). Qwen3.8 is built on
 the Qwen3.5 architecture, so it uses the same tool parser (`qwen3_coder`), reasoning parser (`qwen3`) and thinking
-switch (`enable_thinking: false`, passed by `serve_vllm.sh`).
+switch. Magistral has no draft model.
 
 The DFlash2 model card asks for a vLLM build from pull request #52816. If the attacker log shows the draft failing to
 load, either start it without the draft (`ATTACKER_DRAFT=none`, plain 27B, same answers) or install that build in a
@@ -126,7 +138,7 @@ ATTACKER_VENV=~/venvs/vllm-dflash2 bash local_victim/serve_all.sh
 cd ~/dso_agentdojov2
 bash local_victim/serve_all.sh               # victim + attacker; logs in ~/vllm_logs
 ATTACKER=0 bash local_victim/serve_all.sh    # victim only (C0, C1, C3)
-VICTIM_DRAFT=none bash local_victim/serve_all.sh   # victim as plain 27B, no draft
+VICTIM_MODEL=Qwen/Qwen3.5-27B VICTIM_DRAFT=z-lab/Qwen3.5-27B-DFlash bash local_victim/serve_all.sh  # the old victim
 ATTACKER_DRAFT=none bash local_victim/serve_all.sh # attacker as plain 27B, no draft
 CHECKER=1 bash local_victim/serve_all.sh     # also the old checker (port 8002), for --external-checker runs
 ONE_GPU=1 bash local_victim/serve_all.sh     # victim and attacker together on GPU 1, both FP8 (GPU 0 stays free)
@@ -135,14 +147,14 @@ bash local_victim/serve_all.sh stop          # stop all
 VLLM_ATTENTION_BACKEND=FLASH_ATTN EXTRA_ARGS=--enforce-eager bash local_victim/serve_all.sh
 ```
 
-**Both models on one GPU (`ONE_GPU=<n>`).** The victim and the attacker (each BF16 ~54 GB + ~4 GB draft) don't fit
-on one 96 GB H100 together, so `ONE_GPU` loads both in FP8 (~28 GB + ~4 GB draft each): the victim in 0.48 of the GPU
-(~14 GB left for its KV cache) and the attacker in 0.44 (~10 GB KV cache, 32k context). The attacker starts after the victim is up. FP8 changes the
+**Both models on one GPU (`ONE_GPU=<n>`).** The victim (BF16 ~48 GB) and the attacker (BF16 ~54 GB + ~4 GB draft)
+don't fit on one 96 GB H100 together, so `ONE_GPU` loads both in FP8: the victim (~24 GB) in 0.48 of the GPU (~20 GB
+left for its KV cache) and the attacker (~28 GB + ~4 GB draft) in 0.44 (~10 GB KV cache, 32k context). The attacker starts after the victim is up. FP8 changes the
 victim's answers slightly against BF16, and `config.json` doesn't record the server's quantization, so serve every
 condition you compare the same way (all with `ONE_GPU`, or all without). It can't be combined with `CHECKER=1`.
 
-Victim options: `VICTIM_MODEL` (`Qwen/Qwen3.5-27B`), `VICTIM_DRAFT` (`z-lab/Qwen3.5-27B-DFlash`; `none` turns it
-off), `VICTIM_VENV` (the vLLM venv for the victim only), `VICTIM_GPU` (0), `VICTIM_QUANT` (empty = BF16; `fp8`),
+Victim options: `VICTIM_MODEL` (`mistralai/Magistral-Small-2509`), `VICTIM_DRAFT` (`none`; e.g.
+`z-lab/Qwen3.5-27B-DFlash` with the old Qwen victim), `VICTIM_VENV` (the vLLM venv for the victim only), `VICTIM_GPU` (0), `VICTIM_QUANT` (empty = BF16; `fp8`),
 `VICTIM_GPU_MEM` (0.90; 0.48 with `ONE_GPU`). Attacker options: `ATTACKER_MODEL` (`Qwen/Qwen3.8-27B`),
 `ATTACKER_DRAFT` (`z-lab/Qwen3.8-27B-DFlash2`; `none` turns it off), `ATTACKER_VENV` (the vLLM venv for the attacker
 only), `ATTACKER_GPU` (1), `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90; 0.42 with `CHECKER=1`; 0.44 with `ONE_GPU`),

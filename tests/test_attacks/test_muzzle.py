@@ -419,6 +419,11 @@ def test_missing_api_key_is_reported(monkeypatch):
         OpenAICompatibleLLM(AttackerModelConfig(model="m", api_key_env="OPENROUTER_API_KEY"))
 
 
+def test_enable_thinking_goes_into_every_request_body():
+    body = AttackerModelConfig(enable_thinking=False).extra_body()
+    assert body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 def test_defaults_are_the_local_attacker_without_a_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = AttackerModelConfig()

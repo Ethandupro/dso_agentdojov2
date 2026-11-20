@@ -2,6 +2,7 @@
 # Serve a local victim model with vLLM's OpenAI-compatible server (no admin rights, no nvcc needed).
 #
 #   bash local_victim/serve_vllm.sh            # Qwen/Qwen3.5-27B, one copy per GPU, port 8000
+#   MODEL=mistralai/Magistral-Small-2509 bash local_victim/serve_vllm.sh   # the project's victim since 2026-11-20
 #   MODEL=Qwen/Qwen3-32B bash local_victim/serve_vllm.sh
 #
 # Then run the benchmark with:
@@ -35,6 +36,14 @@ case "$MODEL" in
   # Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template (pass it with
   # EXTRA_ARGS="--chat-template /path/to/tool_chat_template_gemma4.jinja", see local_victim/README.md).
   *gemma-4*)           TOOL_PARSER=${TOOL_PARSER:-gemma4};      REASONING_PARSER=${REASONING_PARSER:-gemma4}; MAX_LEN=${MAX_LEN:-131072} ;;
+  # Magistral Small 1.2 (the victim since 2026-11-20): Mistral Small 3.2 with reasoning. Mistral's own format and
+  # tokenizer as its model card asks (mistral_common >= 1.8.5); the mistral reasoning parser returns the [THINK] part
+  # as reasoning_content. Thinking comes from the model card's reasoning system prompt, which the runner sends with
+  # every request, so no enable_thinking switch is passed. Images off (text-only benchmark). 64k context: the card
+  # says quality may drop past 40k, and AgentDojo traces stay far below.
+  *Magistral*)         TOOL_PARSER=${TOOL_PARSER:-mistral};     REASONING_PARSER=${REASONING_PARSER:-mistral}; MAX_LEN=${MAX_LEN:-65536}
+                       THINKING_KWARGS=${THINKING_KWARGS:-none}
+                       MODEL_ARGS="--tokenizer-mode mistral --config-format mistral --load-format mistral --limit-mm-per-prompt {\"image\":0}" ;;
   # Mistral Small (the attacker until 2026-11-20): no reasoning, loaded in Mistral's own format as its model card recommends.
   # Its chat template is mistral_common's, so no enable_thinking switch is passed.
   *Mistral-Small*)     TOOL_PARSER=${TOOL_PARSER:-mistral};     REASONING_PARSER=${REASONING_PARSER:-none}; MAX_LEN=${MAX_LEN:-32768}

@@ -83,6 +83,7 @@ def run_dir_for(
     subset: str | None = None,
     single_injection_point: bool = False,
     no_attacker_memory: bool = False,
+    smoke: bool = False,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -95,7 +96,9 @@ def run_dir_for(
         name = f"{name}-no-memory"
     if subset:
         name = f"{name}-subset-{subset}"
-    if single_injection_point:
+    if smoke:
+        name = f"{name}-smoke"
+    elif single_injection_point:
         name = f"{name}-single-point"
     if limit is not None:
         name = f"{name}-limit{limit}"

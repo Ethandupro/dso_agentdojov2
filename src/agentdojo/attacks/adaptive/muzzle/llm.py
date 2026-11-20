@@ -50,6 +50,10 @@ class AttackerModelConfig(BaseModel):
     """OpenRouter's `reasoning` request field, e.g. `{"enabled": False}`. Set it for a reasoning model: upstream's
     token caps (PAIR judge 10, attacker and stand-in victim 500) leave no room for reasoning tokens, which OpenRouter
     counts against `max_tokens`, so the replies come back empty (PAIR then scores every proposal 1)."""
+    enable_thinking: bool | None = None
+    """Sent with every request as `chat_template_kwargs.enable_thinking` (Qwen3.x chat templates). The runner sets it
+    to False for the local attacker (user decision 2026-11-20), so a server restarted without `serve_vllm.sh`'s
+    default kwarg still never thinks. None: leave the server default."""
 
     @model_validator(mode="after")
     def _openrouter_only_settings(self) -> "AttackerModelConfig":
@@ -63,6 +67,8 @@ class AttackerModelConfig(BaseModel):
             body["provider"] = {"order": list(self.provider_order), "allow_fallbacks": self.allow_fallbacks}
         if self.reasoning is not None:
             body["reasoning"] = dict(self.reasoning)
+        if self.enable_thinking is not None:
+            body["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
         return body or None
 
 
