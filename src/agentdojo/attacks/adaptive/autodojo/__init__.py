@@ -8,5 +8,12 @@ failure, never the checker's removed spans or the victim's reasoning -- matching
 """
 
 from agentdojo.attacks.adaptive.autodojo.attacker import DEVIATIONS, AutoDojoAttacker, AutoDojoSettings
+from agentdojo.attacks.adaptive.autodojo.skill_agent import SkillAgentAttacker, SkillAgentSettings
 
-__all__ = ["DEVIATIONS", "AutoDojoAttacker", "AutoDojoSettings"]
+__all__ = [
+    "DEVIATIONS",
+    "AutoDojoAttacker",
+    "AutoDojoSettings",
+    "SkillAgentAttacker",
+    "SkillAgentSettings",
+]
