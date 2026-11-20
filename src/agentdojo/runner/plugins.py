@@ -27,6 +27,9 @@ class AttemptFeedback:
     progress: int | None = None
     """The runner's 0-4 graded score for this trial (`runner.score`), or None when graded scoring is off. A finer
     signal than `security` for the evolving attacker's leaderboard; never part of the attacker success rate."""
+    victim_trace: str | None = None
+    """An S0-redacted digest of the victim's run (`runner.trace`), or None when `--no-victim-trace`. Shows the
+    attacker why the injection was ignored or refused (grey-box); the evolving S0 is redacted so it never leaks."""
 
     @property
     def attacker_success(self) -> bool:

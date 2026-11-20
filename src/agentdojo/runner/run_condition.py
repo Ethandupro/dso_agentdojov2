@@ -258,6 +258,14 @@ def autodojo_settings(
     "record which strategy it names, for a wins-by-strategy report. On by default (user decision 2026-11-20); "
     "--no-strategy-bank is the ablation and gets a '-no-strategies' results directory.",
 )
+@click.option(
+    "--show-victim-trace/--no-victim-trace",
+    default=True,
+    show_default=True,
+    help="C2/C4/C0E with --attacker autodojo: show the evolving attacker an S0-redacted digest of the victim's run "
+    "(its thinking, what it said, the tools it called) on the leaderboard, so it sees why an injection was ignored. "
+    "On by default (user decision 2026-11-20); --no-victim-trace gets a '-no-victim-trace' results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -287,6 +295,7 @@ def main(
     attacker_memory: bool,
     graded_score: bool,
     strategy_bank: bool,
+    show_victim_trace: bool,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -389,6 +398,7 @@ def main(
         no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
         no_graded_score=evolving_attack and not graded_score,
         no_strategy_bank=evolving_attack and attacker_loop == "autodojo" and not strategy_bank,
+        no_victim_trace=evolving_attack and attacker_loop == "autodojo" and not show_victim_trace,
     )
     config = RunConfig(
         condition=cond.name,
@@ -432,6 +442,7 @@ def main(
         single_injection_point=single_injection_point,
         smoke=smoke or None,
         graded_score=graded_score if evolving_attack else None,
+        show_victim_trace=show_victim_trace if evolving_attack else None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -520,6 +531,7 @@ def main(
         agent_skills=agent_skills,
         skills_prompt_style=skills_prompt_style,  # type: ignore[arg-type]
         graded_score=graded_score,
+        show_victim_trace=show_victim_trace,
     )
     try:
         records = runner.run()

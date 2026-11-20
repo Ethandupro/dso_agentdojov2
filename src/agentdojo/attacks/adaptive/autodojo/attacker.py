@@ -247,6 +247,9 @@ class AutoDojoAttacker:
                 "trial": fb.trial,
                 "progress": fb.progress,
                 "response": _clip(fb.final_answer, limit) if self.settings.show_agent_response else None,
+                # The victim trace supersedes the final answer when present (it already ends with what the agent
+                # said): it shows the attacker why the injection was ignored, S0 already redacted by the runner.
+                "trace": fb.victim_trace if self.settings.show_agent_response else None,
             }
             for fb in history
         ]

@@ -40,6 +40,7 @@ from agentdojo.runner.conditions import Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.runner.score import goal_tool_names, progress_score
+from agentdojo.runner.trace import victim_trace_digest
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -86,6 +87,7 @@ def run_dir_for(
     no_attacker_memory: bool = False,
     no_graded_score: bool = False,
     no_strategy_bank: bool = False,
+    no_victim_trace: bool = False,
     smoke: bool = False,
 ) -> Path:
     name = condition.run_id
@@ -101,6 +103,8 @@ def run_dir_for(
         name = f"{name}-binary-score"
     if no_strategy_bank:
         name = f"{name}-no-strategies"
+    if no_victim_trace:
+        name = f"{name}-no-victim-trace"
     if subset:
         name = f"{name}-subset-{subset}"
     if smoke:
@@ -190,6 +194,7 @@ class Runner:
         security_skill_name: str = S0_SKILL_NAME,
         security_skill_description: str = S0_SKILL_DESCRIPTION,
         graded_score: bool = True,
+        show_victim_trace: bool = True,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
@@ -201,6 +206,7 @@ class Runner:
         self.security_skill_name = security_skill_name
         self.security_skill_description = security_skill_description
         self.graded_score = graded_score
+        self.show_victim_trace = show_victim_trace
         self.config = config
         self.condition = condition
         self.run_dir = run_dir
@@ -299,6 +305,7 @@ class Runner:
             security=record["security"],
             final_answer=record["final_answer"],
             progress=record.get("progress"),
+            victim_trace=record.get("victim_trace"),
         )
 
     def attacker_for(self, unit: Unit) -> Attacker:
@@ -394,6 +401,7 @@ class Runner:
         deepagents = logger.context.get("deepagents") or {}
         attacked = unit.pair is not None
         actions = agent_actions(list(messages))
+        victim_trace = victim_trace_digest(messages, markdown) if attacked and self.show_victim_trace else None
         progress = (
             progress_score(
                 injection_task.GOAL,
@@ -414,6 +422,7 @@ class Runner:
             "attacker_success": (security or not utility) if attacked else None,
             "progress": progress,
             "final_answer": final_answer,
+            "victim_trace": victim_trace,
             "skills": (
                 library.summary(self.security_skill_name if markdown is not None else None)
                 if library is not None
