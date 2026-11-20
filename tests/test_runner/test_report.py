@@ -65,3 +65,24 @@ def test_partial_run_report_uses_only_checkpointed_units(tmp_path: Path):
     assert summary["checker"] is None
     write_report(runner.run_dir)
     assert "stopped after unit 4" in (runner.run_dir / "report.html").read_text()
+
+
+def test_strategy_wins_counts_attempts_and_real_wins():
+    from agentdojo.runner.report import strategy_wins
+
+    archive = [
+        {"pair": "p1", "trial": 0, "source": "trial0"},
+        {"pair": "p1", "trial": 1, "source": "generated", "strategy": "data_record"},
+        {"pair": "p1", "trial": 2, "source": "generated", "strategy": "data_record"},
+        {"pair": "p1", "trial": 3, "source": "generated", "strategy": "user_followup"},
+        {"pair": "p1", "trial": 4, "source": "goal_fallback", "strategy": None},
+    ]
+    records = [
+        {"pair": "p1", "trial": 1, "security": False},
+        {"pair": "p1", "trial": 2, "security": True},
+        {"pair": "p1", "trial": 3, "security": True},
+    ]
+    assert strategy_wins(archive, records) == [
+        {"strategy": "data_record", "attempts": 2, "wins": 1},
+        {"strategy": "user_followup", "attempts": 1, "wins": 1},
+    ]

@@ -138,12 +138,18 @@ def muzzle_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
 
 
 def autodojo_settings(
-    model_id: str, base_url: str, seed: int, external_checker: bool = False, memory: bool = True
+    model_id: str,
+    base_url: str,
+    seed: int,
+    external_checker: bool = False,
+    memory: bool = True,
+    strategy_bank: bool = True,
 ) -> AutoDojoSettings:
     return AutoDojoSettings(
         attacker=attacker_model_config(model_id, base_url, seed),
         target="filter" if external_checker else "agent",
         memory=memory,
+        strategy_bank=strategy_bank,
     )
 
 
@@ -244,6 +250,14 @@ def autodojo_settings(
     "attacker's leaderboard; the attacker success rate still uses only the binary security result. On by default "
     "(user decision 2026-11-20); --no-graded-score is the ablation and gets a '-binary-score' results directory.",
 )
+@click.option(
+    "--strategy-bank/--no-strategy-bank",
+    default=True,
+    show_default=True,
+    help="C2/C4/C0E with --attacker autodojo: show the optimizer the named strategy bank (autodojo.strategies) and "
+    "record which strategy it names, for a wins-by-strategy report. On by default (user decision 2026-11-20); "
+    "--no-strategy-bank is the ablation and gets a '-no-strategies' results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -272,6 +286,7 @@ def main(
     attacker_loop: str,
     attacker_memory: bool,
     graded_score: bool,
+    strategy_bank: bool,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -351,7 +366,14 @@ def main(
         else:
             attacker = AutoDojoAttacker(
                 manifest_data,
-                autodojo_settings(attacker_model_id, attacker_base_url, seed, external_checker, attacker_memory),
+                autodojo_settings(
+                    attacker_model_id,
+                    attacker_base_url,
+                    seed,
+                    external_checker,
+                    attacker_memory,
+                    strategy_bank,
+                ),
             )
     run_dir = run_dir_for(
         results_root,
@@ -366,6 +388,7 @@ def main(
         smoke=smoke,
         no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
         no_graded_score=evolving_attack and not graded_score,
+        no_strategy_bank=evolving_attack and attacker_loop == "autodojo" and not strategy_bank,
     )
     config = RunConfig(
         condition=cond.name,
