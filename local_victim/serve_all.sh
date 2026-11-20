@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Start the project's model servers on the GPU VM and wait until they answer (victim redesign of 2026-11-19):
-#   victim   Qwen/Qwen3.5-27B + DFlash draft z-lab/Qwen3.5-27B-DFlash   on GPU 0, port 8000
+#   victim   Qwen/Qwen3.8-27B + DFlash2 draft z-lab/Qwen3.8-27B-DFlash2 on GPU 0, port 8000
 #   attacker mistralai/Mistral-Small-3.2-24B-Instruct-2506                on GPU 1, port 8003 (C2/C4 only)
 # There is no external checker any more: S0 is one of the victim's skills. CHECKER=1 also starts the old checker
 # (Qwen/Qwen3.5-9B, GPU 1, port 8002) for the `run_condition --external-checker` ablation; the attacker then shares
 # GPU 1 with it and is loaded in FP8, as before.
-# The DFlash draft (~2B) makes the victim faster without changing its answers. VICTIM_DRAFT=none serves plain 27B
-# (use it if this vLLM build does not know the "dflash" method).
+# The DFlash2 draft (~2B) makes the victim faster without changing its answers. VICTIM_DRAFT=none serves plain 27B
+# (use it if this vLLM build cannot load the draft). The DFlash2 model card asks for a vLLM build from
+# vllm-project/vllm PR #52816; install that in its own venv and point the victim at it with VICTIM_VENV=<venv>, so the
+# attacker keeps the venv that works (local_victim/README.md).
 # Ports: VICTIM_PORT / CHECKER_PORT / ATTACKER_PORT; pass the same port to run_condition if you change one.
 # These match src/agentdojo/experiment_models.py, which the runner uses by default.
 # The VM's no-nvcc workaround applies to all of them: VLLM_ATTENTION_BACKEND=FLASH_ATTN EXTRA_ARGS=--enforce-eager.
@@ -32,8 +34,8 @@ if [ "${1:-}" = "stop" ]; then
   exit 0
 fi
 
-start() {  # name gpu port model gpu_mem [extra vLLM args for this server] [draft model or none]
-  local name=$1 gpu=$2 port=$3 model=$4 mem=$5 extra=${6:-} draft=${7:-none}
+start() {  # name gpu port model gpu_mem [extra vLLM args for this server] [draft model or none] [vLLM venv]
+  local name=$1 gpu=$2 port=$3 model=$4 mem=$5 extra=${6:-} draft=${7:-none} venv=${8:-${VENV:-$HOME/venvs/vllm}}
   if curl -sf "localhost:$port/v1/models" >/dev/null 2>&1; then
     echo "$name already running on port $port"
     return
@@ -43,11 +45,11 @@ start() {  # name gpu port model gpu_mem [extra vLLM args for this server] [draf
     echo "  ${name^^}_PORT=8003 bash local_victim/serve_all.sh   (and pass the same port to run_condition)" >&2
     exit 1
   fi
-  CUDA_VISIBLE_DEVICES=$gpu DP=1 TP=1 PORT=$port MODEL=$model GPU_MEM=$mem LOG_DIR=$LOG_DIR DRAFT=$draft \
+  CUDA_VISIBLE_DEVICES=$gpu DP=1 TP=1 PORT=$port MODEL=$model GPU_MEM=$mem LOG_DIR=$LOG_DIR DRAFT=$draft VENV=$venv \
     EXTRA_ARGS="$extra ${EXTRA_ARGS:-}" \
     nohup bash "$HERE/serve_vllm.sh" >"$LOG_DIR/$name.log" 2>&1 &
   echo $! >"$LOG_DIR/$name.pid"
-  echo "$name: $model on GPU $gpu, port $port, draft $draft (log: $LOG_DIR/$name.log)"
+  echo "$name: $model on GPU $gpu, port $port, draft $draft, vLLM $venv (log: $LOG_DIR/$name.log)"
 }
 
 wait_for() {  # name port
@@ -65,8 +67,8 @@ wait_for() {  # name port
 VICTIM_PORT=${VICTIM_PORT:-8000}
 CHECKER_PORT=${CHECKER_PORT:-8002}
 ATTACKER_PORT=${ATTACKER_PORT:-8003}
-start victim 0 "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.5-27B}" "${VICTIM_GPU_MEM:-0.90}" "" \
-  "${VICTIM_DRAFT-z-lab/Qwen3.5-27B-DFlash}"
+start victim 0 "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.8-27B}" "${VICTIM_GPU_MEM:-0.90}" "" \
+  "${VICTIM_DRAFT-z-lab/Qwen3.8-27B-DFlash2}" "${VICTIM_VENV:-${VENV:-$HOME/venvs/vllm}}"
 if [ "${CHECKER:-0}" = "1" ]; then
   start checker 1 "$CHECKER_PORT" "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
 fi

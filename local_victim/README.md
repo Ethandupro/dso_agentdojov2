@@ -94,32 +94,44 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
-## The project setup: victim (with DFlash) and attacker
+## The project setup: victim (with DFlash2) and attacker
 
 Since the victim redesign of 2026-11-19 there is no external checker: the security skill S0 is one of the victim's
 skills (`skillfile_evolution/DESIGN.md`, "Victim skills"). The project's models (`src/agentdojo/experiment_models.py`)
-are the victim `Qwen/Qwen3.5-27B` on GPU 0 (port 8000) and, for C2 and C4, the attacker
+are the victim `Qwen/Qwen3.8-27B` (since 2026-11-20; was `Qwen/Qwen3.5-27B`) on GPU 0 (port 8000) and, for C2 and C4, the attacker
 `mistralai/Mistral-Small-3.2-24B-Instruct-2506` on GPU 1 (port 8003, BF16, the GPU to itself). None of them thinks.
 
-The victim is served with the speculative-decoding draft model `z-lab/Qwen3.5-27B-DFlash` (~2B). The draft guesses
-several tokens ahead and the 27B model checks them in one pass, so the answers are the same as plain 27B and only the
-speed changes. The runner still talks to `Qwen/Qwen3.5-27B`; the draft is a server setting
-(`--speculative-config '{"method": "dflash", "model": "z-lab/Qwen3.5-27B-DFlash", "num_speculative_tokens": 7}'`).
-If your vLLM build does not know the `dflash` method, start without it (`VICTIM_DRAFT=none`) or upgrade vLLM.
+The victim is served with the speculative-decoding draft model `z-lab/Qwen3.8-27B-DFlash2` (DFlash 2, ~2B). The draft
+guesses several tokens ahead and the 27B model checks them in one pass, so the answers are the same as plain 27B and
+only the speed changes. The runner still talks to `Qwen/Qwen3.8-27B`; the draft is a server setting
+(`--speculative-config '{"method": "dflash", "model": "z-lab/Qwen3.8-27B-DFlash2", "num_speculative_tokens": 7}'`).
+Qwen3.8 is built on the Qwen3.5 architecture, so it uses the same tool parser (`qwen3_coder`), reasoning parser
+(`qwen3`) and thinking switch (`enable_thinking: false`).
+
+The DFlash2 model card asks for a vLLM build from pull request #52816. If the victim log shows the draft failing to
+load, either start without it (`VICTIM_DRAFT=none`, plain 27B, same answers) or install that build in a separate venv
+and point only the victim at it, so the attacker keeps the vLLM that already works:
+
+```bash
+uv venv ~/venvs/vllm-dflash2 --python 3.12
+uv pip install --python ~/venvs/vllm-dflash2/bin/python --torch-backend=auto \
+  "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/52816/head"
+VICTIM_VENV=~/venvs/vllm-dflash2 bash local_victim/serve_all.sh
+```
 
 ```bash
 cd ~/dso_agentdojov2
 bash local_victim/serve_all.sh               # victim + attacker; logs in ~/vllm_logs
 ATTACKER=0 bash local_victim/serve_all.sh    # victim only (C0, C1, C3)
-VICTIM_DRAFT=none bash local_victim/serve_all.sh   # plain 27B, no DFlash
+VICTIM_DRAFT=none bash local_victim/serve_all.sh   # plain 27B, no DFlash2
 CHECKER=1 bash local_victim/serve_all.sh     # also the old checker (port 8002), for --external-checker runs
 bash local_victim/serve_all.sh stop          # stop all
 # the no-nvcc workaround, if the servers fail at "Engine core initialization":
 VLLM_ATTENTION_BACKEND=FLASH_ATTN EXTRA_ARGS=--enforce-eager bash local_victim/serve_all.sh
 ```
 
-Victim options: `VICTIM_DRAFT` (`z-lab/Qwen3.5-27B-DFlash`; `none` turns it off), `SPEC_TOKENS` (7: tokens drafted per
-step). Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90, or 0.42 with `CHECKER=1`),
+Victim options: `VICTIM_MODEL` (`Qwen/Qwen3.8-27B`), `VICTIM_DRAFT` (`z-lab/Qwen3.8-27B-DFlash2`; `none` turns it
+off), `VICTIM_VENV` (the vLLM venv for the victim only), `SPEC_TOKENS` (7: tokens drafted per step). Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90, or 0.42 with `CHECKER=1`),
 `ATTACKER_QUANT` (empty = BF16; `fp8` with `CHECKER=1`). The attacker needs no API key.
 
 Experiment runs use `python -m agentdojo.runner.run_condition` (see `src/agentdojo/runner/run_condition.py`). The
