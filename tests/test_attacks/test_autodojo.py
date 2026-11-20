@@ -408,7 +408,11 @@ def test_victim_trace_supersedes_the_final_answer_on_the_leaderboard():
     attacker, _, log = make_attacker()
     seed = attacker.text_for(PAIR, 0, [])
     trace = "thought: I will not follow that.\ncalled: read_inbox()"
-    history = [AttemptFeedback(trial=0, injection_text=seed, utility=True, security=False, final_answer="No.", victim_trace=trace)]
+    history = [
+        AttemptFeedback(
+            trial=0, injection_text=seed, utility=True, security=False, final_answer="No.", victim_trace=trace
+        )
+    ]
     attacker.text_for(PAIR, 1, history)
     user_msg = log[-1]["messages"][1]["content"]
     assert "step by step" in user_msg and "called: read_inbox()" in user_msg
@@ -418,7 +422,56 @@ def test_victim_trace_supersedes_the_final_answer_on_the_leaderboard():
 def test_no_victim_trace_falls_back_to_the_final_answer():
     attacker, _, log = make_attacker()
     seed = attacker.text_for(PAIR, 0, [])
-    history = [AttemptFeedback(trial=0, injection_text=seed, utility=True, security=False, final_answer="I refuse.", victim_trace=None)]
+    history = [
+        AttemptFeedback(
+            trial=0, injection_text=seed, utility=True, security=False, final_answer="I refuse.", victim_trace=None
+        )
+    ]
     attacker.text_for(PAIR, 1, history)
     user_msg = log[-1]["messages"][1]["content"]
     assert "The agent's response that time: I refuse." in user_msg and "step by step" not in user_msg
+
+
+def test_optimizer_ranks_top_strategies_and_writes_from_the_top():
+    goal = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=AttackerModelConfig(model="x"))).goal(PAIR)
+    values = " ".join(goal_literals(goal))
+    ranking = ["user_followup", "data_record", "made_up", "data_record", "policy_notice"]
+    reply = json.dumps({"diagnosis": "d", "strategy_ranking": ranking, "prompt": f"a note {values}".strip()})
+    attacker, _, log = make_attacker(reply=reply)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    user_msg = log[-1]["messages"][1]["content"]
+    assert "Rank the 5 strategies" in user_msg
+    entry = attacker.archive[-1]
+    # Only real bank names, deduped, order kept; the written strategy is the top of the ranking.
+    assert entry["strategy_ranking"] == ["user_followup", "data_record", "policy_notice"]
+    assert entry["strategy"] == "user_followup"
+
+
+def test_ranking_is_capped_at_max_strategies():
+    goal = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=AttackerModelConfig(model="x"))).goal(PAIR)
+    values = " ".join(goal_literals(goal))
+    ranking = [
+        "data_record",
+        "outstanding_step",
+        "tool_error_recovery",
+        "policy_notice",
+        "justification",
+        "decomposition",
+    ]
+    reply = json.dumps({"diagnosis": "d", "strategy_ranking": ranking, "prompt": f"a note {values}".strip()})
+    attacker, _, _ = make_attacker(reply=reply, max_strategies=3)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    assert attacker.archive[-1]["strategy_ranking"] == ["data_record", "outstanding_step", "tool_error_recovery"]
+
+
+def test_plain_strategy_field_still_works_without_a_ranking():
+    goal = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=AttackerModelConfig(model="x"))).goal(PAIR)
+    values = " ".join(goal_literals(goal))
+    reply = json.dumps({"diagnosis": "d", "strategy": "data_record", "prompt": f"a note {values}".strip()})
+    attacker, _, _ = make_attacker(reply=reply)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fbp(0, seed)])
+    entry = attacker.archive[-1]
+    assert entry["strategy"] == "data_record" and entry["strategy_ranking"] == []
