@@ -24,7 +24,7 @@ PAIR = load_pairs(MANIFEST)[0]
 
 
 def tool_turn(calls: list[tuple[str, dict[str, Any]]]) -> ChatCompletion:
-    tool_calls = [
+    tool_calls: list[Any] = [
         ChatCompletionMessageToolCall(
             id=f"c{i}", type="function", function=Function(name=name, arguments=json.dumps(args))
         )
@@ -223,8 +223,10 @@ def test_report_surfaces_the_skill_library():
         }
     }
     metrics = attacker_metrics(state, records=[])
+    assert metrics is not None
     lib = metrics["skill_library"]
     assert lib["notes"] == 1 and lib["names"] == ["rec"]
     assert lib["rewrites_writing_a_note"] == 1 and lib["rewrites_loading_a_note"] == 1
     # the plain AutoDojo attacker keeps no library
-    assert attacker_metrics({"attacker": {"archive": []}}, records=[])["skill_library"] is None
+    plain = attacker_metrics({"attacker": {"archive": []}}, records=[])
+    assert plain is not None and plain["skill_library"] is None
