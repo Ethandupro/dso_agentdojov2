@@ -13,7 +13,7 @@ pytest.importorskip("deepagents")
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -26,8 +26,10 @@ from agentdojo.agent_pipeline.deepagents_pipeline import (
     DEEPAGENTS_BUILTIN_TOOL_NAMES,
     DeepAgentsConfig,
     DeepAgentsPipeline,
+    ThinkingPromptChatOpenAI,
     ToolMiddlewareFactory,
     is_context_overflow_error,
+    thinking_prompt_chunks,
 )
 from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
 from agentdojo.attacks.attack_registry import load_attack
@@ -42,6 +44,7 @@ from agentdojo.logging import OutputLogger
 from agentdojo.scripts import benchmark as benchmark_script
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import ChatMessage
+from tests.conftest import FAKE_REASONING_PROMPT
 
 BENCHMARK_VERSION = "v1.2.2"
 
@@ -611,6 +614,45 @@ def test_cli_passes_provider_pinning_to_the_victim_config(monkeypatch: pytest.Mo
     assert captured[-1].provider_order is None
 
 
+def test_thinking_prompt_is_split_into_mistral_content_chunks():
+    assert thinking_prompt_chunks(FAKE_REASONING_PROMPT) == [
+        {"type": "text", "text": "Think first."},
+        {"type": "thinking", "thinking": "Draft your thoughts here.", "closed": True},
+        {"type": "text", "text": "Then answer."},
+    ]
+    with pytest.raises(ValueError, match="THINK"):
+        thinking_prompt_chunks("no think tags")
+    with pytest.raises(ValueError, match="THINK"):
+        DeepAgentsConfig(model_id="m", base_url="http://localhost:8000/v1", reasoning_system_prompt="no tags")
+    with pytest.raises(ValueError, match="local server"):
+        DeepAgentsConfig(model_id="m", reasoning_system_prompt=FAKE_REASONING_PROMPT)
+
+
+def test_magistral_requests_carry_the_reasoning_prompt_ahead_of_the_agents():
+    config = DeepAgentsConfig(
+        model_id="mistralai/Magistral-Small-2509",
+        base_url="http://localhost:8000/v1",
+        reasoning_system_prompt=FAKE_REASONING_PROMPT,
+        temperature=0.7,
+        top_p=0.95,
+    )
+    pipeline = DeepAgentsPipeline.from_config(config)
+    model = pipeline.model
+    assert isinstance(model, ThinkingPromptChatOpenAI)
+    payload = model._get_request_payload([SystemMessage("You are the agent."), HumanMessage("hi")])
+    assert payload["top_p"] == 0.95 and payload["temperature"] == 0.7
+    system, user = payload["messages"]
+    assert system["role"] == "system" and user == {"role": "user", "content": "hi"}
+    assert system["content"] == [
+        {"type": "text", "text": "Think first."},
+        {"type": "thinking", "thinking": "Draft your thoughts here.", "closed": True},
+        {"type": "text", "text": "Then answer.\n\nYou are the agent."},
+    ]
+    no_system = model._get_request_payload([HumanMessage("hi")])
+    assert no_system["messages"][0]["content"][1]["type"] == "thinking"
+    assert get_model_name_from_pipeline(pipeline) == "Magistral"
+
+
 def test_cli_passes_local_server_to_the_victim_config(monkeypatch: pytest.MonkeyPatch):
     captured: list[DeepAgentsConfig] = []
 
@@ -637,9 +679,11 @@ def test_cli_defaults_to_the_project_victim_and_checker(monkeypatch: pytest.Monk
     args = ["-s", "banking", "-ut", "user_task_0", "--harness", "deepagents", "--logdir", str(tmp_path)]
     CliRunner().invoke(benchmark_script.main, args)
     config, factory = captured[-1]
-    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "Qwen/Qwen3.5-27B"
+    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "mistralai/Magistral-Small-2509"
     assert config.base_url == experiment_models.VICTIM_BASE_URL
-    assert config.enable_thinking is False
+    assert config.enable_thinking is None  # Magistral thinks through its reasoning system prompt, not a switch
+    assert config.reasoning_system_prompt == FAKE_REASONING_PROMPT
+    assert (config.temperature, config.top_p) == (0.7, 0.95)
     assert factory is None
 
     CliRunner().invoke(benchmark_script.main, [*args, "--checker"])

@@ -5,7 +5,7 @@ import warnings
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import click
 from dotenv import load_dotenv
@@ -106,8 +106,19 @@ def benchmark_suite(
                 log_context={"suite": suite.name, "attack": attack, "skill_file": str(skill_file)},
             )
             print(f"Using checker: '{checker_model_id}' ({checker_base_url or 'OpenRouter'}), skill file {skill_file}")
+        # A local Magistral victim thinks through its model card's reasoning system prompt, with the card's sampling.
+        magistral: dict[str, Any] = {}
+        if base_url is not None and experiment_models.is_magistral(model_id):
+            magistral = {
+                "temperature": experiment_models.MAGISTRAL_TEMPERATURE,
+                "top_p": experiment_models.MAGISTRAL_TOP_P,
+                "reasoning_system_prompt": deepagents_pipeline.fetch_hf_text(
+                    model_id, experiment_models.REASONING_PROMPT_FILE
+                ),
+            }
         pipeline = deepagents_pipeline.DeepAgentsPipeline.from_config(
             deepagents_pipeline.DeepAgentsConfig(
+                **magistral,
                 model_id=model_id,
                 system_message_name=system_message_name,
                 system_message=system_message,
@@ -193,7 +204,8 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     default=None,
     help="The model id for local models, or the victim model id with `--harness deepagents` (an OpenRouter id, or "
     "the served name with `--base-url`). With `--harness deepagents` and no `--model-id`, the project's victim "
-    f"`{experiment_models.VICTIM_MODEL_ID}` at `{experiment_models.VICTIM_BASE_URL}` is used, without thinking.",
+    f"`{experiment_models.VICTIM_MODEL_ID}` at `{experiment_models.VICTIM_BASE_URL}` is used (a Magistral victim "
+    "thinks, through its model card's reasoning system prompt).",
 )
 @click.option(
     "--harness",

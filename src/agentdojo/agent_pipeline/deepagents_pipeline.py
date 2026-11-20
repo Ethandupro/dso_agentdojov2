@@ -23,9 +23,11 @@ checker for each task. The benchmark CLI selects it with `--harness deepagents -
 
 import json
 import os
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal
 
 import openai
@@ -139,6 +141,13 @@ class DeepAgentsConfig(BaseModel):
     default; published AgentDojo numbers for these models are non-thinking). Unset, the server's default is used.
     Only applies with `base_url`."""
     temperature: float | None = 0.0
+    top_p: float | None = None
+    """Nucleus sampling. Unset, the server's default is used."""
+    reasoning_system_prompt: str | None = None
+    """A reasoning model's own system prompt with its `[THINK]...[/THINK]` example, e.g. Magistral's
+    `SYSTEM_PROMPT.txt` (victim since 2026-11-20). Sent ahead of the agent's system prompt with the `[THINK]` part as a
+    `thinking` content chunk, which is how Mistral's tokenizer encodes those tags as special tokens (as the Magistral
+    model card's own client does). Kept verbatim here so a run only resumes with the same prompt. Local servers only."""
     max_model_calls: int = 30
     """Per-agent limit on model calls in one run (main agent and each subagent run separately)."""
     hide_filesystem_tools: bool = True
@@ -169,6 +178,10 @@ class DeepAgentsConfig(BaseModel):
             raise ValueError("provider_order is an OpenRouter setting and cannot be used with base_url")
         if self.base_url is None and self.enable_thinking is not None:
             raise ValueError("enable_thinking is only supported with base_url (a local server)")
+        if self.base_url is None and self.reasoning_system_prompt is not None:
+            raise ValueError("reasoning_system_prompt is only supported with base_url (a local server)")
+        if self.reasoning_system_prompt is not None:
+            thinking_prompt_chunks(self.reasoning_system_prompt)  # fails early on a prompt without [THINK]...[/THINK]
         return self
 
     def openrouter_extra_body(self) -> dict[str, Any] | None:
@@ -205,12 +218,93 @@ def make_openrouter_chat_model(model: str, temperature: float | None = 0.0, **kw
     return ChatOpenAI(model=model, base_url=OPENROUTER_BASE_URL, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
 
 
-def make_local_chat_model(model: str, base_url: str, temperature: float | None = 0.0, **kwargs: Any) -> ChatOpenAI:
+HF_CACHE_DIR = Path.home() / ".cache" / "agentdojo" / "hf"
+
+
+def fetch_hf_text(repo_id: str, filename: str, cache_dir: Path = HF_CACHE_DIR) -> str:
+    """A small text file from a Hugging Face model repo (e.g. Magistral's `SYSTEM_PROMPT.txt`), downloaded once and
+    then read from `cache_dir`. Sends `HF_TOKEN` if set. The text is not committed to this repo."""
+    path = cache_dir / repo_id.replace("/", "__") / filename
+    if not path.exists():
+        request = urllib.request.Request(f"https://huggingface.co/{repo_id}/resolve/main/{filename}")
+        if token := os.environ.get("HF_TOKEN"):
+            request.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(request, timeout=60) as response:
+            text = response.read().decode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return path.read_text(encoding="utf-8")
+
+
+THINK_OPEN = "[THINK]"
+THINK_CLOSE = "[/THINK]"
+
+
+def thinking_prompt_chunks(prompt: str) -> list[dict[str, Any]]:
+    """Splits a Magistral-style system prompt into OpenAI content chunks: the text before `[THINK]`, the part between
+    `[THINK]` and `[/THINK]` as a closed `thinking` chunk, and the text after. vLLM's Mistral tokenizer encodes a
+    `thinking` chunk with the `[THINK]` special tokens; the same tags written as plain text would be ordinary text."""
+    before, sep, rest = prompt.partition(THINK_OPEN)
+    thinking, sep2, after = rest.partition(THINK_CLOSE)
+    if not sep or not sep2:
+        raise ValueError(f"the reasoning system prompt has no {THINK_OPEN}...{THINK_CLOSE} part")
+    chunks: list[dict[str, Any]] = []
+    if before:
+        chunks.append({"type": "text", "text": before})
+    chunks.append({"type": "thinking", "thinking": thinking, "closed": True})
+    chunks.append({"type": "text", "text": after})
+    return chunks
+
+
+class ThinkingPromptChatOpenAI(ChatOpenAI):
+    """A local chat model that puts a reasoning model's own system prompt (as content chunks) ahead of the agent's
+    system prompt in every request. Requests without a system message get it as a new first message."""
+
+    thinking_prompt: str
+
+    def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        chunks = thinking_prompt_chunks(self.thinking_prompt)
+        messages = payload.get("messages", [])
+        if messages and messages[0].get("role") == "system":
+            original = messages[0]["content"]
+            if isinstance(original, str):
+                original = [{"type": "text", "text": original}]
+            last = chunks[-1]
+            first, rest = (original[0], original[1:]) if original else (None, [])
+            if first is not None and first.get("type") == "text":
+                last["text"] = f"{last['text'].rstrip()}\n\n{first['text']}".lstrip()
+                chunks.extend(rest)
+            else:
+                chunks.extend(original)
+            messages[0] = {**messages[0], "content": chunks}
+        else:
+            payload["messages"] = [{"role": "system", "content": chunks}, *messages]
+        return payload
+
+
+def make_local_chat_model(
+    model: str,
+    base_url: str,
+    temperature: float | None = 0.0,
+    thinking_prompt: str | None = None,
+    **kwargs: Any,
+) -> ChatOpenAI:
     """Builds a LangChain chat model for a self-hosted OpenAI-compatible server (vLLM, SGLang).
 
-    Reads the API key from `LOCAL_LLM_API_KEY`; servers started without a key accept any value.
+    Reads the API key from `LOCAL_LLM_API_KEY`; servers started without a key accept any value. With
+    `thinking_prompt` (a reasoning model's own system prompt), every request carries it ahead of the agent's.
     """
     api_key = os.environ.get("LOCAL_LLM_API_KEY") or "EMPTY"
+    if thinking_prompt is not None:
+        return ThinkingPromptChatOpenAI(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,  # type: ignore[arg-type]
+            temperature=temperature,
+            thinking_prompt=thinking_prompt,
+            **kwargs,
+        )
     return ChatOpenAI(model=model, base_url=base_url, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
 
 
@@ -496,10 +590,17 @@ class DeepAgentsPipeline(BasePipelineElement):
                 "seed": config.seed,
                 "extra_body": config.extra_body(),
             }
+            if config.top_p is not None:
+                model_kwargs["top_p"] = config.top_p
             if config.base_url is None:
                 model = make_openrouter_chat_model(config.model_id, **model_kwargs)
             else:
-                model = make_local_chat_model(config.model_id, config.base_url, **model_kwargs)
+                model = make_local_chat_model(
+                    config.model_id,
+                    config.base_url,
+                    thinking_prompt=config.reasoning_system_prompt,
+                    **model_kwargs,
+                )
         if config.tool_output_format == "json":
             tool_output_formatter = partial(tool_result_to_str, dump_fn=partial(json.dumps, default=str))
         else:

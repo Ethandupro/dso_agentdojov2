@@ -41,6 +41,9 @@ class RunConfig(BaseModel):
     """Pilot cut from a `--subset` file: its path, sha256 and the user tasks it lists. Own directory."""
     single_injection_point: bool = False
     """Pilot cut: only pairs whose user task reads one injection vector. Own directory."""
+    smoke: bool | None = None
+    """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
+    (not False) when off, so runs made before the flag existed still resume."""
     benchmark_version: str
     manifest_path: str
     manifest_sha256: str

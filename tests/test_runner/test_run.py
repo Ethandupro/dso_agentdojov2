@@ -199,6 +199,29 @@ def test_single_injection_point_filter_drops_multi_vector_pairs():
     assert all(len(p.vectors) == 1 for p in pairs)
 
 
+def test_runner_attacker_never_thinks():
+    config = run_condition.attacker_model_config("m", "http://localhost:8003/v1", 0)
+    assert config.extra_body() == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_smoke_preset_takes_single_point_pairs_in_turn_from_each_suite(tmp_path: Path):
+    smoke = PairFilter(single_injection_point=True, balance_suites=True)
+    suites = run_condition.SMOKE_SUITES
+    units = build_units(CONDITIONS["C2"], MANIFEST, 3, run_condition.SMOKE_PAIRS, suites, smoke)
+    pairs = [u.pair for u in units if u.pair and u.trial == 0]
+    assert len(pairs) == run_condition.SMOKE_PAIRS == 8
+    assert all(len(p.vectors) == 1 for p in pairs)
+    assert [p.suite for p in pairs] == ["banking", "travel"] * 4
+    benign = [u for u in units if u.pair is None]
+    assert {(u.suite, u.user_task) for u in benign} == {(p.suite, p.user_task) for p in pairs}
+    c4 = build_units(CONDITIONS["C4"], MANIFEST, 3, run_condition.SMOKE_PAIRS, suites, smoke)
+    for phase in ("train", "test"):
+        phase_pairs = [u.pair for u in c4 if u.phase == phase and u.trial == 0 and u.pair]
+        assert len(phase_pairs) == 8 and {p.suite for p in phase_pairs} == {"banking", "travel"}
+    rd = run_dir_for(tmp_path, CONDITIONS["C2"], 0, 8, suites, single_injection_point=True, smoke=True)
+    assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-banking+travel-smoke-limit8"
+
+
 def test_subset_file_rejects_unknown_tasks_and_skips_comments(tmp_path: Path):
     path = tmp_path / "s.txt"
     path.write_text("# a comment\n\nbanking/user_task_0  # trailing\n")

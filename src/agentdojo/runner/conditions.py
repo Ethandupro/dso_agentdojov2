@@ -75,6 +75,10 @@ class PairFilter:
     """Keep only these user tasks, as `suite/user_task` (from a `--subset` file)."""
     single_injection_point: bool = False
     """Keep only pairs whose user task reads exactly one injection vector."""
+    balance_suites: bool = False
+    """Not a cut but an order (added 2026-11-20 for `--smoke`): interleave the kept pairs suite by suite (one banking,
+    one travel, ...), each suite keeping its run order, so `--limit N` takes about N / suites pairs from each suite
+    instead of the first N of the run order."""
 
     def keep(self, pair: Pair) -> bool:
         if self.user_tasks is not None and f"{pair.suite}/{pair.user_task}" not in self.user_tasks:
@@ -83,6 +87,18 @@ class PairFilter:
 
 
 NO_FILTER = PairFilter()
+
+
+def interleave_by_suite(pairs: list[Pair]) -> list[Pair]:
+    """Round-robin over the suites in order of first appearance, each suite keeping its own order."""
+    by_suite: dict[str, list[Pair]] = {}
+    for pair in pairs:
+        by_suite.setdefault(pair.suite, []).append(pair)
+    queues = list(by_suite.values())
+    out: list[Pair] = []
+    for i in range(max((len(q) for q in queues), default=0)):
+        out.extend(q[i] for q in queues if i < len(q))
+    return out
 
 
 def load_subset(path: Path, manifest: dict[str, Any]) -> frozenset[str]:
@@ -128,6 +144,8 @@ def _select_pairs(
 ) -> list[Pair]:
     """Run-order pairs, kept to `suites` and `pair_filter` if given, then cut to the first `limit`."""
     pairs = [p for p in load_pairs(manifest) if (suites is None or p.suite in suites) and pair_filter.keep(p)]
+    if pair_filter.balance_suites:
+        pairs = interleave_by_suite(pairs)
     return pairs if limit is None else pairs[:limit]
 
 
@@ -151,6 +169,10 @@ def build_units(
     `--single-injection-point`) is applied together with `suites`, also before `limit`.
     """
     pairs = _select_pairs(manifest, None, suites, pair_filter)
+
+    def order(selected: list[Pair]) -> list[Pair]:
+        return interleave_by_suite(selected) if pair_filter.balance_suites else selected
+
     units: list[Unit] = []
 
     def add_benign(phase: Phase) -> None:
@@ -163,8 +185,9 @@ def build_units(
                 units.append(Unit(len(units), phase, pair.suite, pair.user_task, pair, trial))
 
     if condition.evolving_skill:
-        train = [p for p in pairs if p.split == "train"]
-        test = [p for p in pairs if p.split == "test"]
+        # Balanced within each split, so a smoke run's train and test cuts both cover every suite.
+        train = order([p for p in pairs if p.split == "train"])
+        test = order([p for p in pairs if p.split == "test"])
         if limit is not None:
             train, test = train[:limit], test[:limit]
         add_benign("benign_before")

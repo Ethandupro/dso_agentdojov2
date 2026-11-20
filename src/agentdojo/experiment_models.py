@@ -1,9 +1,9 @@
 """The models and skills of the skill-file experiments and where they are served (decided 2026-11-16 by the user;
-victim redesign 2026-11-19; 2026-11-20: victim back to Qwen3.5-27B, attacker now Qwen3.8-27B).
+victim redesign 2026-11-19; 2026-11-20: attacker Qwen3.8-27B, victim Magistral Small 1.2 with thinking).
 
 The victim and the attacker run on the project's GPU VM behind vLLM's OpenAI-compatible server (see
-`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Qwen3.5-27B on GPU 0 (port 8000), sped up with
-the z-lab/Qwen3.5-27B-DFlash draft model (speculative decoding: same outputs, faster), and the attacker Qwen3.8-27B
+`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Magistral-Small-2509 on GPU 0 (port 8000,
+thinking on through its reasoning system prompt, no draft model), and the attacker Qwen3.8-27B
 (with the z-lab/Qwen3.8-27B-DFlash2 draft) on GPU 1 (port 8003). Since 2026-11-19 there is no external checker by
 default: S0 is one of the victim's skills. The old checker (Qwen3.5-9B, port 8002) is kept for ablation behind `run_condition --external-checker`. Each setting is
 overridable from the CLI. The skill-file judge runs on OpenRouter.
@@ -11,14 +11,28 @@ overridable from the CLI. The skill-file judge runs on OpenRouter.
 
 from pathlib import Path
 
-VICTIM_MODEL_ID = "Qwen/Qwen3.5-27B"
-"""Back to Qwen/Qwen3.5-27B on 2026-11-20 by the user (it was Qwen/Qwen3.8-27B for a few hours, PR #40)."""
+VICTIM_MODEL_ID = "mistralai/Magistral-Small-2509"
+"""Magistral Small 1.2 (24B, built on Mistral Small 3.2 with reasoning), chosen 2026-11-20 by the user so the victim
+thinks (Mistral Small 3.2 itself has no thinking mode). It was Qwen/Qwen3.5-27B (non-thinking) before."""
 VICTIM_BASE_URL = "http://localhost:8000/v1"
-VICTIM_ENABLE_THINKING = False
-"""Published AgentDojo numbers for Qwen3.5-27B are non-thinking."""
-VICTIM_DRAFT_MODEL_ID = "z-lab/Qwen3.5-27B-DFlash"
-"""Speculative-decoding draft for the victim (user's choice 2026-11-19). It only proposes tokens that the 27B model
-verifies, so it changes speed, not answers. Set in `local_victim/serve_all.sh`, not by the runner."""
+VICTIM_ENABLE_THINKING: bool | None = None
+"""Not sent: Magistral's chat template (Mistral's own tokenizer) has no `enable_thinking` switch. It thinks because of
+its reasoning system prompt (`VICTIM_REASONING_PROMPT_REPO`). Qwen victims used False."""
+REASONING_PROMPT_FILE = "SYSTEM_PROMPT.txt"
+"""For a Magistral victim, this file of the model's own repo (the reasoning prompt its model card asks for) goes ahead
+of the agent's system prompt in every request. Downloaded at run start and saved in the run's config.json."""
+MAGISTRAL_TEMPERATURE = 0.7
+MAGISTRAL_TOP_P = 0.95
+"""Magistral's recommended sampling (model card). Other victims keep temperature 0 (the Qwen runs); greedy decoding
+can make a reasoning model loop."""
+
+
+def is_magistral(model_id: str) -> bool:
+    return "magistral" in model_id.lower()
+
+
+VICTIM_DRAFT_MODEL_ID: str | None = None
+"""No speculative-decoding draft for Magistral (the Qwen victims had a z-lab DFlash draft)."""
 
 CHECKER_MODEL_ID = "Qwen/Qwen3.5-9B"
 CHECKER_BASE_URL = "http://localhost:8002/v1"
@@ -32,6 +46,9 @@ kwarg), so upstream's PAIR token caps still leave room for the answer."""
 ATTACKER_DRAFT_MODEL_ID = "z-lab/Qwen3.8-27B-DFlash2"
 """Speculative-decoding draft for the attacker (speed only). Set in `local_victim/serve_all.sh`, not by the runner."""
 ATTACKER_BASE_URL = "http://localhost:8003/v1"
+ATTACKER_ENABLE_THINKING = False
+"""Sent with every attacker request (2026-11-20, user decision: the attacker never thinks), on top of the server
+default that `serve_vllm.sh` sets, so a server started any other way still does not think."""
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 

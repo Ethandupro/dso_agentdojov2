@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Start the project's model servers on the GPU VM and wait until they answer (victim redesign of 2026-11-19):
-#   victim   Qwen/Qwen3.5-27B + DFlash draft  z-lab/Qwen3.5-27B-DFlash  on GPU 0, port 8000
+#   victim   mistralai/Magistral-Small-2509 (thinking, no draft)  on GPU 0, port 8000
 #   attacker Qwen/Qwen3.8-27B + DFlash2 draft z-lab/Qwen3.8-27B-DFlash2 on GPU 1, port 8003 (C2/C4 only)
-# (2026-11-20, the user's choice: victim back to Qwen3.5-27B, attacker Qwen3.8-27B instead of Mistral Small 3.2 24B.)
+# (2026-11-20, the user's choices: attacker Qwen3.8-27B instead of Mistral Small 3.2 24B; victim Magistral Small 1.2,
+# Mistral Small 3.2 with reasoning, instead of Qwen3.5-27B. VICTIM_MODEL=Qwen/Qwen3.5-27B VICTIM_DRAFT=z-lab/Qwen3.5-27B-DFlash
+# serves the old victim.)
 # There is no external checker any more: S0 is one of the victim's skills. CHECKER=1 also starts the old checker
 # (Qwen/Qwen3.5-9B, GPU 1, port 8002) for the `run_condition --external-checker` ablation; the attacker then shares
 # GPU 1 with it and is loaded in FP8, as before.
-# The drafts (~2B each) make the models faster without changing their answers. VICTIM_DRAFT=none / ATTACKER_DRAFT=none
-# serve the plain 27B model (use it if this vLLM build cannot load the draft). The DFlash2 model card asks for a vLLM
+# The drafts (~2B each) make the models faster without changing their answers. Magistral has none; ATTACKER_DRAFT=none
+# serves the plain 27B attacker (use it if this vLLM build cannot load the draft). The DFlash2 model card asks for a vLLM
 # build from vllm-project/vllm PR #52816; install that in its own venv and point only the attacker at it with
 # ATTACKER_VENV=<venv>, so the victim keeps the venv that works (VICTIM_VENV does the same for the victim;
 # local_victim/README.md).
@@ -70,9 +72,9 @@ wait_for() {  # name port
 }
 
 # ONE_GPU=<n> (added 2026-11-20 by the user's request): put the victim and the attacker on the same GPU n. Both are then
-# loaded in FP8 so they fit in one 96 GB H100 together. Since 2026-11-20 both are 27B models with a ~2B draft
-# (~28 GB FP8 weights + ~4 GB draft each): victim in 0.48 of the GPU (~46 GB, ~14 GB left for KV cache), attacker in
-# 0.44 (~42 GB, ~10 GB KV cache, context capped at 32k tokens). The attacker starts only once the victim is up, so each
+# loaded in FP8 so they fit in one 96 GB H100 together. Victim Magistral 24B (~24 GB FP8 weights, no draft) in 0.48
+# of the GPU (~46 GB, ~20 GB left for KV cache, 64k context); attacker 27B + ~2B draft (~28 GB + ~4 GB) in 0.44
+# (~42 GB, ~10 GB KV cache, context capped at 32k tokens). The attacker starts only once the victim is up, so each
 # server sees the other's memory as used. Use the same setting for every condition you compare: FP8 changes the
 # victim's answers slightly against BF16, and the run's config.json does not record the server's quantization.
 ONE_GPU=${ONE_GPU:-}
@@ -95,14 +97,14 @@ VICTIM_QUANT=${VICTIM_QUANT-}
 VICTIM_PORT=${VICTIM_PORT:-8000}
 CHECKER_PORT=${CHECKER_PORT:-8002}
 ATTACKER_PORT=${ATTACKER_PORT:-8003}
-start victim "$VICTIM_GPU" "$VICTIM_PORT" "${VICTIM_MODEL:-Qwen/Qwen3.5-27B}" "${VICTIM_GPU_MEM:-0.90}" \
+start victim "$VICTIM_GPU" "$VICTIM_PORT" "${VICTIM_MODEL:-mistralai/Magistral-Small-2509}" "${VICTIM_GPU_MEM:-0.90}" \
   "${VICTIM_QUANT:+--quantization $VICTIM_QUANT}" \
-  "${VICTIM_DRAFT-z-lab/Qwen3.5-27B-DFlash}" "${VICTIM_VENV:-${VENV:-$HOME/venvs/vllm}}"
+  "${VICTIM_DRAFT:-none}" "${VICTIM_VENV:-${VENV:-$HOME/venvs/vllm}}"
 if [ "${CHECKER:-0}" = "1" ]; then
   start checker 1 "$CHECKER_PORT" "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
 fi
 
-echo "waiting for the servers (the first start downloads the weights: ~58 GB each for the victim and the attacker with their drafts)..."
+echo "waiting for the servers (the first start downloads the weights: ~48 GB for the victim, ~58 GB for the attacker with its draft)..."
 wait_for victim "$VICTIM_PORT"
 if [ "${CHECKER:-0}" = "1" ]; then
   wait_for checker "$CHECKER_PORT"

@@ -45,7 +45,7 @@ Split = Literal["train", "test"]
 
 def victim_pipeline_name(model_id: str = VICTIM_MODEL_ID) -> str:
     """The victim's pipeline name, as `DeepAgentsConfig.pipeline_name` builds it for the local vLLM server. The attack
-    reads the model's name from it ("Qwen" for Qwen3.5-27B)."""
+    reads the model's name from it ("Magistral" for Magistral-Small-2509, "Qwen" for Qwen3.5-27B)."""
     return "deepagents-local-" + model_id.replace("/", "_")
 
 

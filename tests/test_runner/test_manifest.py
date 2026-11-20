@@ -89,7 +89,7 @@ def test_trial0_text_is_important_instructions_for_the_victim(manifest):
         attack = load_attack("important_instructions", suite, pipeline)
         expected = attack.attack(suite.user_tasks[pair.user_task], suite.injection_tasks[pair.injection_task])
         assert trial0_injections(manifest, pair) == expected
-    assert manifest["attack_model_name"] == "Qwen"
+    assert manifest["attack_model_name"] == "Magistral"
 
 
 def test_check_detects_a_changed_manifest(in_repo_root, manifest, tmp_path):

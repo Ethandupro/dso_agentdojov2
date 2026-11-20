@@ -3,8 +3,8 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
-Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Qwen3.5-27B with the
-DFlash draft) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
+Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Magistral Small 1.2, thinking,
+no draft model) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
 runs). Run the same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
 Defence (redesign of 2026-11-19): the victim has a skill library, the fixed skills in
@@ -23,6 +23,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -32,7 +33,12 @@ from dotenv import load_dotenv
 
 from agentdojo import experiment_models
 from agentdojo.agent_pipeline.agent_skills import SKILLS_PROMPTS, load_skills_dir
-from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepAgentsPipeline, ToolMiddlewareFactory
+from agentdojo.agent_pipeline.deepagents_pipeline import (
+    DeepAgentsConfig,
+    DeepAgentsPipeline,
+    ToolMiddlewareFactory,
+    fetch_hf_text,
+)
 from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
@@ -92,9 +98,39 @@ def check_judge(model: str) -> None:
         raise PreflightError(f"the judge model {model} did not answer on OpenRouter: {e}") from e
 
 
+def victim_deepagents_config(
+    model_id: str, base_url: str, fetch: Callable[[str, str], str] | None = None
+) -> DeepAgentsConfig:
+    """The victim's settings. A Magistral victim (default since 2026-11-20) thinks: its model card's reasoning system
+    prompt goes ahead of the agent's, with the card's sampling. Other (Qwen) victims run non-thinking at temperature
+    0, as before."""
+    if experiment_models.is_magistral(model_id):
+        return DeepAgentsConfig(
+            model_id=model_id,
+            base_url=base_url,
+            enable_thinking=None,
+            temperature=experiment_models.MAGISTRAL_TEMPERATURE,
+            top_p=experiment_models.MAGISTRAL_TOP_P,
+            reasoning_system_prompt=(fetch or fetch_hf_text)(model_id, experiment_models.REASONING_PROMPT_FILE),
+        )
+    return DeepAgentsConfig(model_id=model_id, base_url=base_url, enable_thinking=False)
+
+
+SMOKE_PAIRS = 8
+"""`--smoke`: pairs per run (user decision 2026-11-20), each with one injection point."""
+SMOKE_SUITES = ("banking", "travel")
+"""`--smoke`: the suites it draws from in turn, the same two as the 64-pair pilot subset."""
+
+
 def attacker_model_config(model_id: str, base_url: str, seed: int) -> AttackerModelConfig:
     """The local attacker model (decided 2026-11-17 by the user: no API), shared by both evolving attackers."""
-    return AttackerModelConfig(model=model_id, base_url=base_url, api_key_env=None, seed=seed)
+    return AttackerModelConfig(
+        model=model_id,
+        base_url=base_url,
+        api_key_env=None,
+        seed=seed,
+        enable_thinking=experiment_models.ATTACKER_ENABLE_THINKING,
+    )
 
 
 def muzzle_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
@@ -134,6 +170,13 @@ def autodojo_settings(
     is_flag=True,
     default=False,
     help="Pilot cut: keep only pairs whose user task reads one injection vector. Gets its own results directory.",
+)
+@click.option(
+    "--smoke",
+    is_flag=True,
+    default=False,
+    help=f"Smoke run preset: single-injection-point pairs only, {SMOKE_PAIRS} pairs (or --limit) taken in turn from "
+    f"each suite ({','.join(SMOKE_SUITES)} unless --suites is given). Gets its own '-smoke' results directory.",
 )
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
@@ -201,6 +244,7 @@ def main(
     suites: str | None,
     subset_path: Path | None,
     single_injection_point: bool,
+    smoke: bool,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -223,6 +267,10 @@ def main(
     if env_file is not None:
         load_dotenv(env_file, override=True)
     cond = CONDITIONS[condition]
+    if smoke:
+        single_injection_point = True
+        limit = SMOKE_PAIRS if limit is None else limit
+        suites = ",".join(SMOKE_SUITES) if suites is None else suites
 
     try:
         manifest_data = check_manifest(manifest)
@@ -249,7 +297,9 @@ def main(
             subset_tasks = load_subset(subset_path, manifest_data)
         except ValueError as e:
             raise click.ClickException(str(e)) from e
-    pair_filter = PairFilter(user_tasks=subset_tasks, single_injection_point=single_injection_point)
+    pair_filter = PairFilter(
+        user_tasks=subset_tasks, single_injection_point=single_injection_point, balance_suites=smoke
+    )
     units = build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple, pair_filter)
     if not any(u.pair is not None for u in units):
         raise click.ClickException("the suite/subset/single-injection-point cuts leave no pairs to run")
@@ -260,11 +310,12 @@ def main(
     if any(s.name == experiment_models.S0_SKILL_NAME for s in agent_skills):
         raise click.ClickException(f"{skills_dir} already has a skill named {experiment_models.S0_SKILL_NAME}")
 
-    victim_config = DeepAgentsConfig(
-        model_id=victim_model_id,
-        base_url=victim_base_url,
-        enable_thinking=experiment_models.VICTIM_ENABLE_THINKING,
-    )
+    try:
+        victim_config = victim_deepagents_config(victim_model_id, victim_base_url)
+    except OSError as e:
+        raise click.ClickException(
+            f"could not download {experiment_models.REASONING_PROMPT_FILE} of {victim_model_id}: {e}"
+        ) from e
     try:
         served = {"victim": check_served("victim", victim_base_url, victim_model_id)}
         if use_checker:
@@ -303,6 +354,7 @@ def main(
         skills_prompt_style,
         subset=subset_path.stem if subset_path is not None else None,
         single_injection_point=single_injection_point,
+        smoke=smoke,
         no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
     )
     config = RunConfig(
@@ -345,6 +397,7 @@ def main(
             else None
         ),
         single_injection_point=single_injection_point,
+        smoke=smoke or None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
