@@ -36,7 +36,7 @@ from agentdojo.agent_pipeline.deepagents_pipeline import DeepAgentsConfig, DeepA
 from agentdojo.attacks.adaptive.autodojo import AutoDojoAttacker, AutoDojoSettings
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
-from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
+from agentdojo.runner.conditions import CONDITIONS, PairFilter, Unit, build_units, load_subset
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
@@ -101,9 +101,13 @@ def muzzle_settings(model_id: str, base_url: str, seed: int) -> MuzzleSettings:
     return MuzzleSettings(attacker=attacker_model_config(model_id, base_url, seed))
 
 
-def autodojo_settings(model_id: str, base_url: str, seed: int, external_checker: bool = False) -> AutoDojoSettings:
+def autodojo_settings(
+    model_id: str, base_url: str, seed: int, external_checker: bool = False, memory: bool = True
+) -> AutoDojoSettings:
     return AutoDojoSettings(
-        attacker=attacker_model_config(model_id, base_url, seed), target="filter" if external_checker else "agent"
+        attacker=attacker_model_config(model_id, base_url, seed),
+        target="filter" if external_checker else "agent",
+        memory=memory,
     )
 
 
@@ -116,6 +120,20 @@ def autodojo_settings(model_id: str, base_url: str, seed: int, external_checker:
     "--suites",
     default=None,
     help="Pilot cut: comma-separated suites to keep (e.g. banking,travel). Gets its own results directory.",
+)
+@click.option(
+    "--subset",
+    "subset_path",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    default=None,
+    help="Pilot cut: a file listing user tasks to keep, one suite/user_task per line (e.g. "
+    "skillfile_evolution/subsets/banking_travel_64.txt). Every injection task is kept. Gets its own results directory.",
+)
+@click.option(
+    "--single-injection-point",
+    is_flag=True,
+    default=False,
+    help="Pilot cut: keep only pairs whose user task reads one injection vector. Gets its own results directory.",
 )
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
@@ -167,12 +185,22 @@ def autodojo_settings(model_id: str, base_url: str, seed: int, external_checker:
     help="C2/C4 evolving attacker: 'autodojo' scores each rewrite on the real pipeline (leaderboard of the pair's "
     "own trials); 'muzzle' is the earlier offline stand-in loop, kept for ablation.",
 )
+@click.option(
+    "--attacker-memory/--no-attacker-memory",
+    default=True,
+    show_default=True,
+    help="C2/C4/C0E with --attacker autodojo: the cross-pair playbook (winning texts and lessons from other pairs "
+    "of the same run). On by default since 2026-11-20 (user decision); --no-attacker-memory is the ablation and gets "
+    "a '-no-memory' results directory.",
+)
 def main(
     condition: str,
     seed: int,
     results_root: Path,
     limit: int | None,
     suites: str | None,
+    subset_path: Path | None,
+    single_injection_point: bool,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -190,6 +218,7 @@ def main(
     attacker_model_id: str,
     attacker_base_url: str,
     attacker_loop: str,
+    attacker_memory: bool,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -213,6 +242,17 @@ def main(
         if unknown:
             raise click.ClickException(f"unknown suite(s) {unknown}; the manifest has {sorted(known)}")
         suites_tuple = requested or None
+
+    subset_tasks: frozenset[str] | None = None
+    if subset_path is not None:
+        try:
+            subset_tasks = load_subset(subset_path, manifest_data)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+    pair_filter = PairFilter(user_tasks=subset_tasks, single_injection_point=single_injection_point)
+    units = build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple, pair_filter)
+    if not any(u.pair is not None for u in units):
+        raise click.ClickException("the suite/subset/single-injection-point cuts leave no pairs to run")
 
     use_checker = external_checker and cond.s0
     defense = "checker" if external_checker else "skills"
@@ -250,9 +290,21 @@ def main(
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
         else:
             attacker = AutoDojoAttacker(
-                manifest_data, autodojo_settings(attacker_model_id, attacker_base_url, seed, external_checker)
+                manifest_data,
+                autodojo_settings(attacker_model_id, attacker_base_url, seed, external_checker, attacker_memory),
             )
-    run_dir = run_dir_for(results_root, cond, seed, limit, suites_tuple, external_checker, skills_prompt_style)
+    run_dir = run_dir_for(
+        results_root,
+        cond,
+        seed,
+        limit,
+        suites_tuple,
+        external_checker,
+        skills_prompt_style,
+        subset=subset_path.stem if subset_path is not None else None,
+        single_injection_point=single_injection_point,
+        no_attacker_memory=evolving_attack and attacker_loop == "autodojo" and not attacker_memory,
+    )
     config = RunConfig(
         condition=cond.name,
         run_id=cond.run_id,
@@ -283,6 +335,16 @@ def main(
         trials_per_pair=trials_per_pair,
         limit=limit,
         suites=list(suites_tuple) if suites_tuple else None,
+        subset=(
+            {
+                "path": str(subset_path),
+                "sha256": sha256_text(subset_path.read_text(encoding="utf-8")),
+                "user_tasks": sorted(subset_tasks),
+            }
+            if subset_path is not None and subset_tasks is not None
+            else None
+        ),
+        single_injection_point=single_injection_point,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -359,7 +421,7 @@ def main(
         config=config,
         condition=cond,
         run_dir=run_dir,
-        units=build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple),
+        units=units,
         attacker=attacker,
         static_attacker=static,
         skill_file=skill_file,

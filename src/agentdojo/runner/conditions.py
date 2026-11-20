@@ -6,6 +6,7 @@ index of the next unit.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from agentdojo.runner.manifest import Pair, load_pairs, task_sort_key
@@ -65,24 +66,68 @@ class Unit:
         return None if self.pair is None else self.pair.split
 
 
+@dataclass(frozen=True)
+class PairFilter:
+    """Pilot cuts on the manifest's pairs, applied before `--limit` (added 2026-11-20 for the small, fast attacker
+    experiments: a few single-injection-point user tasks from two suites)."""
+
+    user_tasks: frozenset[str] | None = None
+    """Keep only these user tasks, as `suite/user_task` (from a `--subset` file)."""
+    single_injection_point: bool = False
+    """Keep only pairs whose user task reads exactly one injection vector."""
+
+    def keep(self, pair: Pair) -> bool:
+        if self.user_tasks is not None and f"{pair.suite}/{pair.user_task}" not in self.user_tasks:
+            return False
+        return not (self.single_injection_point and len(pair.vectors) != 1)
+
+
+NO_FILTER = PairFilter()
+
+
+def load_subset(path: Path, manifest: dict[str, Any]) -> frozenset[str]:
+    """The user tasks listed in a `--subset` file: one `suite/user_task` per line; blank lines and `#` comments are
+    skipped. Every entry must be a user task of the manifest."""
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            entries.append(entry)
+    if not entries:
+        raise ValueError(f"{path} lists no user tasks")
+    known = {f"{p['suite']}/{p['user_task']}" for p in manifest["pairs"]}
+    unknown = [e for e in entries if e not in known]
+    if unknown:
+        raise ValueError(f"{path} lists user tasks that are not in the manifest: {unknown}")
+    return frozenset(entries)
+
+
 def benign_tasks(
-    manifest: dict[str, Any], limit: int | None = None, suites: tuple[str, ...] | None = None
+    manifest: dict[str, Any],
+    limit: int | None = None,
+    suites: tuple[str, ...] | None = None,
+    pair_filter: PairFilter = NO_FILTER,
 ) -> list[tuple[str, str]]:
-    """Every user task (suite, id), in suite then task order. With `suites`, only those suites. With `limit`, the
-    user tasks of the first `limit` pairs of the (suite-filtered) run order instead, so a smoke run stays small."""
+    """The user tasks (suite, id) of the selected pairs, in suite then task order. With `limit`, the user tasks of
+    the first `limit` pairs of the (filtered) run order instead, in that order, so a smoke run stays small."""
     if limit is not None:
         seen: list[tuple[str, str]] = []
-        for pair in _select_pairs(manifest, limit, suites):
+        for pair in _select_pairs(manifest, limit, suites, pair_filter):
             if (pair.suite, pair.user_task) not in seen:
                 seen.append((pair.suite, pair.user_task))
         return seen
-    tasks = {(p["suite"], p["user_task"]) for p in manifest["pairs"] if suites is None or p["suite"] in suites}
+    tasks = {(p.suite, p.user_task) for p in _select_pairs(manifest, None, suites, pair_filter)}
     return sorted(tasks, key=lambda t: (t[0], task_sort_key(t[1])))
 
 
-def _select_pairs(manifest: dict[str, Any], limit: int | None, suites: tuple[str, ...] | None) -> list[Pair]:
-    """Run-order pairs, kept to `suites` if given, then cut to the first `limit`."""
-    pairs = [p for p in load_pairs(manifest) if suites is None or p.suite in suites]
+def _select_pairs(
+    manifest: dict[str, Any],
+    limit: int | None,
+    suites: tuple[str, ...] | None,
+    pair_filter: PairFilter = NO_FILTER,
+) -> list[Pair]:
+    """Run-order pairs, kept to `suites` and `pair_filter` if given, then cut to the first `limit`."""
+    pairs = [p for p in load_pairs(manifest) if (suites is None or p.suite in suites) and pair_filter.keep(p)]
     return pairs if limit is None else pairs[:limit]
 
 
@@ -92,6 +137,7 @@ def build_units(
     trials_per_pair: int = 3,
     limit: int | None = None,
     suites: tuple[str, ...] | None = None,
+    pair_filter: PairFilter = NO_FILTER,
 ) -> list[Unit]:
     """The run's units in order.
 
@@ -101,13 +147,14 @@ def build_units(
 
     `suites` keeps only pairs in those suites (a pilot cut, e.g. the C0-vulnerable banking/travel pairs). `limit`
     keeps only the first `limit` pairs of the (suite-filtered) run order (smoke runs); in C3/C4 that means the first
-    `limit` train pairs and the first `limit` test pairs.
+    `limit` train pairs and the first `limit` test pairs. `pair_filter` (a `--subset` file and/or
+    `--single-injection-point`) is applied together with `suites`, also before `limit`.
     """
-    pairs = _select_pairs(manifest, None, suites)
+    pairs = _select_pairs(manifest, None, suites, pair_filter)
     units: list[Unit] = []
 
     def add_benign(phase: Phase) -> None:
-        for suite, user_task in benign_tasks(manifest, limit, suites):
+        for suite, user_task in benign_tasks(manifest, limit, suites, pair_filter):
             units.append(Unit(len(units), phase, suite, user_task))
 
     def add_pairs(phase: Phase, selected: list[Pair]) -> None:

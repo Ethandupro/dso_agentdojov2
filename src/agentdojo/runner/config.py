@@ -37,6 +37,10 @@ class RunConfig(BaseModel):
     """Smoke runs: only the first `limit` pairs of the run order. Such runs get their own directory."""
     suites: list[str] | None = None
     """Pilot cut: only pairs in these suites (e.g. banking, travel). Such runs get their own directory."""
+    subset: dict[str, Any] | None = None
+    """Pilot cut from a `--subset` file: its path, sha256 and the user tasks it lists. Own directory."""
+    single_injection_point: bool = False
+    """Pilot cut: only pairs whose user task reads one injection vector. Own directory."""
     benchmark_version: str
     manifest_path: str
     manifest_sha256: str

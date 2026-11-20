@@ -8,8 +8,15 @@ never sees the skill file, the checker's removed spans or the victim's trace -- 
 attacker stays black-box toward the real defence, exactly as AutoDojo's "outcome feedback" is.
 
 This is a per-pair optimization (AutoDojo's case set C has size one here: one user task per injection target). The
-cross-pair success library and the stand-in checker/agent of the MUZZLE port are intentionally absent: the leaderboard
-is the real signal, so no stand-in is needed. `prompt_set`-style ablation lives in the MUZZLE attacker.
+stand-in checker/agent of the MUZZLE port are intentionally absent: the leaderboard is the real signal, so no
+stand-in is needed. `prompt_set`-style ablation lives in the MUZZLE attacker.
+
+Cross-pair memory (the "playbook", added 2026-11-20, on by default in C2/C4): the runner reports every finished
+evolving trial to `observe`; texts that really succeeded are kept with the skill-file version they beat, and each new
+optimizer call is shown up to `memory_examples` winners from other pairs (same injection task first, then same suite)
+plus up to `memory_lessons` of the optimizer's own diagnoses from other pairs. Never anything from this pair (the
+leaderboard has those) and nothing the defence produced except success/failure, so the attacker stays black-box. The
+playbook starts empty in every run and is saved in the checkpoint.
 """
 
 import json
@@ -37,7 +44,8 @@ from agentdojo.task_suite.load_suites import get_suite
 
 logger = logging.getLogger(__name__)
 
-STATE_FORMAT = 1
+STATE_FORMAT = 2
+"""2 adds the playbook (cross-pair memory). Format 1 checkpoints load with an empty playbook."""
 
 
 def _clip(text: str | None, limit: int) -> str | None:
@@ -71,6 +79,9 @@ DEVIATIONS = (
     "The leaderboard shows the agent's own final response on each past attempt (`show_agent_response`), truncated; "
     "AutoDojo's outcome feedback is the binary result, but the first pilots showed the optimizer could not adapt to "
     "refusals it could not see. Still black-box: the agent's output only, never the skill file or its reasoning.",
+    "Cross-pair memory (`memory`, on by default since 2026-11-20): winning texts and the optimizer's diagnoses from "
+    "other pairs of the same run are shown to the optimizer; AutoDojo shares across user tasks through its case set "
+    "instead. Identical in C2 and C4, empty at the start of every run.",
 )
 
 
@@ -112,6 +123,13 @@ class AutoDojoSettings(BaseModel):
     """If the pair's previous trial succeeded, hand out the same text again without an optimizer call (archive source
     `kept_success`) and only generate a new one after a failure. The first C2 pilot (2026-11-19) replaced texts that
     had just worked with variants that all failed."""
+    memory: bool = True
+    """Cross-pair memory (the playbook). On by default in C2/C4 (user decision 2026-11-20);
+    `run_condition --no-attacker-memory` turns it off for the ablation."""
+    memory_examples: int = 3
+    """Winning texts from other pairs shown per optimizer call (same injection task first, then same suite)."""
+    memory_lessons: int = 5
+    """Optimizer diagnoses from other pairs shown per optimizer call (same injection task first, then same suite)."""
 
 
 class AutoDojoAttacker:
@@ -134,6 +152,54 @@ class AutoDojoAttacker:
         self.settings = settings
         self.llm_factory: Callable[[], RewriteLLM] = llm_factory or (lambda: OpenAICompatibleLLM(settings.attacker))
         self.archive: list[dict[str, Any]] = []
+        self.playbook: list[dict[str, Any]] = []
+        """Winning trials of this run: pair, trial, suite, injection task, text, the skill-file version beaten."""
+
+    def observe(self, pair: Pair, feedback: AttemptFeedback, skill_version: str | None) -> None:
+        """Called by the runner after every finished evolving trial. Keeps texts that really succeeded (security
+        broken) for later pairs; a trial already seen (a rerun unit after a crash) is ignored."""
+        if not self.settings.memory or not feedback.security:
+            return
+        if any(e["pair"] == pair.id and e["trial"] == feedback.trial for e in self.playbook):
+            return
+        self.playbook.append(
+            {
+                "pair": pair.id,
+                "trial": feedback.trial,
+                "suite": pair.suite,
+                "injection_task": pair.injection_task,
+                "text": feedback.injection_text,
+                "skill_version": skill_version,
+            }
+        )
+
+    @staticmethod
+    def _nearest(entries: list[dict[str, Any]], pair: Pair, key: str, k: int) -> list[str]:
+        """Up to `k` distinct `key` values from entries of other pairs: same injection task first, then same suite,
+        most recent first within each group."""
+        others = [e for e in reversed(entries) if e["pair"] != pair.id and e.get(key)]
+        same_task = [e for e in others if e["suite"] == pair.suite and e["injection_task"] == pair.injection_task]
+        same_suite = [e for e in others if e["suite"] == pair.suite and e not in same_task]
+        out: list[str] = []
+        for value in (e[key] for e in same_task + same_suite):
+            if value not in out:
+                out.append(value)
+            if len(out) == k:
+                break
+        return out
+
+    def memory_for(self, pair: Pair) -> tuple[list[str], list[str]]:
+        """The playbook entries shown for `pair`: (winning texts, lessons). Empty when memory is off."""
+        if not self.settings.memory:
+            return [], []
+        winners = self._nearest(self.playbook, pair, "text", self.settings.memory_examples)
+        diagnosed = [
+            {**e, "suite": e["pair"].split("/")[0], "injection_task": e["pair"].split("/")[-1]}
+            for e in self.archive
+            if e.get("diagnosis")
+        ]
+        lessons = self._nearest(diagnosed, pair, "diagnosis", self.settings.memory_lessons)
+        return winners, lessons
 
     def goal(self, pair: Pair) -> str:
         suite = get_suite(self.manifest["benchmark_version"], pair.suite)
@@ -251,9 +317,14 @@ class AutoDojoAttacker:
         s = self.settings
         goal = self.goal(pair)
         data_slot = self._data_slot(pair)
+        winners, lessons = self.memory_for(pair)
+        memory = prompts.memory_block(winners, lessons)
         messages = [
             {"role": "system", "content": prompts.SYSTEM_PROMPTS[s.target]},
-            {"role": "user", "content": prompts.user_prompt(goal, data_slot, prompts.leaderboard_block(leaderboard))},
+            {
+                "role": "user",
+                "content": prompts.user_prompt(goal, data_slot, prompts.leaderboard_block(leaderboard), memory),
+            },
         ]
         literals = goal_literals(goal)
         llm = self.llm_factory()
@@ -305,6 +376,7 @@ class AutoDojoAttacker:
                 {"trial": e["trial"], "security": e["security"], "utility": e["utility"]} for e in leaderboard
             ],
             "usage": usage,
+            "memory_shown": {"winners": len(winners), "lessons": len(lessons)},
             "literal_retries": literal_retries,
             "errors": [],
         }
@@ -318,6 +390,7 @@ class AutoDojoAttacker:
             "upstream": upstream_pin(),
             "prompt_sha256": {
                 "system": sha256_text(prompts.SYSTEM_PROMPTS[self.settings.target]),
+                "memory_header": sha256_text(prompts.MEMORY_HEADER),
             },
             "deviations": list(DEVIATIONS),
             "on_api_failure": (
@@ -328,9 +401,14 @@ class AutoDojoAttacker:
         }
 
     def state_dict(self) -> dict[str, Any]:
-        return {"format": STATE_FORMAT, "archive": json.loads(json.dumps(self.archive))}
+        return {
+            "format": STATE_FORMAT,
+            "archive": json.loads(json.dumps(self.archive)),
+            "playbook": json.loads(json.dumps(self.playbook)),
+        }
 
     def load_state(self, state: dict[str, Any]) -> None:
-        if state.get("format") != STATE_FORMAT:
+        if state.get("format") not in (1, STATE_FORMAT):
             raise ValueError(f"unknown AutoDojo attacker state format {state.get('format')!r}")
         self.archive = list(state["archive"])
+        self.playbook = list(state.get("playbook", []))

@@ -8,7 +8,7 @@ evolved version) the victim gets as its security skill (or the external checker 
 """
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from agentdojo.runner.manifest import Pair, trial0_injections
 
@@ -41,6 +41,13 @@ class Attacker(Protocol):
     def state_dict(self) -> dict[str, Any]: ...
 
     def load_state(self, state: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class ObservingAttacker(Protocol):
+    """An attacker that also learns across pairs: the runner reports every finished trial it handed a text for."""
+
+    def observe(self, pair: Pair, feedback: AttemptFeedback, skill_version: str | None) -> None: ...
 
 
 class StaticAttacker:

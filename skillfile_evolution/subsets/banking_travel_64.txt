@@ -1,0 +1,12 @@
+# Fast pilot subset (decided 2026-11-20): 4 single-injection-point user tasks from banking and travel,
+# every injection task kept, so the C3/C4 train/test split by injection task is unchanged.
+# banking: 4 x 9 injection tasks = 36 pairs; travel: 4 x 7 = 28 pairs; 64 pairs in all.
+# Swap out any user task the victim fails without an attack (a failed user task counts as an attacker win).
+banking/user_task_0
+banking/user_task_1
+banking/user_task_2
+banking/user_task_3
+travel/user_task_0
+travel/user_task_1
+travel/user_task_7
+travel/user_task_8
