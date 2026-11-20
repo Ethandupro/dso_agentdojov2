@@ -125,13 +125,21 @@ bash local_victim/serve_all.sh               # victim + attacker; logs in ~/vllm
 ATTACKER=0 bash local_victim/serve_all.sh    # victim only (C0, C1, C3)
 VICTIM_DRAFT=none bash local_victim/serve_all.sh   # plain 27B, no DFlash2
 CHECKER=1 bash local_victim/serve_all.sh     # also the old checker (port 8002), for --external-checker runs
+ONE_GPU=1 bash local_victim/serve_all.sh     # victim and attacker together on GPU 1, both FP8 (GPU 0 stays free)
 bash local_victim/serve_all.sh stop          # stop all
 # the no-nvcc workaround, if the servers fail at "Engine core initialization":
 VLLM_ATTENTION_BACKEND=FLASH_ATTN EXTRA_ARGS=--enforce-eager bash local_victim/serve_all.sh
 ```
 
+**Both models on one GPU (`ONE_GPU=<n>`).** The victim (BF16 ~55 GB + draft) and the attacker (BF16 ~48 GB) don't
+fit on one 96 GB H100 together, so `ONE_GPU` loads both in FP8: victim ~28 GB + draft ~4 GB in 0.50 of the GPU,
+attacker ~24 GB in 0.40, the rest for their KV caches. The attacker starts after the victim is up. FP8 changes the
+victim's answers slightly against BF16, and `config.json` doesn't record the server's quantization, so serve every
+condition you compare the same way (all with `ONE_GPU`, or all without). It can't be combined with `CHECKER=1`.
+
 Victim options: `VICTIM_MODEL` (`Qwen/Qwen3.8-27B`), `VICTIM_DRAFT` (`z-lab/Qwen3.8-27B-DFlash2`; `none` turns it
-off), `VICTIM_VENV` (the vLLM venv for the victim only), `SPEC_TOKENS` (7: tokens drafted per step). Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90, or 0.42 with `CHECKER=1`),
+off), `VICTIM_VENV` (the vLLM venv for the victim only), `VICTIM_GPU` (0), `VICTIM_QUANT` (empty = BF16; `fp8`),
+`VICTIM_GPU_MEM` (0.90), `SPEC_TOKENS` (7: tokens drafted per step). `ATTACKER_GPU` (1) moves the attacker. Attacker options: `ATTACKER_MODEL`, `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90, or 0.42 with `CHECKER=1`),
 `ATTACKER_QUANT` (empty = BF16; `fp8` with `CHECKER=1`). The attacker needs no API key.
 
 Experiment runs use `python -m agentdojo.runner.run_condition` (see `src/agentdojo/runner/run_condition.py`). The
