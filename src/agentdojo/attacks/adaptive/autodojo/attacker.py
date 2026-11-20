@@ -83,15 +83,29 @@ DEVIATIONS = (
     "Cross-pair memory (`memory`, on by default since 2026-11-20): winning texts and the optimizer's diagnoses from "
     "other pairs of the same run are shown to the optimizer; AutoDojo shares across user tasks through its case set "
     "instead. Identical in C2 and C4, empty at the start of every run.",
-    "Named strategy bank (`strategy_bank`, on by default since 2026-11-20): the optimizer picks and names one of "
-    "~12 fixed injection strategies (`autodojo.strategies`) each round, recorded for a wins-by-strategy report; "
-    "AutoDojo invents a framing each round with no fixed menu. Identical in C2 and C4.",
+    "Named strategy bank (`strategy_bank`, on by default since 2026-11-20): each round the optimizer ranks its top "
+    "`max_strategies` (5) of ~12 fixed strategies (`autodojo.strategies`) for the item and writes one injection from "
+    "the top-ranked; the ranking is recorded for a wins-by-strategy report. Still one text per round, so the victim "
+    "is run once. AutoDojo invents a framing each round with no fixed menu. Identical in C2 and C4.",
 )
 
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL = re.compile(r"(?:https?://|www\.)[^\s'\"<>]+")
 _LONG_NUMBER = re.compile(r"\b\w*\d{6,}\w*\b")
+
+
+def _valid_strategies(raw: Any, cap: int) -> list[str]:
+    """Real bank strategy names from the optimizer's `strategy_ranking`, order kept, duplicates dropped, capped."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip() in STRATEGY_NAMES and item.strip() not in out:
+            out.append(item.strip())
+        if len(out) == cap:
+            break
+    return out
 
 
 def goal_literals(goal: str) -> list[str]:
@@ -137,6 +151,10 @@ class AutoDojoSettings(BaseModel):
     strategy_bank: bool = True
     """Show the optimizer the named strategy bank (`autodojo.strategies`) and record the strategy it names. On by
     default (user decision 2026-11-20); `run_condition --no-strategy-bank` turns it off for the ablation."""
+    max_strategies: int = 5
+    """How many strategies the optimizer ranks per round (item 2b, user decision 2026-11-20). It ranks its top
+    `max_strategies` for the item (its "sub-strategies") and writes one injection from the top-ranked; the ranking is
+    recorded. Still one text per round, so the victim is run once."""
 
 
 class AutoDojoAttacker:
@@ -350,7 +368,7 @@ class AutoDojoAttacker:
                     data_slot,
                     prompts.leaderboard_block(leaderboard),
                     memory,
-                    prompts.strategy_bank_block(bank),
+                    prompts.strategy_bank_block(bank, s.max_strategies),
                 ),
             },
         ]
@@ -359,6 +377,7 @@ class AutoDojoAttacker:
         diagnosis: str | None = None
         text: str | None = None
         strategy: str | None = None
+        strategy_ranking: list[str] = []
         literal_retries = 0
         try:
             for attempt in range(s.max_tries):
@@ -389,13 +408,17 @@ class AutoDojoAttacker:
                 text = candidate
                 raw_diag = parsed.get("diagnosis")
                 diagnosis = raw_diag.strip() if isinstance(raw_diag, str) else None
+                # The optimizer ranks its top strategies for this item (item 2b); keep only real bank names, deduped,
+                # capped at max_strategies. The one it wrote from is the top of its ranking, falling back to a plain
+                # `strategy` field for older replies. Only real bank names are recorded, so the report stays clean.
+                strategy_ranking = _valid_strategies(parsed.get("strategy_ranking"), s.max_strategies)
                 raw_strategy = parsed.get("strategy")
-                # Record the strategy only when it names a real bank entry, so the wins-by-strategy report is clean.
-                strategy = (
+                fallback = (
                     raw_strategy.strip()
                     if isinstance(raw_strategy, str) and raw_strategy.strip() in STRATEGY_NAMES
                     else None
                 )
+                strategy = strategy_ranking[0] if strategy_ranking else fallback
                 break
             usage = llm.usage()
         finally:
@@ -409,6 +432,7 @@ class AutoDojoAttacker:
             "source": "generated",
             "diagnosis": diagnosis,
             "strategy": strategy,
+            "strategy_ranking": strategy_ranking,
             "leaderboard": [
                 {"trial": e["trial"], "security": e["security"], "utility": e["utility"]} for e in leaderboard
             ],
