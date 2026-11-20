@@ -637,14 +637,14 @@ def test_cli_defaults_to_the_project_victim_and_checker(monkeypatch: pytest.Monk
     args = ["-s", "banking", "-ut", "user_task_0", "--harness", "deepagents", "--logdir", str(tmp_path)]
     CliRunner().invoke(benchmark_script.main, args)
     config, factory = captured[-1]
-    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "Qwen/Qwen3.5-27B"
+    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "Qwen/Qwen3.8-27B"
     assert config.base_url == experiment_models.VICTIM_BASE_URL
     assert config.enable_thinking is False
     assert factory is None
 
     CliRunner().invoke(benchmark_script.main, [*args, "--checker"])
     config, factory = captured[-1]
-    assert config.model_id == "Qwen/Qwen3.5-27B"
+    assert config.model_id == experiment_models.VICTIM_MODEL_ID
     assert factory is not None
     (checker,) = factory("the user's task")
     assert checker.skill_file == experiment_models.CHECKER_SKILL_FILE.read_text()

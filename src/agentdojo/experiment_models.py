@@ -1,9 +1,9 @@
 """The models and skills of the skill-file experiments and where they are served (decided 2026-11-16 by the user;
-victim redesign 2026-11-19).
+victim redesign 2026-11-19; victim upgraded to Qwen3.8-27B 2026-11-20).
 
 The victim and the attacker run on the project's GPU VM behind vLLM's OpenAI-compatible server (see
-`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Qwen3.5-27B on GPU 0 (port 8000), sped up with
-the z-lab/Qwen3.5-27B-DFlash draft model (speculative decoding: same outputs, faster), and the attacker on GPU 1
+`local_victim/README.md` and `local_victim/serve_all.sh`): the victim Qwen3.8-27B on GPU 0 (port 8000), sped up with
+the z-lab/Qwen3.8-27B-DFlash2 draft model (speculative decoding: same outputs, faster), and the attacker on GPU 1
 (port 8003). Since 2026-11-19 there is no external checker by default: S0 is one of the victim's skills. The old
 checker (Qwen3.5-9B, port 8002) is kept for ablation behind `run_condition --external-checker`. Each setting is
 overridable from the CLI. The skill-file judge runs on OpenRouter.
@@ -11,12 +11,14 @@ overridable from the CLI. The skill-file judge runs on OpenRouter.
 
 from pathlib import Path
 
-VICTIM_MODEL_ID = "Qwen/Qwen3.5-27B"
+VICTIM_MODEL_ID = "Qwen/Qwen3.8-27B"
+"""Changed 2026-11-20 by the user (was Qwen/Qwen3.5-27B). Qwen3.8 is built on the Qwen3.5 architecture and is served
+the same way (qwen3_coder tool parser, qwen3 reasoning parser, `enable_thinking` chat-template switch)."""
 VICTIM_BASE_URL = "http://localhost:8000/v1"
 VICTIM_ENABLE_THINKING = False
-"""Published AgentDojo numbers for Qwen3.5-27B are non-thinking."""
-VICTIM_DRAFT_MODEL_ID = "z-lab/Qwen3.5-27B-DFlash"
-"""Speculative-decoding draft for the victim (user's choice 2026-11-19). It only proposes tokens that the 27B model
+"""Thinking off, as before. Qwen3.8 thinks by default; `enable_thinking: false` turns it off (its model card)."""
+VICTIM_DRAFT_MODEL_ID = "z-lab/Qwen3.8-27B-DFlash2"
+"""Speculative-decoding draft for the victim (user's choice 2026-11-19; DFlash 2 for Qwen3.8 since 2026-11-20). It only proposes tokens that the 27B model
 verifies, so it changes speed, not answers. Set in `local_victim/serve_all.sh`, not by the runner."""
 
 CHECKER_MODEL_ID = "Qwen/Qwen3.5-9B"

@@ -3,8 +3,8 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
-Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Qwen3.5-27B with the
-DFlash draft) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
+Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Qwen3.8-27B with the
+DFlash2 draft) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
 runs). Run the same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
 Defence (redesign of 2026-11-19): the victim has a skill library, the fixed skills in
