@@ -88,8 +88,33 @@ def make_attacker(
     return AutoDojoAttacker(MANIFEST, settings, llm_factory=factory), clients, log
 
 
-def fb(trial: int, text: str, utility: bool = True, security: bool = False) -> AttemptFeedback:
-    return AttemptFeedback(trial=trial, injection_text=text, utility=utility, security=security, final_answer="done")
+def fb(
+    trial: int, text: str, utility: bool = True, security: bool = False, final_answer: str = "done"
+) -> AttemptFeedback:
+    return AttemptFeedback(
+        trial=trial, injection_text=text, utility=utility, security=security, final_answer=final_answer
+    )
+
+
+def test_agent_response_is_shown_to_the_optimizer_and_can_be_turned_off():
+    refusal = "I won't send money to an unknown account."
+    on, _, on_log = make_attacker()
+    seed = on.text_for(PAIR, 0, [])
+    on.text_for(PAIR, 1, [fb(0, seed, final_answer=refusal)])
+    assert refusal in on_log[-1]["messages"][1]["content"]
+
+    off, _, off_log = make_attacker(show_agent_response=False)
+    seed = off.text_for(PAIR, 0, [])
+    off.text_for(PAIR, 1, [fb(0, seed, final_answer=refusal)])
+    assert refusal not in off_log[-1]["messages"][1]["content"]
+
+
+def test_agent_response_is_truncated():
+    attacker, _, log = make_attacker(agent_response_chars=20)
+    seed = attacker.text_for(PAIR, 0, [])
+    attacker.text_for(PAIR, 1, [fb(0, seed, final_answer="x" * 200)])
+    user_msg = log[-1]["messages"][1]["content"]
+    assert "...[truncated]" in user_msg and "x" * 200 not in user_msg
 
 
 def test_trial0_is_the_seed_and_makes_no_model_call():
