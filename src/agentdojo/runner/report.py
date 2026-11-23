@@ -195,6 +195,12 @@ def attacker_metrics(state: dict[str, Any], records: list[dict[str, Any]] | None
             "rewrites_writing_a_note": sum(bool(e.get("skills_written")) for e in rewrites),
             "rewrites_loading_a_note": sum(bool(e.get("skills_loaded")) for e in rewrites),
         }
+        distillations = (state.get("attacker") or {}).get("distillations") or []
+        if distillations:
+            skill_library["distillations"] = len(distillations)
+            skill_library["distilled_notes_written"] = sum(len(d.get("written", [])) for d in distillations)
+            skill_library["distilled_notes_rejected"] = sum(len(d.get("rejected", [])) for d in distillations)
+            skill_library["distillation_errors"] = sum(bool(d.get("error")) for d in distillations)
     return {
         "rewrites": len(rewrites),
         "goal_fallbacks": fallbacks,

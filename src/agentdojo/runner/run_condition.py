@@ -223,6 +223,7 @@ def skill_agent_settings(
     memory: bool = True,
     strategy_bank: bool = True,
     temperature: float | None = None,
+    distill_every: int = 0,
 ) -> SkillAgentSettings:
     """Item 7 (D2): the evolving attacker as a tool-using agent with its own skill files. Only the skills design
     (`target='agent'`), so it is never paired with --external-checker."""
@@ -231,6 +232,7 @@ def skill_agent_settings(
         target="agent",
         memory=memory,
         strategy_bank=strategy_bank,
+        distill_every=distill_every,
     )
     if temperature is not None:
         settings.temperature = temperature
@@ -373,6 +375,16 @@ def skill_agent_settings(
     help="C2/C4/C0E: the evolving attacker's sampling temperature (default 1.0, as AutoDojo). Gets an '-atemp<T>' "
     "results directory.",
 )
+@click.option(
+    "--distill-every",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="With --attacker skill-agent: every K finished pairs, the attacker model reads those pairs' attempts (wins "
+    "and failures) and distils them into general attack-pattern notes in its skill library, which it can load in "
+    "later trials. Notes carrying a pair's values or copying an attempt are rejected. 0 = off. Gets a "
+    "'-distill<K>' results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -406,6 +418,7 @@ def main(
     stop_on_success: bool,
     victim_temperature: float | None,
     attacker_temperature: float | None,
+    distill_every: int,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -482,6 +495,8 @@ def main(
     attacker: Attacker = static
     if attacker_temperature is not None and not (evolving_attack and attacker_loop in AUTODOJO_LOOPS):
         raise click.ClickException("--attacker-temperature applies to the autodojo/skill-agent evolving attacker only")
+    if distill_every and not (evolving_attack and attacker_loop == "skill-agent"):
+        raise click.ClickException("--distill-every needs an evolving-attack condition with --attacker skill-agent")
     if stop_on_success and not evolving_attack:
         raise click.ClickException("--stop-on-success applies to evolving-attack conditions only (C0E, C2, C4)")
     if evolving_attack:
@@ -493,7 +508,13 @@ def main(
             attacker = SkillAgentAttacker(
                 manifest_data,
                 skill_agent_settings(
-                    attacker_model_id, attacker_base_url, seed, attacker_memory, strategy_bank, attacker_temperature
+                    attacker_model_id,
+                    attacker_base_url,
+                    seed,
+                    attacker_memory,
+                    strategy_bank,
+                    attacker_temperature,
+                    distill_every,
                 ),
             )
         else:
@@ -528,6 +549,7 @@ def main(
         stop_on_success=stop_on_success,
         victim_temperature=victim_temperature,
         attacker_temperature=attacker_temperature,
+        distill_every=distill_every,
     )
     config = RunConfig(
         condition=cond.name,

@@ -17,6 +17,7 @@ the skill file or the victim's raw reasoning.
 
 import json
 import logging
+import re
 from typing import Any
 
 from agentdojo.attacks.adaptive.autodojo import prompts
@@ -24,6 +25,7 @@ from agentdojo.attacks.adaptive.autodojo.attacker import (
     GENERATE_MAX_ATTEMPTS,
     AutoDojoAttacker,
     AutoDojoSettings,
+    _clip,
     _valid_strategies,
     goal_literals,
 )
@@ -34,13 +36,27 @@ from agentdojo.attacks.adaptive.autodojo.skillstore import (
     SkillStoreError,
 )
 from agentdojo.attacks.adaptive.autodojo.strategies import strategies_for
-from agentdojo.attacks.adaptive.muzzle.attacker import sha256_text, upstream_pin
+from agentdojo.attacks.adaptive.muzzle.attacker import run_sync, sha256_text, upstream_pin
+from agentdojo.attacks.adaptive.muzzle.ipi import extract_json_object
+from agentdojo.attacks.adaptive.muzzle.llm import BudgetExhaustedError
 from agentdojo.runner.manifest import Pair
+from agentdojo.runner.plugins import AttemptFeedback
 
 logger = logging.getLogger(__name__)
 
 SKILL_AGENT_STATE_FORMAT = 3
-"""Adds the attacker's own skill library to format 2 (archive + playbook). Formats 1/2 load with an empty library."""
+"""Adds the attacker's own skill library to format 2 (archive + playbook). Formats 1/2 load with an empty library.
+Distillation state (`trajectories`, `distillations`, `distilled_pairs`) is optional within format 3."""
+
+COPIED_WORDS = 8
+"""A distilled note is rejected if it repeats this many consecutive words of one of the attempts it was distilled
+from: a pattern must be general, not a stored payload."""
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _ngrams(text: str, n: int) -> set[tuple[str, ...]]:
+    words = _WORD.findall(text.lower())
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
 class SkillAgentSettings(AutoDojoSettings):
@@ -53,6 +69,16 @@ class SkillAgentSettings(AutoDojoSettings):
     """Cap on each skill note's body, so the agent cannot blow up its own context or the checkpoint."""
     max_skills: int = DEFAULT_MAX_SKILLS
     """Cap on how many notes the library holds; past it the agent must overwrite an existing note."""
+    distill_every: int = 0
+    """Distillation (`run_condition --distill-every K`, user request 2026-11-23): every K finished pairs, one extra
+    attacker call reads those pairs' attempts, wins and failures, and writes general pattern notes into the library.
+    0 = off (the agent only writes notes itself during a trial, as in PR #49)."""
+    distill_max_attempts: int = 40
+    """Most recent attempts shown to one distillation call."""
+    distill_max_notes: int = 3
+    """Most notes one distillation call may write or update."""
+    distill_text_chars: int = 500
+    """Each attempt's text and the agent's response are clipped to this many characters in the distillation prompt."""
 
 
 class SkillAgentAttacker(AutoDojoAttacker):
@@ -67,6 +93,136 @@ class SkillAgentAttacker(AutoDojoAttacker):
             raise TypeError("SkillAgentAttacker needs SkillAgentSettings")
         self.store = SkillStore(max_body_chars=self.settings.skill_body_chars, max_skills=self.settings.max_skills)
         """The attacker's own strategy notes, shared across the run's pairs and saved in the checkpoint."""
+        self.trajectories: list[dict[str, Any]] = []
+        """Every finished evolving trial (wins and failures), kept only when distillation is on."""
+        self.distillations: list[dict[str, Any]] = []
+        """One entry per distillation call: which pairs it read, what it wrote and rejected, usage or error."""
+        self.distilled_pairs = 0
+        """How many finished pairs (in run order) earlier distillation calls have covered."""
+
+    # --- distillation ---------------------------------------------------------------------------------------------
+
+    def observe(self, pair: Pair, feedback: AttemptFeedback, skill_version: str | None) -> None:
+        super().observe(pair, feedback, skill_version)
+        if self.settings.distill_every <= 0:
+            return
+        if any(t["pair"] == pair.id and t["trial"] == feedback.trial for t in self.trajectories):
+            return
+        n = self.settings.distill_text_chars
+        self.trajectories.append(
+            {
+                "pair": pair.id,
+                "suite": pair.suite,
+                "trial": feedback.trial,
+                "text": feedback.injection_text,
+                "security": feedback.security,
+                "utility": feedback.utility,
+                "progress": feedback.progress,
+                "response": _clip(feedback.victim_trace or feedback.final_answer, n),
+                "literals": goal_literals(self.goal(pair)),
+            }
+        )
+
+    def _finished_pairs(self, current: str) -> list[str]:
+        """Pairs with recorded trials, in run order, other than the one about to start (pairs run one after another)."""
+        return [p for p in dict.fromkeys(t["pair"] for t in self.trajectories) if p != current]
+
+    def text_for(self, pair: Pair, trial: int, history: list[AttemptFeedback]) -> str:
+        if trial == 0 and self.settings.distill_every > 0 and self._cached(pair, trial) is None:
+            finished = self._finished_pairs(pair.id)
+            if len(finished) - self.distilled_pairs >= self.settings.distill_every:
+                self._distill(finished[self.distilled_pairs :])
+                self.distilled_pairs = len(finished)
+        return super().text_for(pair, trial, history)
+
+    def _attempts_block(self, attempts: list[dict[str, Any]]) -> str:
+        n = self.settings.distill_text_chars
+        lines = []
+        for i, t in enumerate(attempts, 1):
+            outcome = "SUCCEEDED" if t["security"] else "failed"
+            score = f", progress {t['progress']}/4" if t.get("progress") is not None else ""
+            lines.append(
+                f"[{i}] item {t['suite']} #{t['pair'].split('/', 1)[-1]}, trial {t['trial']}: {outcome}{score}"
+                f"\nTEXT: {_clip(t['text'], n)}\nAGENT: {t['response'] or '(nothing recorded)'}"
+            )
+        return "\n\n".join(lines)
+
+    def _notes_block(self) -> str:
+        if not self.store.skills:
+            return "(none yet)"
+        return "\n\n".join(
+            f"- {s.name}: {s.description}\n{s.body}" for s in sorted(self.store.skills.values(), key=lambda s: s.name)
+        )
+
+    @staticmethod
+    def _too_specific(note: str, attempts: list[dict[str, Any]]) -> str | None:
+        """Why a distilled note is not a general pattern (None if it is): it carries a goal value of one of the
+        attempts (email, URL, IBAN-like number), or repeats `COPIED_WORDS` consecutive words of an attempt's text."""
+        lowered = note.lower()
+        grams = _ngrams(note, COPIED_WORDS)
+        for t in attempts:
+            for value in t["literals"]:
+                if value.lower() in lowered:
+                    return f"contains the item value {value!r}"
+            if grams & _ngrams(t["text"], COPIED_WORDS):
+                return f"copies {COPIED_WORDS}+ consecutive words of an attempt"
+        return None
+
+    def _distill(self, pairs: list[str]) -> None:
+        """One distillation call over the attempts of `pairs`. Never stops the run: an error is recorded and skipped
+        (`BudgetExhaustedError` still propagates)."""
+        s = self.settings
+        members = set(pairs)
+        attempts = [t for t in self.trajectories if t["pair"] in members][-s.distill_max_attempts :]
+        event: dict[str, Any] = {"pairs": list(pairs), "attempts": len(attempts), "written": [], "rejected": []}
+        try:
+            reply, usage = run_sync(lambda: self._distill_call(attempts))
+            event["usage"] = usage
+            parsed = extract_json_object(reply) or {}
+            raw_notes = parsed.get("skills")
+            notes: list[Any] = raw_notes if isinstance(raw_notes, list) else []
+            for note in notes[: s.distill_max_notes]:
+                if not isinstance(note, dict):
+                    continue
+                name, desc, body = (str(note.get(k, "")) for k in ("name", "description", "body"))
+                reason = self._too_specific(f"{name}\n{desc}\n{body}", attempts)
+                if reason is not None:
+                    event["rejected"].append({"name": name, "reason": reason})
+                    continue
+                try:
+                    event["written"].append(self.store.write(name, desc, body).name)
+                except SkillStoreError as exc:
+                    event["rejected"].append({"name": name, "reason": str(exc)})
+        except BudgetExhaustedError:
+            raise
+        except Exception as exc:  # a failed distillation must not abort the run
+            logger.warning("attacker distillation over %d pairs failed: %s", len(pairs), exc)
+            event["error"] = f"{type(exc).__name__}: {exc}"
+        self.distillations.append(event)
+
+    async def _distill_call(self, attempts: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+        s = self.settings
+        llm = self.llm_factory()
+        try:
+            result = await llm.complete(
+                [
+                    {"role": "system", "content": prompts.DISTILL_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": prompts.distill_task(
+                            self._notes_block(), self._attempts_block(attempts), s.distill_max_notes
+                        ),
+                    },
+                ],
+                max_tokens=max(s.max_tokens, 1200),
+                temperature=s.temperature,
+                top_p=s.top_p,
+                seed=(s.attacker.seed or 0) + 7919 * (len(self.distillations) + 1),
+            )
+            usage = llm.usage()
+        finally:
+            await llm.aclose()
+        return result.choices[0].message.content or "", usage
 
     def _run_tool(
         self,
@@ -249,6 +405,11 @@ class SkillAgentAttacker(AutoDojoAttacker):
             "prompt_sha256": {
                 "system": sha256_text(prompts.SKILL_AGENT_SYSTEM_PROMPT),
                 "memory_header": sha256_text(prompts.MEMORY_HEADER),
+                **(
+                    {"distill_system": sha256_text(prompts.DISTILL_SYSTEM_PROMPT)}
+                    if self.settings.distill_every > 0
+                    else {}
+                ),
             },
             "skill_tools": [
                 prompts.LIST_TOOL_NAME,
@@ -275,6 +436,9 @@ class SkillAgentAttacker(AutoDojoAttacker):
         base = super().state_dict()
         base["format"] = SKILL_AGENT_STATE_FORMAT
         base["skills"] = self.store.state()
+        base["trajectories"] = json.loads(json.dumps(self.trajectories))
+        base["distillations"] = json.loads(json.dumps(self.distillations))
+        base["distilled_pairs"] = self.distilled_pairs
         return base
 
     def load_state(self, state: dict[str, Any]) -> None:
@@ -284,3 +448,6 @@ class SkillAgentAttacker(AutoDojoAttacker):
         self.archive = list(state["archive"])
         self.playbook = list(state.get("playbook", []))
         self.store.load_from_state(state.get("skills") or {})
+        self.trajectories = list(state.get("trajectories", []))
+        self.distillations = list(state.get("distillations", []))
+        self.distilled_pairs = int(state.get("distilled_pairs", 0))
