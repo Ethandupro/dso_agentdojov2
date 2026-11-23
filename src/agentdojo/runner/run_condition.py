@@ -20,12 +20,14 @@ to the run directory.
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import click
 import openai
@@ -94,6 +96,46 @@ def check_served(role: str, base_url: str, model_id: str) -> list[str]:
     return models
 
 
+THINKING_TEXT = re.compile(r"<think>\s*(?!</think>)\S")
+
+
+def reply_thinks(message: dict[str, Any]) -> bool:
+    """Whether a chat-completion message shows thinking: a non-empty reasoning field (vLLM's reasoning parser fills
+    `reasoning_content`, newer builds `reasoning`), or a `<think>` block with text in the content."""
+    for key in ("reasoning_content", "reasoning"):
+        if str(message.get(key) or "").strip():
+            return True
+    return bool(THINKING_TEXT.search(str(message.get("content") or "")))
+
+
+def check_attacker_not_thinking(base_url: str, model_id: str, timeout: float = 120.0) -> None:
+    """The attacker never thinks (user decision 2026-11-20). One short request, sent exactly as the attacker's own
+    (`enable_thinking: false`), must come back without thinking, or the run does not start."""
+    body = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+        "max_tokens": 64,
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": experiment_models.ATTACKER_ENABLE_THINKING},
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise PreflightError(f"the attacker at {base_url} did not answer a test request ({e})") from e
+    message = (data.get("choices") or [{}])[0].get("message") or {}
+    if reply_thinks(message):
+        raise PreflightError(
+            f"the attacker {model_id} thinks although every request sends enable_thinking=false; restart it with "
+            "local_victim/serve_all.sh (its chat template must honour enable_thinking)"
+        )
+
+
 def check_judge(model: str) -> None:
     """The judge's key is set and OpenRouter answers a short request with that model."""
     if not os.environ.get(JUDGE_KEY_ENV):
@@ -107,21 +149,30 @@ def check_judge(model: str) -> None:
 
 
 def victim_deepagents_config(
-    model_id: str, base_url: str, fetch: Callable[[str, str], str] | None = None
+    model_id: str,
+    base_url: str,
+    fetch: Callable[[str, str], str] | None = None,
+    temperature: float | None = None,
 ) -> DeepAgentsConfig:
     """The victim's settings. A Magistral victim (default since 2026-11-20) thinks: its model card's reasoning system
     prompt goes ahead of the agent's, with the card's sampling. Other (Qwen) victims run non-thinking at temperature
-    0, as before."""
+    0, as before. `temperature` (`--victim-temperature`) overrides the default, e.g. a low value so the same
+    injection gets (nearly) the same answer every time."""
     if experiment_models.is_magistral(model_id):
         return DeepAgentsConfig(
             model_id=model_id,
             base_url=base_url,
             enable_thinking=None,
-            temperature=experiment_models.MAGISTRAL_TEMPERATURE,
+            temperature=experiment_models.MAGISTRAL_TEMPERATURE if temperature is None else temperature,
             top_p=experiment_models.MAGISTRAL_TOP_P,
             reasoning_system_prompt=(fetch or fetch_hf_text)(model_id, experiment_models.REASONING_PROMPT_FILE),
         )
-    return DeepAgentsConfig(model_id=model_id, base_url=base_url, enable_thinking=False)
+    return DeepAgentsConfig(
+        model_id=model_id,
+        base_url=base_url,
+        enable_thinking=False,
+        temperature=0.0 if temperature is None else temperature,
+    )
 
 
 SMOKE_PAIRS = 8
@@ -152,13 +203,17 @@ def autodojo_settings(
     external_checker: bool = False,
     memory: bool = True,
     strategy_bank: bool = True,
+    temperature: float | None = None,
 ) -> AutoDojoSettings:
-    return AutoDojoSettings(
+    settings = AutoDojoSettings(
         attacker=attacker_model_config(model_id, base_url, seed),
         target="filter" if external_checker else "agent",
         memory=memory,
         strategy_bank=strategy_bank,
     )
+    if temperature is not None:
+        settings.temperature = temperature
+    return settings
 
 
 def skill_agent_settings(
@@ -167,15 +222,19 @@ def skill_agent_settings(
     seed: int,
     memory: bool = True,
     strategy_bank: bool = True,
+    temperature: float | None = None,
 ) -> SkillAgentSettings:
     """Item 7 (D2): the evolving attacker as a tool-using agent with its own skill files. Only the skills design
     (`target='agent'`), so it is never paired with --external-checker."""
-    return SkillAgentSettings(
+    settings = SkillAgentSettings(
         attacker=attacker_model_config(model_id, base_url, seed),
         target="agent",
         memory=memory,
         strategy_bank=strategy_bank,
     )
+    if temperature is not None:
+        settings.temperature = temperature
+    return settings
 
 
 @click.command()
@@ -293,6 +352,27 @@ def skill_agent_settings(
     "(its thinking, what it said, the tools it called) on the leaderboard, so it sees why an injection was ignored. "
     "On by default (user decision 2026-11-20); --no-victim-trace gets a '-no-victim-trace' results directory.",
 )
+@click.option(
+    "--stop-on-success",
+    is_flag=True,
+    default=False,
+    help="C2/C4/C0E (evolving pairs): stop a pair at its first success and skip its later trials. A pair whose trial 0 "
+    "(the original AgentDojo text) already succeeds is never evolved and is reported as 'baseline already works'; the "
+    "evolving ASR counts only the other pairs. Gets a '-first-success' results directory.",
+)
+@click.option(
+    "--victim-temperature",
+    type=float,
+    default=None,
+    help="Victim sampling temperature (default: Magistral's model-card 0.7). Gets a '-vtemp<T>' results directory.",
+)
+@click.option(
+    "--attacker-temperature",
+    type=float,
+    default=None,
+    help="C2/C4/C0E: the evolving attacker's sampling temperature (default 1.0, as AutoDojo). Gets an '-atemp<T>' "
+    "results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -323,6 +403,9 @@ def main(
     graded_score: bool,
     strategy_bank: bool,
     show_victim_trace: bool,
+    stop_on_success: bool,
+    victim_temperature: float | None,
+    attacker_temperature: float | None,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -371,7 +454,7 @@ def main(
         raise click.ClickException(f"{skills_dir} already has a skill named {experiment_models.S0_SKILL_NAME}")
 
     try:
-        victim_config = victim_deepagents_config(victim_model_id, victim_base_url)
+        victim_config = victim_deepagents_config(victim_model_id, victim_base_url, temperature=victim_temperature)
     except OSError as e:
         raise click.ClickException(
             f"could not download {experiment_models.REASONING_PROMPT_FILE} of {victim_model_id}: {e}"
@@ -385,6 +468,7 @@ def main(
         evolving_attack = cond.attack_mode == "evolving"
         if evolving_attack:
             served["attacker"] = check_served("attacker", attacker_base_url, attacker_model_id)
+            check_attacker_not_thinking(attacker_base_url, attacker_model_id)
     except PreflightError as e:
         raise click.ClickException(str(e)) from e
 
@@ -396,6 +480,10 @@ def main(
     policy = EditPolicy(description_editable=judge_edits_description and not external_checker)
     static = StaticAttacker(manifest_data)
     attacker: Attacker = static
+    if attacker_temperature is not None and not (evolving_attack and attacker_loop in AUTODOJO_LOOPS):
+        raise click.ClickException("--attacker-temperature applies to the autodojo/skill-agent evolving attacker only")
+    if stop_on_success and not evolving_attack:
+        raise click.ClickException("--stop-on-success applies to evolving-attack conditions only (C0E, C2, C4)")
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -404,7 +492,9 @@ def main(
                 raise click.ClickException("--attacker skill-agent is a skills-design loop; drop --external-checker")
             attacker = SkillAgentAttacker(
                 manifest_data,
-                skill_agent_settings(attacker_model_id, attacker_base_url, seed, attacker_memory, strategy_bank),
+                skill_agent_settings(
+                    attacker_model_id, attacker_base_url, seed, attacker_memory, strategy_bank, attacker_temperature
+                ),
             )
         else:
             attacker = AutoDojoAttacker(
@@ -416,6 +506,7 @@ def main(
                     external_checker,
                     attacker_memory,
                     strategy_bank,
+                    attacker_temperature,
                 ),
             )
     run_dir = run_dir_for(
@@ -434,6 +525,9 @@ def main(
         no_strategy_bank=evolving_attack and attacker_loop in AUTODOJO_LOOPS and not strategy_bank,
         no_victim_trace=evolving_attack and attacker_loop in AUTODOJO_LOOPS and not show_victim_trace,
         skill_agent=evolving_attack and attacker_loop == "skill-agent",
+        stop_on_success=stop_on_success,
+        victim_temperature=victim_temperature,
+        attacker_temperature=attacker_temperature,
     )
     config = RunConfig(
         condition=cond.name,
@@ -478,6 +572,7 @@ def main(
         smoke=smoke or None,
         graded_score=graded_score if evolving_attack else None,
         show_victim_trace=show_victim_trace if evolving_attack else None,
+        stop_on_success=stop_on_success or None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -567,6 +662,7 @@ def main(
         skills_prompt_style=skills_prompt_style,  # type: ignore[arg-type]
         graded_score=graded_score,
         show_victim_trace=show_victim_trace,
+        stop_on_success=stop_on_success,
     )
     try:
         records = runner.run()
@@ -576,7 +672,7 @@ def main(
         click.echo(f"Interrupted. Partial report: {write_report(runner.run_dir)}", err=True)
         click.echo("Run the same command again to resume from the last finished unit.", err=True)
         sys.exit(130)
-    click.echo(json.dumps(quick_summary(records), indent=2))
+    click.echo(json.dumps(quick_summary(records, trials_per_pair), indent=2))
     click.echo(f"report: {write_report(runner.run_dir)}")
 
 

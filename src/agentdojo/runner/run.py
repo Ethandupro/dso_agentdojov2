@@ -18,7 +18,10 @@ Files under the run directory (DESIGN.md, "Conditions and result segmentation"):
 - `trial_<t>/<split>/...` and `benign*/...`: AgentDojo trace files, one per unit.
 
 After each unit the runner appends its record and checker lines, then replaces `state.json`. On resume, lines of
-units at or after the checkpoint (a crash between the two writes) are dropped and that unit runs again. A unit that
+units at or after the checkpoint (a crash between the two writes) are dropped and that unit runs again.
+With `stop_on_success` (`run_condition --stop-on-success`), an evolving pair stops at its first success: its later
+trials are skipped, write no record, and are listed in `state.json` under `skipped`. A pair whose trial 0 (the
+original AgentDojo text) already succeeds is therefore never evolved ("baseline already works"). A unit that
 raises (for example a model server that stays unreachable after the client's retries) stops the run with the
 checkpoint intact; nothing is scored for it.
 """
@@ -39,6 +42,7 @@ from agentdojo.logging import NullLogger, TraceLogger
 from agentdojo.runner.conditions import Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
+from agentdojo.runner.report import evolving_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
 from agentdojo.runner.trace import victim_trace_digest
 from agentdojo.task_suite.load_suites import get_suite
@@ -90,6 +94,9 @@ def run_dir_for(
     no_victim_trace: bool = False,
     smoke: bool = False,
     skill_agent: bool = False,
+    stop_on_success: bool = False,
+    victim_temperature: float | None = None,
+    attacker_temperature: float | None = None,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -108,6 +115,12 @@ def run_dir_for(
         name = f"{name}-no-strategies"
     if no_victim_trace:
         name = f"{name}-no-victim-trace"
+    if stop_on_success:
+        name = f"{name}-first-success"
+    if victim_temperature is not None:
+        name = f"{name}-vtemp{victim_temperature:g}"
+    if attacker_temperature is not None:
+        name = f"{name}-atemp{attacker_temperature:g}"
     if subset:
         name = f"{name}-subset-{subset}"
     if smoke:
@@ -198,6 +211,7 @@ class Runner:
         security_skill_description: str = S0_SKILL_DESCRIPTION,
         graded_score: bool = True,
         show_victim_trace: bool = True,
+        stop_on_success: bool = False,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
@@ -210,6 +224,9 @@ class Runner:
         self.security_skill_description = security_skill_description
         self.graded_score = graded_score
         self.show_victim_trace = show_victim_trace
+        self.stop_on_success = stop_on_success
+        self.skipped: list[int] = []
+        """Unit indices skipped by `stop_on_success` (no record, no model call)."""
         self.config = config
         self.condition = condition
         self.run_dir = run_dir
@@ -263,12 +280,16 @@ class Runner:
             if state["units_sha256"] != self.units_sha256:
                 raise ConfigMismatchError("the unit list changed since this run started")
             cursor = state["cursor"]
+            self.skipped = [i for i in state.get("skipped", []) if i < cursor]
             self.attacker.load_state(state["attacker"])
             self.skill_file.load_state(state["skill_file"])
         # Drop lines of units at or after the checkpoint: written just before a crash, before the state was saved.
         records = [r for r in _read_jsonl(self.trials_path) if r["unit"] < cursor]
-        if len(records) != cursor:
-            raise ConfigMismatchError(f"trials.jsonl has {len(records)} records before the checkpoint at {cursor}")
+        if len(records) + len(self.skipped) != cursor:
+            raise ConfigMismatchError(
+                f"trials.jsonl has {len(records)} records and {len(self.skipped)} skipped units before the checkpoint "
+                f"at {cursor}"
+            )
         _write_jsonl(self.trials_path, records)
         _write_jsonl(self.checker_path, [c for c in _read_jsonl(self.checker_path) if c["unit"] < cursor])
         self.records = records
@@ -278,6 +299,13 @@ class Runner:
         _append_jsonl(self.trials_path, [record])
         _append_jsonl(self.checker_path, checker_lines)
         self.records.append(record)
+        self._save_state(unit)
+
+    def _skip(self, unit: Unit) -> None:
+        self.skipped.append(unit.index)
+        self._save_state(unit)
+
+    def _save_state(self, unit: Unit) -> None:
         _write_json_atomic(
             self.state_path,
             {
@@ -286,6 +314,7 @@ class Runner:
                 "n_units": len(self.units),
                 "units_sha256": self.units_sha256,
                 "complete": unit.index + 1 == len(self.units),
+                "skipped": list(self.skipped),
                 "attacker": self.attacker.state_dict(),
                 "skill_file": self.skill_file.state_dict(),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -316,6 +345,13 @@ class Runner:
         if unit.phase == "test":
             return self.static_attacker
         return self.attacker
+
+    def already_won(self, unit: Unit) -> bool:
+        """`stop_on_success`: an evolving pair that already succeeded on an earlier trial (trial 0 included) is done.
+        Static pairs (C0/C1, and C4's test pairs) always run every trial."""
+        if not self.stop_on_success or unit.pair is None or self.attacker_for(unit) is self.static_attacker:
+            return False
+        return any(r["pair"] == unit.pair.id and r["phase"] == unit.phase and r["security"] for r in self.records)
 
     def run_unit(self, unit: Unit) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         start = time.time()
@@ -472,6 +508,11 @@ class Runner:
         for unit in self.units[cursor:]:
             if max_units is not None and done >= max_units:
                 break
+            if self.already_won(unit):
+                self._skip(unit)
+                done += 1
+                self.echo(f"[{unit.index + 1}/{len(self.units)}] {unit.id}: skipped (pair already succeeded)")
+                continue
             record, checker_lines = self.run_unit(unit)
             self._commit(unit, record, checker_lines)
             done += 1
@@ -487,7 +528,7 @@ class Runner:
         return self.records
 
 
-def quick_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+def quick_summary(records: list[dict[str, Any]], trials_per_pair: int | None = None) -> dict[str, Any]:
     """Counts for the console at the end of a run (the full report comes from `agentdojo.runner.report`)."""
     attacked = [r for r in records if r["pair"] is not None]
     benign = [r for r in records if r["pair"] is None]
@@ -502,4 +543,7 @@ def quick_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     if benign:
         summary["benign_tasks"] = len(benign)
         summary["benign_utility"] = sum(r["utility"] for r in benign) / len(benign)
+    evo = evolving_metrics(records, trials_per_pair) if trials_per_pair else None
+    if evo is not None:
+        summary["pairs"] = {k: v for k, v in evo.items() if k != "first_success"}
     return summary
