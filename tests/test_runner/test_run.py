@@ -500,6 +500,7 @@ def test_cli_wires_local_attacker_for_c0e_c2_and_c4(
         return [model]
 
     monkeypatch.setattr(run_condition, "check_served", check_served)
+    monkeypatch.setattr(run_condition, "check_attacker_not_thinking", lambda url, model: None)
     monkeypatch.setattr(run_condition, "check_judge", judged.append)
     monkeypatch.setattr(run_condition, "Runner", CapturedRunner)
     monkeypatch.setattr(run_condition, "write_report", lambda run_dir: run_dir / "report.html")
@@ -548,6 +549,7 @@ def test_cli_external_checker_ablation(monkeypatch, tmp_path: Path):
         return [model]
 
     monkeypatch.setattr(run_condition, "check_served", check_served)
+    monkeypatch.setattr(run_condition, "check_attacker_not_thinking", lambda url, model: None)
     monkeypatch.setattr(run_condition, "Runner", CapturedRunner)
     monkeypatch.setattr(run_condition, "write_report", lambda run_dir: run_dir / "report.html")
     args = ["--condition", "C1", "--results-root", str(tmp_path), "--limit", "2", "--external-checker"]

@@ -47,6 +47,9 @@ class RunConfig(BaseModel):
     show_victim_trace: bool | None = None
     """Evolving-attacker runs: True if the attacker's leaderboard shows an S0-redacted digest of the victim's run,
     False for the `-no-victim-trace` ablation; None when there is no evolving attacker."""
+    stop_on_success: bool | None = None
+    """`--stop-on-success`: evolving pairs stop at their first success (trial 0 included). None when off, so earlier
+    runs still resume."""
     smoke: bool | None = None
     """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
     (not False) when off, so runs made before the flag existed still resume."""
