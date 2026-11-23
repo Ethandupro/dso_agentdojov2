@@ -79,6 +79,13 @@ class SkillAgentSettings(AutoDojoSettings):
     """Most notes one distillation call may write or update."""
     distill_text_chars: int = 500
     """Each attempt's text and the agent's response are clipped to this many characters in the distillation prompt."""
+    note_exploration: float = 0.5
+    """With distillation on, `list_skills` ranks notes by a UCB score (mean 0-4 score / 4 + this weight * sqrt(ln(N+1)
+    / uses)) and shows each note's record, so the attacker leans on notes that worked but still tries new ones."""
+    prune_after_uses: int = 4
+    """With distillation on, a note loaded this many times that never won and averages at most `prune_max_score` is
+    dropped from the library (a cheap version of JailbreakSkill's keep-only-if-it-helps gate). 0 = never prune."""
+    prune_max_score: float = 1.0
 
 
 class SkillAgentAttacker(AutoDojoAttacker):
@@ -99,6 +106,14 @@ class SkillAgentAttacker(AutoDojoAttacker):
         """One entry per distillation call: which pairs it read, what it wrote and rejected, usage or error."""
         self.distilled_pairs = 0
         """How many finished pairs (in run order) earlier distillation calls have covered."""
+        self.pruned: list[dict[str, Any]] = []
+        """Notes dropped for never helping, with their record and the trial that triggered it."""
+
+    def _listing(self) -> str:
+        """The note menu: ranked with each note's record when distillation is on, plain otherwise (as in PR #49)."""
+        if self.settings.distill_every > 0:
+            return self.store.ranked_listing(self.settings.note_exploration)
+        return self.store.listing()
 
     # --- distillation ---------------------------------------------------------------------------------------------
 
@@ -108,6 +123,12 @@ class SkillAgentAttacker(AutoDojoAttacker):
             return
         if any(t["pair"] == pair.id and t["trial"] == feedback.trial for t in self.trajectories):
             return
+        # Credit the notes the agent loaded before writing this trial's text, then drop notes that never help.
+        entry = next((e for e in self.archive if e["pair"] == pair.id and e["trial"] == feedback.trial), {})
+        self.store.record_use(entry.get("skills_loaded") or [], feedback.security, feedback.progress)
+        if self.settings.prune_after_uses > 0:
+            for dropped in self.store.prune(self.settings.prune_after_uses, self.settings.prune_max_score):
+                self.pruned.append({**dropped, "pair": pair.id, "trial": feedback.trial})
         n = self.settings.distill_text_chars
         self.trajectories.append(
             {
@@ -237,7 +258,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
         asked to submit again."""
         s = self.settings
         if name == prompts.LIST_TOOL_NAME:
-            return self.store.listing(), None
+            return self._listing(), None
         if name == prompts.LOAD_TOOL_NAME:
             body = self.store.load(str(args.get("name", "")))
             if body is None:
@@ -322,7 +343,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
                     goal,
                     data_slot,
                     prompts.leaderboard_block(leaderboard),
-                    self.store.listing(),
+                    self._listing(),
                     memory,
                     strategies_block,
                 ),
@@ -439,6 +460,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
         base["trajectories"] = json.loads(json.dumps(self.trajectories))
         base["distillations"] = json.loads(json.dumps(self.distillations))
         base["distilled_pairs"] = self.distilled_pairs
+        base["pruned"] = json.loads(json.dumps(self.pruned))
         return base
 
     def load_state(self, state: dict[str, Any]) -> None:
@@ -451,3 +473,4 @@ class SkillAgentAttacker(AutoDojoAttacker):
         self.trajectories = list(state.get("trajectories", []))
         self.distillations = list(state.get("distillations", []))
         self.distilled_pairs = int(state.get("distilled_pairs", 0))
+        self.pruned = list(state.get("pruned", []))

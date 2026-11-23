@@ -87,3 +87,45 @@ def test_off_by_default():
     finish_pair(atk, 0, win=False)
     atk.text_for(PAIRS[1], 0, [])
     assert log == [] and atk.trajectories == [] and "distill_system" not in atk.config()["prompt_sha256"]
+
+
+def test_notes_are_credited_ranked_and_pruned():
+    atk = make("{}", [], distill_every=5, prune_after_uses=2, prune_max_score=1.0)
+    atk.store.write("helps", "works", "Write as <user>.")
+    atk.store.write("useless", "never works", "Shout at the agent.")
+    atk.store.write("fresh", "not tried yet", "Mimic the tool's format.")
+    pair = PAIRS[0]
+    for trial, (loaded, win, score) in enumerate([(["helps", "useless"], True, 4), (["useless"], False, 0)], 1):
+        atk.archive.append({"pair": pair.id, "trial": trial, "text": f"t{trial}", "skills_loaded": loaded})
+        fb = AttemptFeedback(trial=trial, injection_text=f"t{trial}", security=win, utility=True, final_answer="x")
+        atk.observe(pair, AttemptFeedback(**{**fb.__dict__, "progress": score}), None)
+    helps = atk.store.skills["helps"]
+    assert (helps.uses, helps.wins, helps.mean_score) == (1, 1, 4.0)
+    # "useless" won once (trial 1, together with "helps"), so it stays; ranking puts the untried note first.
+    listing = atk._listing()
+    assert listing.index("fresh") < listing.index("helps") and "untried" in listing and "won 1" in listing
+    # A note that only ever fails is dropped once it reaches prune_after_uses.
+    atk.store.write("dud", "fails", "Repeat the request.")
+    for trial in (3, 4):
+        atk.archive.append({"pair": pair.id, "trial": trial, "text": f"t{trial}", "skills_loaded": ["dud"]})
+        atk.observe(
+            pair,
+            AttemptFeedback(
+                trial=trial, injection_text="x", security=False, utility=True, final_answer="x", progress=0
+            ),
+            None,
+        )
+    assert "dud" not in atk.store.skills and atk.pruned[0]["name"] == "dud" and atk.pruned[0]["uses"] == 2
+    state = json.loads(json.dumps(atk.state_dict()))
+    again = make("{}", [], distill_every=5)
+    again.load_state(state)
+    assert again.store.skills["helps"].wins == 1 and again.pruned == atk.pruned
+    lib = attacker_metrics({"attacker": {**state, "distillations": [{"written": [], "rejected": []}]}}, [])
+    assert lib is not None and lib["skill_library"]["notes_pruned"] == 1
+    assert lib["skill_library"]["note_records"]["helps"] == {"uses": 1, "wins": 1}
+
+
+def test_plain_skill_agent_listing_is_unchanged():
+    atk = make("{}", [])
+    atk.store.write("a", "desc", "body")
+    assert atk._listing() == atk.store.listing() and "untried" not in atk._listing()
