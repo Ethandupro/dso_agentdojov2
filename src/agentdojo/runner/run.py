@@ -97,6 +97,7 @@ def run_dir_for(
     stop_on_success: bool = False,
     victim_temperature: float | None = None,
     attacker_temperature: float | None = None,
+    distill_every: int = 0,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -115,6 +116,8 @@ def run_dir_for(
         name = f"{name}-no-strategies"
     if no_victim_trace:
         name = f"{name}-no-victim-trace"
+    if distill_every:
+        name = f"{name}-distill{distill_every}"
     if stop_on_success:
         name = f"{name}-first-success"
     if victim_temperature is not None:

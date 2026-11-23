@@ -195,6 +195,16 @@ def attacker_metrics(state: dict[str, Any], records: list[dict[str, Any]] | None
             "rewrites_writing_a_note": sum(bool(e.get("skills_written")) for e in rewrites),
             "rewrites_loading_a_note": sum(bool(e.get("skills_loaded")) for e in rewrites),
         }
+        distillations = (state.get("attacker") or {}).get("distillations") or []
+        if distillations:
+            skill_library["distillations"] = len(distillations)
+            skill_library["distilled_notes_written"] = sum(len(d.get("written", [])) for d in distillations)
+            skill_library["distilled_notes_rejected"] = sum(len(d.get("rejected", [])) for d in distillations)
+            skill_library["distillation_errors"] = sum(bool(d.get("error")) for d in distillations)
+            skill_library["notes_pruned"] = len((state.get("attacker") or {}).get("pruned") or [])
+            skill_library["note_records"] = {
+                n["name"]: {"uses": n.get("uses", 0), "wins": n.get("wins", 0)} for n in notes
+            }
     return {
         "rewrites": len(rewrites),
         "goal_fallbacks": fallbacks,
@@ -680,6 +690,31 @@ def render_html(summary: dict[str, Any]) -> str:
                 for s in by_strategy
             ]
             out.append("</tbody></table>")
+        library = attacker.get("skill_library")
+        if library:
+            rows = [
+                ("Notes in the library at the end", library["notes"]),
+                ("Rewrites that wrote a note", library["rewrites_writing_a_note"]),
+                ("Rewrites that loaded a note", library["rewrites_loading_a_note"]),
+            ]
+            if "distillations" in library:
+                rows += [
+                    ("Distillation rounds (errors)", f"{library['distillations']} ({library['distillation_errors']})"),
+                    ("Distilled notes written", library["distilled_notes_written"]),
+                    ("Distilled notes rejected as too specific", library["distilled_notes_rejected"]),
+                    ("Notes dropped for never helping", library["notes_pruned"]),
+                ]
+            out.append("<h3>Attacker skill library</h3><table><tbody>")
+            out += [f"<tr><td>{_e(k)}</td><td>{_e(v)}</td></tr>" for k, v in rows]
+            out.append("</tbody></table>")
+            records = library.get("note_records") or {}
+            if records:
+                out.append("<table><thead><tr><th>Note</th><th>Times loaded</th><th>Wins</th></tr></thead><tbody>")
+                out += [
+                    f"<tr><td>{_e(name)}</td><td>{r['uses']}</td><td>{r['wins']}</td></tr>"
+                    for name, r in sorted(records.items(), key=lambda kv: (-kv[1]["wins"], -kv[1]["uses"]))
+                ]
+                out.append("</tbody></table>")
 
     # Pair-level success: baseline vs evolution.
     evo = summary.get("evolving")

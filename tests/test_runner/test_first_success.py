@@ -168,3 +168,13 @@ def test_cli_refuses_stop_on_success_for_a_static_attack(monkeypatch, tmp_path: 
     args = ["--condition", "C0", "--results-root", str(tmp_path), "--limit", "2", "--stop-on-success"]
     result, _ = captured_cli(monkeypatch, args)
     assert result.exit_code != 0 and "evolving-attack conditions only" in result.output
+
+
+def test_cli_wires_distillation_for_the_skill_agent_only(monkeypatch, tmp_path: Path):
+    base = ["--condition", "C0E", "--results-root", str(tmp_path), "--limit", "2", "--distill-every", "5"]
+    result, wiring = captured_cli(monkeypatch, [*base, "--attacker", "skill-agent"])
+    assert result.exit_code == 0, result.output
+    assert wiring["attacker"].settings.distill_every == 5
+    assert wiring["run_dir"].parent.name == "c0e_no-s0_evolving-attack-skill-agent-distill5-limit2"
+    result, _ = captured_cli(monkeypatch, base)
+    assert result.exit_code != 0 and "--attacker skill-agent" in result.output
