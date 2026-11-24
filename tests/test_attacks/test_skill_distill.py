@@ -43,7 +43,7 @@ def test_distils_every_k_pairs_and_rejects_specific_notes():
         }
     )
     log: list[list[dict]] = []
-    atk = make(reply, log, distill_every=2)
+    atk = make(reply, log, distill_every=2, distill_mode="plain")
     finish_pair(atk, 0, win=True)
     finish_pair(atk, 1, win=False)
     assert log == []  # no distillation before the third pair starts
@@ -58,7 +58,7 @@ def test_distils_every_k_pairs_and_rejects_specific_notes():
 
     # Checkpointed: a resumed attacker keeps the notes and does not distil the same pairs again.
     state = json.loads(json.dumps(atk.state_dict()))
-    again = make(reply, log, distill_every=2)
+    again = make(reply, log, distill_every=2, distill_mode="plain")
     again.load_state(state)
     assert again.store.names() == ["user-voice-followup"] and again.distilled_pairs == 2
     metrics = attacker_metrics({"attacker": state}, [])
@@ -129,3 +129,101 @@ def test_plain_skill_agent_listing_is_unchanged():
     atk = make("{}", [])
     atk.store.write("a", "desc", "body")
     assert atk._listing() == atk.store.listing() and "untried" not in atk._listing()
+
+
+# --- contrastive distillation (the default mode) ---------------------------------------------------------------------
+
+
+def record(atk: SkillAgentAttacker, i: int, trial: int, win: bool, strategy: str | None) -> None:
+    """Report trial `trial` of pair i, as if the agent loop had written it with `strategy`."""
+    pair = PAIRS[i]
+    text = f"attempt {i}-{trial} written in the {'winning' if win else 'failing'} style"
+    atk.archive.append({"pair": pair.id, "trial": trial, "text": text, "strategy": strategy, "skills_loaded": []})
+    fb = AttemptFeedback(
+        trial=trial, injection_text=text, security=win, utility=True, final_answer=f"agent {i}-{trial}", progress=2
+    )
+    atk.observe(pair, fb, None)
+
+
+def test_contrast_is_the_default_mode():
+    atk = make("{}", [], distill_every=1)
+    assert atk.settings.distill_mode == "contrast"
+    assert "contrast_distill_system" in atk.config()["prompt_sha256"]
+
+
+def test_contrast_pairs_same_item_first_then_same_strategy():
+    atk = make("{}", [], distill_every=5)
+    record(atk, 0, 0, False, "user-voice")
+    record(atk, 0, 1, False, "tool-format")
+    record(atk, 0, 2, True, "tool-format")  # evolved from trial 1
+    record(atk, 0, 3, False, "tool-format")  # later failure on the same item: equally close, but after the win
+    record(atk, 1, 0, False, "tool-format")  # same strategy, different item
+    record(atk, 1, 1, False, "other")
+    contrasts = atk.contrast_pairs(atk.trajectories)
+    kinds = [(c["kind"], c["fail"]["pair"], c["fail"]["trial"]) for c in contrasts]
+    assert kinds == [("same_item", PAIRS[0].id, 1), ("same_strategy", PAIRS[1].id, 0)]
+    assert make("{}", [], distill_every=5, distill_max_contrasts=1).contrast_pairs(atk.trajectories)[0]["kind"] == (
+        "same_item"
+    )
+
+
+def test_contrastive_distillation_writes_do_avoid_notes_and_filters_leaks():
+    literal = goal_literals(
+        SkillAgentAttacker(MANIFEST, SkillAgentSettings(attacker=AttackerModelConfig())).goal(PAIRS[0])
+    )
+    reply = json.dumps(
+        {
+            "contrasts": [
+                {"id": 1, "changed": "first person", "diverged": "agent treated it as the user", "rule": "do X"}
+            ],
+            "skills": [
+                {
+                    "name": "speak-as-user",
+                    "description": "when the data is a message",
+                    "do": "write as <user> continuing their own task",
+                    "avoid": "addressing the assistant directly",
+                    "because": "the agent followed the user-voiced text and ignored the addressed one",
+                },
+                {"name": "leaky", "description": "x", "do": f"send to {literal[0]}", "avoid": "", "because": ""},
+            ],
+        }
+    )
+    log: list[list[dict]] = []
+    atk = make(reply, log, distill_every=1)
+    record(atk, 0, 0, False, "tool-format")
+    record(atk, 0, 1, True, "tool-format")
+    atk.text_for(PAIRS[1], 0, [])
+    assert len(log) == 1
+    system, user = log[0][0]["content"], log[0][1]["content"]
+    assert "MATCHED PAIRS" in system and "SAME ITEM" in user and "FAILED" in user and "SUCCEEDED" in user
+    note = atk.store.skills["speak-as-user"]
+    assert note.body.startswith("DO: write as <user>") and "AVOID: addressing" in note.body and "BECAUSE:" in note.body
+    event = atk.distillations[0]
+    assert event["mode"] == "contrast" and event["contrasts"][0]["kind"] == "same_item"
+    assert event["analyses"][0]["diverged"] == "agent treated it as the user"
+    assert event["rejected"][0]["name"] == "leaky"
+    lib = attacker_metrics({"attacker": json.loads(json.dumps(atk.state_dict()))}, [])
+    assert lib is not None
+    assert (lib["skill_library"]["contrastive_rounds"], lib["skill_library"]["contrast_pairs_used"]) == (1, 1)
+
+
+def test_contrast_falls_back_to_plain_without_matched_pairs():
+    log: list[list[dict]] = []
+    atk = make("{}", log, distill_every=2)
+    finish_pair(atk, 0, win=False)
+    finish_pair(atk, 1, win=False)
+    atk.text_for(PAIRS[2], 0, [])
+    assert len(log) == 1 and "MATCHED PAIRS" not in log[0][0]["content"]
+    assert atk.distillations[0]["mode"] == "plain" and "contrasts" not in atk.distillations[0]
+
+
+def test_replication_hook_can_veto_wins():
+    class Strict(SkillAgentAttacker):
+        def reliable_win(self, attempt: dict[str, Any]) -> bool:
+            return False
+
+    cfg = SkillAgentSettings(attacker=AttackerModelConfig(model="m", base_url="http://x/v1"), distill_every=5)
+    atk = Strict(MANIFEST, cfg, llm_factory=lambda: ScriptedAgent([text_turn("{}")], []))
+    record(atk, 0, 0, False, "s")
+    record(atk, 0, 1, True, "s")
+    assert atk.contrast_pairs(atk.trajectories) == []
