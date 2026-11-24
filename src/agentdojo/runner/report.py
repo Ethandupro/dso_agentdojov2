@@ -201,6 +201,8 @@ def attacker_metrics(state: dict[str, Any], records: list[dict[str, Any]] | None
             skill_library["distilled_notes_written"] = sum(len(d.get("written", [])) for d in distillations)
             skill_library["distilled_notes_rejected"] = sum(len(d.get("rejected", [])) for d in distillations)
             skill_library["distillation_errors"] = sum(bool(d.get("error")) for d in distillations)
+            skill_library["contrastive_rounds"] = sum(d.get("mode") == "contrast" for d in distillations)
+            skill_library["contrast_pairs_used"] = sum(len(d.get("contrasts") or []) for d in distillations)
             skill_library["notes_pruned"] = len((state.get("attacker") or {}).get("pruned") or [])
             skill_library["note_records"] = {
                 n["name"]: {"uses": n.get("uses", 0), "wins": n.get("wins", 0)} for n in notes
@@ -700,6 +702,10 @@ def render_html(summary: dict[str, Any]) -> str:
             if "distillations" in library:
                 rows += [
                     ("Distillation rounds (errors)", f"{library['distillations']} ({library['distillation_errors']})"),
+                    (
+                        "Contrastive rounds (matched win/fail pairs)",
+                        f"{library.get('contrastive_rounds', 0)} ({library.get('contrast_pairs_used', 0)})",
+                    ),
                     ("Distilled notes written", library["distilled_notes_written"]),
                     ("Distilled notes rejected as too specific", library["distilled_notes_rejected"]),
                     ("Notes dropped for never helping", library["notes_pruned"]),

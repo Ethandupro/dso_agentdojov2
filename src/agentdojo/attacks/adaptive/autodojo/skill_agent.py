@@ -18,7 +18,7 @@ the skill file or the victim's raw reasoning.
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 from agentdojo.attacks.adaptive.autodojo import prompts
 from agentdojo.attacks.adaptive.autodojo.attacker import (
@@ -59,6 +59,21 @@ def _ngrams(text: str, n: int) -> set[tuple[str, ...]]:
     return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
+def _ref(t: dict[str, Any]) -> dict[str, Any]:
+    return {"pair": t["pair"], "trial": t["trial"]}
+
+
+def _note_body(note: dict[str, Any]) -> str:
+    """A distilled note's body: the do/avoid/because parts of a contrastive note, or a plain `body`."""
+    parts = [
+        (label, str(note.get(key) or "").strip())
+        for label, key in (("DO", "do"), ("AVOID", "avoid"), ("BECAUSE", "because"))
+    ]
+    if any(text for _, text in parts):
+        return "\n".join(f"{label}: {text}" for label, text in parts if text)
+    return str(note.get("body", ""))
+
+
 class SkillAgentSettings(AutoDojoSettings):
     """`AutoDojoSettings` plus the agent loop's knobs. Pinned in config.json and identical in C2 and C4."""
 
@@ -73,6 +88,15 @@ class SkillAgentSettings(AutoDojoSettings):
     """Distillation (`run_condition --distill-every K`, user request 2026-11-23): every K finished pairs, one extra
     attacker call reads those pairs' attempts, wins and failures, and writes general pattern notes into the library.
     0 = off (the agent only writes notes itself during a trial, as in PR #49)."""
+    distill_mode: Literal["contrast", "plain"] = "contrast"
+    """How a distillation call learns (user request 2026-11-24, default `contrast`). `contrast`: the attempts are
+    first grouped into matched win/fail pairs -- mainly a failed and a winning evolution on the SAME item, then a
+    win and a fail that used the same strategy on different items -- and the attacker explains, for each match, what
+    changed in the text, where the agent's reasoning diverged, and a rule "do X, avoid Y, because Z", then merges
+    those into at most `distill_max_notes` do/avoid notes. With no matched pair yet it falls back to `plain`, which
+    is the PR #53 distillation over the raw list of attempts."""
+    distill_max_contrasts: int = 6
+    """Most matched win/fail pairs shown to one contrastive distillation call (same-item matches first)."""
     distill_max_attempts: int = 40
     """Most recent attempts shown to one distillation call."""
     distill_max_notes: int = 3
@@ -139,6 +163,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 "security": feedback.security,
                 "utility": feedback.utility,
                 "progress": feedback.progress,
+                "strategy": entry.get("strategy"),
                 "response": _clip(feedback.victim_trace or feedback.final_answer, n),
                 "literals": goal_literals(self.goal(pair)),
             }
@@ -168,6 +193,67 @@ class SkillAgentAttacker(AutoDojoAttacker):
             )
         return "\n\n".join(lines)
 
+    def reliable_win(self, attempt: dict[str, Any]) -> bool:
+        """Whether a win may anchor a contrast. Always True for now: this is the hook for a replication check
+        (re-run a win a few times and keep only wins that hold up), which was discussed but not approved."""
+        return bool(attempt["security"])
+
+    def contrast_pairs(self, attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Matched win/fail pairs among `attempts`, most informative first, at most `distill_max_contrasts`.
+
+        1. Same item (`kind='same_item'`): each win is matched with the closest failed trial of the same pair,
+           preferring the one just before it (the evolution that turned a failure into a win).
+        2. Same strategy (`kind='same_strategy'`): each win is matched with a failure on a different pair that used
+           the same bank strategy, preferring the most recent failure.
+        A failure anchors at most one match of each kind, and each win at most one match of each kind."""
+        cap = self.settings.distill_max_contrasts
+        wins = [t for t in attempts if self.reliable_win(t)]
+        fails = [t for t in attempts if not t["security"]]
+        out: list[dict[str, Any]] = []
+        used: set[int] = set()
+        for win in wins:
+            same = [f for f in fails if f["pair"] == win["pair"] and id(f) not in used]
+            if not same:
+                continue
+            # closest trial; on a tie the earlier failure (the one the win evolved from)
+            fail = min(same, key=lambda f: (abs(f["trial"] - win["trial"]), f["trial"] > win["trial"]))
+            used.add(id(fail))
+            out.append({"kind": "same_item", "win": win, "fail": fail})
+        used = set()
+        for win in wins:
+            if not win.get("strategy"):
+                continue
+            other = [
+                f
+                for f in fails
+                if f["pair"] != win["pair"] and f.get("strategy") == win["strategy"] and id(f) not in used
+            ]
+            if not other:
+                continue
+            fail = other[-1]
+            used.add(id(fail))
+            out.append({"kind": "same_strategy", "win": win, "fail": fail})
+        return out[:cap]
+
+    def _contrasts_block(self, contrasts: list[dict[str, Any]]) -> str:
+        n = self.settings.distill_text_chars
+
+        def side(label: str, t: dict[str, Any]) -> str:
+            score = f", progress {t['progress']}/4" if t.get("progress") is not None else ""
+            return (
+                f"{label} (item {t['suite']} #{t['pair'].split('/', 1)[-1]}, trial {t['trial']}{score}):\n"
+                f"TEXT: {_clip(t['text'], n)}\nAGENT: {t['response'] or '(nothing recorded)'}"
+            )
+
+        blocks = []
+        for i, c in enumerate(contrasts, 1):
+            if c["kind"] == "same_item":
+                head = f"[{i}] SAME ITEM: a failed and a winning attempt on the same item."
+            else:
+                head = f"[{i}] SAME STRATEGY ({c['win']['strategy']}): it won on one item and failed on another."
+            blocks.append(f"{head}\n{side('FAILED', c['fail'])}\n{side('SUCCEEDED', c['win'])}")
+        return "\n\n".join(blocks)
+
     def _notes_block(self) -> str:
         if not self.store.skills:
             return "(none yet)"
@@ -195,17 +281,62 @@ class SkillAgentAttacker(AutoDojoAttacker):
         s = self.settings
         members = set(pairs)
         attempts = [t for t in self.trajectories if t["pair"] in members][-s.distill_max_attempts :]
-        event: dict[str, Any] = {"pairs": list(pairs), "attempts": len(attempts), "written": [], "rejected": []}
+        contrasts = self.contrast_pairs(attempts) if s.distill_mode == "contrast" else []
+        mode = "contrast" if contrasts else "plain"
+        event: dict[str, Any] = {
+            "pairs": list(pairs),
+            "attempts": len(attempts),
+            "mode": mode,
+            "written": [],
+            "rejected": [],
+        }
+        if contrasts:
+            event["contrasts"] = [
+                {
+                    "kind": c["kind"],
+                    "win": _ref(c["win"]),
+                    "fail": _ref(c["fail"]),
+                    "strategy": c["win"].get("strategy"),
+                }
+                for c in contrasts
+            ]
         try:
-            reply, usage = run_sync(lambda: self._distill_call(attempts))
+            if contrasts:
+                messages = [
+                    {"role": "system", "content": prompts.CONTRAST_DISTILL_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": prompts.contrast_distill_task(
+                            self._notes_block(), self._contrasts_block(contrasts), s.distill_max_notes
+                        ),
+                    },
+                ]
+            else:
+                messages = [
+                    {"role": "system", "content": prompts.DISTILL_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": prompts.distill_task(
+                            self._notes_block(), self._attempts_block(attempts), s.distill_max_notes
+                        ),
+                    },
+                ]
+            reply, usage = run_sync(lambda: self._distill_call(messages))
             event["usage"] = usage
             parsed = extract_json_object(reply) or {}
+            if contrasts and isinstance(parsed.get("contrasts"), list):
+                event["analyses"] = [
+                    {k: _clip(str(a.get(k, "")), 300) for k in ("id", "changed", "diverged", "rule")}
+                    for a in parsed["contrasts"][: len(contrasts)]
+                    if isinstance(a, dict)
+                ]
             raw_notes = parsed.get("skills")
             notes: list[Any] = raw_notes if isinstance(raw_notes, list) else []
             for note in notes[: s.distill_max_notes]:
                 if not isinstance(note, dict):
                     continue
-                name, desc, body = (str(note.get(k, "")) for k in ("name", "description", "body"))
+                name, desc = str(note.get("name", "")), str(note.get("description", ""))
+                body = _note_body(note)
                 reason = self._too_specific(f"{name}\n{desc}\n{body}", attempts)
                 if reason is not None:
                     event["rejected"].append({"name": name, "reason": reason})
@@ -221,20 +352,12 @@ class SkillAgentAttacker(AutoDojoAttacker):
             event["error"] = f"{type(exc).__name__}: {exc}"
         self.distillations.append(event)
 
-    async def _distill_call(self, attempts: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    async def _distill_call(self, messages: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
         s = self.settings
         llm = self.llm_factory()
         try:
             result = await llm.complete(
-                [
-                    {"role": "system", "content": prompts.DISTILL_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": prompts.distill_task(
-                            self._notes_block(), self._attempts_block(attempts), s.distill_max_notes
-                        ),
-                    },
-                ],
+                messages,
                 max_tokens=max(s.max_tokens, 1200),
                 temperature=s.temperature,
                 top_p=s.top_p,
@@ -427,7 +550,14 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 "system": sha256_text(prompts.SKILL_AGENT_SYSTEM_PROMPT),
                 "memory_header": sha256_text(prompts.MEMORY_HEADER),
                 **(
-                    {"distill_system": sha256_text(prompts.DISTILL_SYSTEM_PROMPT)}
+                    {
+                        "distill_system": sha256_text(prompts.DISTILL_SYSTEM_PROMPT),
+                        **(
+                            {"contrast_distill_system": sha256_text(prompts.CONTRAST_DISTILL_SYSTEM_PROMPT)}
+                            if self.settings.distill_mode == "contrast"
+                            else {}
+                        ),
+                    }
                     if self.settings.distill_every > 0
                     else {}
                 ),

@@ -178,3 +178,16 @@ def test_cli_wires_distillation_for_the_skill_agent_only(monkeypatch, tmp_path: 
     assert wiring["run_dir"].parent.name == "c0e_no-s0_evolving-attack-skill-agent-distill5-limit2"
     result, _ = captured_cli(monkeypatch, base)
     assert result.exit_code != 0 and "--attacker skill-agent" in result.output
+
+
+def test_cli_distill_mode_defaults_to_contrast(monkeypatch, tmp_path: Path):
+    base = ["--condition", "C0E", "--results-root", str(tmp_path), "--limit", "2", "--attacker", "skill-agent"]
+    result, wiring = captured_cli(monkeypatch, [*base, "--distill-every", "5"])
+    assert result.exit_code == 0, result.output
+    assert wiring["attacker"].settings.distill_mode == "contrast"
+    result, wiring = captured_cli(monkeypatch, [*base, "--distill-every", "5", "--distill-mode", "plain"])
+    assert result.exit_code == 0, result.output
+    assert wiring["attacker"].settings.distill_mode == "plain"
+    assert wiring["run_dir"].parent.name == "c0e_no-s0_evolving-attack-skill-agent-distill5-plain-limit2"
+    result, _ = captured_cli(monkeypatch, [*base, "--distill-mode", "plain"])
+    assert result.exit_code != 0 and "--distill-every" in result.output

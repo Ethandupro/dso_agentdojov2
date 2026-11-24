@@ -27,7 +27,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import click
 import openai
@@ -224,6 +224,7 @@ def skill_agent_settings(
     strategy_bank: bool = True,
     temperature: float | None = None,
     distill_every: int = 0,
+    distill_mode: Literal["contrast", "plain"] = "contrast",
 ) -> SkillAgentSettings:
     """Item 7 (D2): the evolving attacker as a tool-using agent with its own skill files. Only the skills design
     (`target='agent'`), so it is never paired with --external-checker."""
@@ -233,6 +234,7 @@ def skill_agent_settings(
         memory=memory,
         strategy_bank=strategy_bank,
         distill_every=distill_every,
+        distill_mode=distill_mode,
     )
     if temperature is not None:
         settings.temperature = temperature
@@ -385,6 +387,16 @@ def skill_agent_settings(
     "later trials. Notes carrying a pair's values or copying an attempt are rejected. 0 = off. Gets a "
     "'-distill<K>' results directory.",
 )
+@click.option(
+    "--distill-mode",
+    type=click.Choice(["contrast", "plain"]),
+    default="contrast",
+    show_default=True,
+    help="With --distill-every: 'contrast' (default) matches a failed and a winning attempt (same item first, then "
+    "same strategy on different items) and asks for do/avoid rules from the difference, falling back to 'plain' "
+    "until a matched pair exists; 'plain' is the PR #53 distillation over the raw attempts and gets a "
+    "'-distill<K>-plain' results directory.",
+)
 def main(
     condition: str,
     seed: int,
@@ -419,6 +431,7 @@ def main(
     victim_temperature: float | None,
     attacker_temperature: float | None,
     distill_every: int,
+    distill_mode: str,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -497,6 +510,8 @@ def main(
         raise click.ClickException("--attacker-temperature applies to the autodojo/skill-agent evolving attacker only")
     if distill_every and not (evolving_attack and attacker_loop == "skill-agent"):
         raise click.ClickException("--distill-every needs an evolving-attack condition with --attacker skill-agent")
+    if distill_mode != "contrast" and not distill_every:
+        raise click.ClickException("--distill-mode only applies together with --distill-every K")
     if stop_on_success and not evolving_attack:
         raise click.ClickException("--stop-on-success applies to evolving-attack conditions only (C0E, C2, C4)")
     if evolving_attack:
@@ -515,6 +530,7 @@ def main(
                     strategy_bank,
                     attacker_temperature,
                     distill_every,
+                    "plain" if distill_mode == "plain" else "contrast",
                 ),
             )
         else:
@@ -550,6 +566,7 @@ def main(
         victim_temperature=victim_temperature,
         attacker_temperature=attacker_temperature,
         distill_every=distill_every,
+        distill_plain=bool(distill_every) and distill_mode == "plain",
     )
     config = RunConfig(
         condition=cond.name,
