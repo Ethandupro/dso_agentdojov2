@@ -25,6 +25,13 @@ MAGISTRAL_TEMPERATURE = 0.7
 MAGISTRAL_TOP_P = 0.95
 """Magistral's recommended sampling (model card). Other victims keep temperature 0 (the Qwen runs); greedy decoding
 can make a reasoning model loop."""
+VICTIM_TEMPERATURE = 0.1
+"""The runner's default victim temperature for a Magistral victim (user decision 2026-11-25), instead of the model
+card's 0.7: a low temperature so the same injection gets nearly the same answer, but not greedy (which can loop).
+`run_condition --victim-temperature` still overrides it."""
+ATTACKER_TEMPERATURE = 0.6
+"""The evolving attacker's default sampling temperature (user decision 2026-11-25; AutoDojo used 1.0).
+`run_condition --attacker-temperature` still overrides it."""
 
 
 def is_magistral(model_id: str) -> bool:

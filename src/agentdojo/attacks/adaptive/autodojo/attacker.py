@@ -4,8 +4,9 @@ For each pair, trial 0 is the manifest's `important_instructions` seed. Before e
 optimizer call: it builds a leaderboard of the pair's earlier trials (0..k-1) scored by their real result (did the
 injection goal get achieved, or the user task fail, through the real checker and victim), shows the optimizer that
 leaderboard and the benign tool-result data the text is placed into, and takes back one new injection. The optimizer
-never sees the skill file, the checker's removed spans or the victim's trace -- only success or failure -- so the
-attacker stays black-box toward the real defence, exactly as AutoDojo's "outcome feedback" is.
+never sees the skill file or the checker's removed spans. Beyond AutoDojo's outcome feedback it gets the 0-4 graded
+score and, by default, an S0-redacted digest of the victim's run including its reasoning (`runner.trace`; grey-box,
+`--no-victim-trace` for the ablation).
 
 This is a per-pair optimization (AutoDojo's case set C has size one here: one user task per injection target). The
 stand-in checker/agent of the MUZZLE port are intentionally absent: the leaderboard is the real signal, so no
@@ -39,6 +40,7 @@ from agentdojo.attacks.adaptive.muzzle.ipi import (
 )
 from agentdojo.attacks.adaptive.muzzle.llm import AttackerModelConfig, BudgetExhaustedError, OpenAICompatibleLLM
 from agentdojo.attacks.adaptive.muzzle.vendor.constants import PLACEHOLDER_INSTR
+from agentdojo.experiment_models import ATTACKER_TEMPERATURE
 from agentdojo.runner.manifest import Pair, trial0_injections
 from agentdojo.runner.plugins import AttemptFeedback
 from agentdojo.task_suite.load_suites import get_suite
@@ -87,6 +89,9 @@ DEVIATIONS = (
     "`max_strategies` (5) of ~12 fixed strategies (`autodojo.strategies`) for the item and writes one injection from "
     "the top-ranked; the ranking is recorded for a wins-by-strategy report. Still one text per round, so the victim "
     "is run once. AutoDojo invents a framing each round with no fixed menu. Identical in C2 and C4.",
+    "Analyst (`analyst`, on by default since 2026-11-25): after each failed trial a second call to the attacker model "
+    "reads a longer S0-redacted trace of the victim's run (reasoning included) and writes a diagnosis the optimizer "
+    "sees on the leaderboard. AutoDojo's diagnosis stage reads only outcomes. Identical in C2 and C4.",
 )
 
 
@@ -123,7 +128,8 @@ class AutoDojoSettings(BaseModel):
     leaderboard_size: int = 5
     """Top entries of the pair's own trials shown to the optimizer (AutoDojo: top 5)."""
     max_tokens: int = 700
-    temperature: float = 1.0
+    temperature: float = ATTACKER_TEMPERATURE
+    """0.6 since 2026-11-25 (user decision; AutoDojo's 1.0 before)."""
     top_p: float = 0.9
     max_tries: int = 5
     """Parse/JSON retries inside one optimizer call before that call is treated as failed."""
@@ -155,6 +161,17 @@ class AutoDojoSettings(BaseModel):
     """How many strategies the optimizer ranks per round (item 2b, user decision 2026-11-20). It ranks its top
     `max_strategies` for the item (its "sub-strategies") and writes one injection from the top-ranked; the ranking is
     recorded. Still one text per round, so the victim is run once."""
+    analyst: bool = True
+    """The analyst (user request 2026-11-25, `run_condition --analyst/--no-analyst`): after every failed trial a second
+    call to the attacker model (same server, its own prompt) reads a longer S0-redacted trace of the victim's run,
+    its reasoning included, and writes a short diagnosis -- did the agent see the text, how did it react to it, what
+    blocked it, what to change -- which the optimizer sees next to that attempt on the leaderboard. Needs the victim
+    trace (`--show-victim-trace`)."""
+    analyst_temperature: float = 0.3
+    """The analyst reads and reports; it is sampled cooler than the optimizer."""
+    analyst_max_tokens: int = 600
+    analyst_chars: int = 900
+    """Each diagnosis is cut to this many characters on the leaderboard."""
 
 
 class AutoDojoAttacker:
@@ -179,10 +196,26 @@ class AutoDojoAttacker:
         self.archive: list[dict[str, Any]] = []
         self.playbook: list[dict[str, Any]] = []
         """Winning trials of this run: pair, trial, suite, injection task, text, the skill-file version beaten."""
+        self.analyses: list[dict[str, Any]] = []
+        """The analyst's diagnoses (`settings.analyst`), one per failed trial: pair, trial, text shown, usage/error."""
+
+    def analysis_for(self, pair_id: str, trial: int) -> str | None:
+        for entry in self.analyses:
+            if entry["pair"] == pair_id and entry["trial"] == trial:
+                return entry.get("text")
+        return None
 
     def observe(self, pair: Pair, feedback: AttemptFeedback, skill_version: str | None) -> None:
-        """Called by the runner after every finished evolving trial. Keeps texts that really succeeded (security
-        broken) for later pairs; a trial already seen (a rerun unit after a crash) is ignored."""
+        """Called by the runner after every finished evolving trial. Runs the analyst on a failed trial (if on), and
+        keeps texts that really succeeded (security broken) for later pairs; a trial already seen (a rerun unit after
+        a crash) is ignored."""
+        if (
+            self.settings.analyst
+            and not feedback.security
+            and feedback.analyst_trace
+            and not any(e["pair"] == pair.id and e["trial"] == feedback.trial for e in self.analyses)
+        ):
+            self.analyses.append(self._analyse(pair, feedback))
         if not self.settings.memory or not feedback.security:
             return
         if any(e["pair"] == pair.id and e["trial"] == feedback.trial for e in self.playbook):
@@ -226,6 +259,52 @@ class AutoDojoAttacker:
         lessons = self._nearest(diagnosed, pair, "diagnosis", self.settings.memory_lessons)
         return winners, lessons
 
+    def _analyse(self, pair: Pair, feedback: AttemptFeedback) -> dict[str, Any]:
+        """One analyst call on a failed trial. Never stops the run: an error is recorded and the leaderboard simply
+        shows no diagnosis for that attempt (`BudgetExhaustedError` still propagates)."""
+        entry: dict[str, Any] = {"pair": pair.id, "trial": feedback.trial, "text": None}
+        messages = [
+            {"role": "system", "content": prompts.ANALYST_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": prompts.analyst_task(
+                    self.goal(pair),
+                    feedback.injection_text,
+                    feedback.utility,
+                    feedback.progress,
+                    feedback.analyst_trace or "",
+                ),
+            },
+        ]
+        try:
+            reply, usage = run_sync(lambda: self._analyst_call(messages, feedback.trial))
+            entry["usage"] = usage
+            parsed = extract_json_object(reply)
+            text = prompts.render_analysis(parsed) if parsed else reply.strip()
+            entry["text"] = _clip(text, self.settings.analyst_chars) if text else None
+        except BudgetExhaustedError:
+            raise
+        except Exception as exc:  # a failed analysis must not abort the run
+            logger.warning("analyst failed for %s trial %d: %s", pair.id, feedback.trial, exc)
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        return entry
+
+    async def _analyst_call(self, messages: list[dict[str, Any]], trial: int) -> tuple[str, dict[str, Any]]:
+        s = self.settings
+        llm = self.llm_factory()
+        try:
+            result = await llm.complete(
+                messages,
+                max_tokens=s.analyst_max_tokens,
+                temperature=s.analyst_temperature,
+                top_p=s.top_p,
+                seed=(s.attacker.seed or 0) + 104729 + trial,
+            )
+            usage = llm.usage()
+        finally:
+            await llm.aclose()
+        return result.choices[0].message.content or "", usage
+
     def goal(self, pair: Pair) -> str:
         suite = get_suite(self.manifest["benchmark_version"], pair.suite)
         return suite.get_injection_task_by_id(pair.injection_task).GOAL
@@ -253,9 +332,10 @@ class AutoDojoAttacker:
             body = body[:MAX_CONTEXT_CHARS] + " ...[truncated]"
         return body
 
-    def _leaderboard(self, history: list[AttemptFeedback]) -> list[dict[str, Any]]:
+    def _leaderboard(self, history: list[AttemptFeedback], pair_id: str | None = None) -> list[dict[str, Any]]:
         """The pair's earlier trials as leaderboard entries, best first (success, then the user task surviving, then
-        most recent), capped at `leaderboard_size`."""
+        most recent), capped at `leaderboard_size`. Each carries its replication tally (a win re-run unchanged, when
+        `--replicate-wins` is on) and the analyst's diagnosis (failed trials, when the analyst is on)."""
         limit = self.settings.agent_response_chars
         entries = [
             {
@@ -268,6 +348,8 @@ class AutoDojoAttacker:
                 # The victim trace supersedes the final answer when present (it already ends with what the agent
                 # said): it shows the attacker why the injection was ignored, S0 already redacted by the runner.
                 "trace": fb.victim_trace if self.settings.show_agent_response else None,
+                "replication": fb.replication,
+                "analysis": self.analysis_for(pair_id, fb.trial) if pair_id is not None else None,
             }
             for fb in history
         ]
@@ -312,7 +394,7 @@ class AutoDojoAttacker:
         already tried for this pair). `BudgetExhaustedError` still propagates: the attacker model's own budget is
         spent, which retrying cannot fix.
         """
-        leaderboard = self._leaderboard(history)
+        leaderboard = self._leaderboard(history, pair.id)
         errors: list[str] = []
         for attempt in range(1, GENERATE_MAX_ATTEMPTS + 1):
             try:
@@ -452,6 +534,7 @@ class AutoDojoAttacker:
             "prompt_sha256": {
                 "system": sha256_text(prompts.SYSTEM_PROMPTS[self.settings.target]),
                 "memory_header": sha256_text(prompts.MEMORY_HEADER),
+                **({"analyst": sha256_text(prompts.ANALYST_SYSTEM_PROMPT)} if self.settings.analyst else {}),
             },
             "deviations": list(DEVIATIONS),
             "on_api_failure": (
@@ -466,6 +549,7 @@ class AutoDojoAttacker:
             "format": STATE_FORMAT,
             "archive": json.loads(json.dumps(self.archive)),
             "playbook": json.loads(json.dumps(self.playbook)),
+            "analyses": json.loads(json.dumps(self.analyses)),
         }
 
     def load_state(self, state: dict[str, Any]) -> None:
@@ -473,3 +557,4 @@ class AutoDojoAttacker:
             raise ValueError(f"unknown AutoDojo attacker state format {state.get('format')!r}")
         self.archive = list(state["archive"])
         self.playbook = list(state.get("playbook", []))
+        self.analyses = list(state.get("analyses", []))

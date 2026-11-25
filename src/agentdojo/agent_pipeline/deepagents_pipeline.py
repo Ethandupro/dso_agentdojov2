@@ -37,6 +37,7 @@ from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddlewar
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatResult
 from langchain_core.tools import BaseTool, StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -256,7 +257,42 @@ def thinking_prompt_chunks(prompt: str) -> list[dict[str, Any]]:
     return chunks
 
 
-class ThinkingPromptChatOpenAI(ChatOpenAI):
+REASONING_KWARG = "reasoning_content"
+"""Key under which `ReasoningChatOpenAI` keeps a reply's reasoning in `AIMessage.additional_kwargs`."""
+
+
+def _reasoning_of(choice_message: Any) -> str | None:
+    """The reasoning text a vLLM/SGLang reasoning parser returned next to the reply (`reasoning_content`, or
+    `reasoning` in newer vLLM builds), or None."""
+    if not isinstance(choice_message, dict):
+        return None
+    for key in ("reasoning_content", "reasoning"):
+        value = choice_message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+class ReasoningChatOpenAI(ChatOpenAI):
+    """`ChatOpenAI` that keeps a local server's reasoning text.
+
+    With a reasoning parser (e.g. vLLM's `mistral` parser for Magistral), the server returns the model's
+    `[THINK]...[/THINK]` text in a separate `reasoning_content` field. `ChatOpenAI` ignores non-OpenAI fields, so the
+    reasoning used to be lost. This copies it into `additional_kwargs[REASONING_KWARG]`, where the transcript records
+    it for the victim trace. It is never sent back to the model: `ChatOpenAI` serialises only the known keys of
+    `additional_kwargs`, so requests are unchanged (the model card allows dropping earlier turns' reasoning)."""
+
+    def _create_chat_result(self, response: Any, generation_info: dict | None = None) -> ChatResult:
+        result = super()._create_chat_result(response, generation_info)
+        response_dict = response if isinstance(response, dict) else response.model_dump(warnings=False)
+        for generation, choice in zip(result.generations, response_dict.get("choices") or []):
+            reasoning = _reasoning_of((choice or {}).get("message"))
+            if reasoning is not None and isinstance(generation.message, AIMessage):
+                generation.message.additional_kwargs[REASONING_KWARG] = reasoning
+        return result
+
+
+class ThinkingPromptChatOpenAI(ReasoningChatOpenAI):
     """A local chat model that puts a reasoning model's own system prompt (as content chunks) ahead of the agent's
     system prompt in every request. Requests without a system message get it as a new first message."""
 
@@ -293,7 +329,8 @@ def make_local_chat_model(
     """Builds a LangChain chat model for a self-hosted OpenAI-compatible server (vLLM, SGLang).
 
     Reads the API key from `LOCAL_LLM_API_KEY`; servers started without a key accept any value. With
-    `thinking_prompt` (a reasoning model's own system prompt), every request carries it ahead of the agent's.
+    `thinking_prompt` (a reasoning model's own system prompt), every request carries it ahead of the agent's. The
+    model keeps the server's reasoning text (`ReasoningChatOpenAI`), so the victim trace can show it.
     """
     api_key = os.environ.get("LOCAL_LLM_API_KEY") or "EMPTY"
     if thinking_prompt is not None:
@@ -305,7 +342,7 @@ def make_local_chat_model(
             thinking_prompt=thinking_prompt,
             **kwargs,
         )
-    return ChatOpenAI(model=model, base_url=base_url, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
+    return ReasoningChatOpenAI(model=model, base_url=base_url, api_key=api_key, temperature=temperature, **kwargs)  # type: ignore[arg-type]
 
 
 @dataclass
@@ -501,6 +538,18 @@ def _message_text(message: BaseMessage) -> str:
 
 def _to_function_call(tool_call: dict) -> FunctionCall:
     return FunctionCall(function=tool_call["name"], args=dict(tool_call.get("args") or {}), id=tool_call.get("id"))
+
+
+def _reasoning_by_message(events: list[_TranscriptEvent], offset: int) -> list[dict[str, Any]]:
+    """`{"message", "agent", "text"}` for each event whose model reply carried reasoning; `message` is the event's index
+    in the logged messages (`offset` + its position)."""
+    out: list[dict[str, Any]] = []
+    for i, event in enumerate(events):
+        if isinstance(event.message, AIMessage):
+            text = event.message.additional_kwargs.get(REASONING_KWARG)
+            if isinstance(text, str) and text.strip():
+                out.append({"message": offset + i, "agent": event.agent, "text": text})
+    return out
 
 
 def _event_to_agentdojo(event: _TranscriptEvent) -> ChatMessage:
@@ -699,6 +748,7 @@ class DeepAgentsPipeline(BasePipelineElement):
                 error += f" (caused by {type(e.__cause__).__name__}: {e.__cause__})"
 
         new_messages: list[ChatMessage] = [*prefix, *(_event_to_agentdojo(event) for event in transcript.events)]
+        reasoning = _reasoning_by_message(transcript.events, offset=len(prefix))
 
         hit_limit = False
         if final_state is not None:
@@ -707,7 +757,9 @@ class DeepAgentsPipeline(BasePipelineElement):
             final_message = final_state["messages"][-1]
             recorded_ids = {event.message.id for event in transcript.events}
             if isinstance(final_message, AIMessage) and final_message.id not in recorded_ids:
-                new_messages.append(_event_to_agentdojo(_TranscriptEvent(agent="main", message=final_message)))
+                final_event = _TranscriptEvent(agent="main", message=final_message)
+                new_messages.append(_event_to_agentdojo(final_event))
+                reasoning += _reasoning_by_message([final_event], offset=len(new_messages) - 1)
                 hit_limit = True
         else:
             new_messages.append(
@@ -749,6 +801,10 @@ class DeepAgentsPipeline(BasePipelineElement):
             "usage": transcript.usage,
             "served_models": sorted(transcript.served_models),
             "config": self.config.model_dump() if self.config is not None else None,
+            # The model's reasoning per assistant message (index into the logged messages), when the server returns
+            # it separately (`ReasoningChatOpenAI`). Kept out of the message content so AgentDojo's scoring, which
+            # reads the content as the model's output, is unchanged; the runner's victim trace reads it from here.
+            "reasoning": reasoning,
         }
 
         # The benchmark runs this element on its own, not inside an `AgentPipeline`, and drops `extra_args`. So it

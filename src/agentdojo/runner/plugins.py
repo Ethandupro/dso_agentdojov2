@@ -30,6 +30,12 @@ class AttemptFeedback:
     victim_trace: str | None = None
     """An S0-redacted digest of the victim's run (`runner.trace`), or None when `--no-victim-trace`. Shows the
     attacker why the injection was ignored or refused (grey-box); the evolving S0 is redacted so it never leaks."""
+    replication: dict[str, int] | None = None
+    """For a won trial with `--replicate-wins`: `{"runs": N, "successes": k}` of the same text re-run unchanged. Shows
+    whether the win holds up or was the victim's sampling luck. Never part of the trial counts."""
+    analyst_trace: str | None = None
+    """A longer S0-redacted digest of the same run, for the attacker's analyst (`--analyst`). Only on the feedback
+    passed to `observe` right after the trial; never stored in trials.jsonl."""
 
     @property
     def attacker_success(self) -> bool:
