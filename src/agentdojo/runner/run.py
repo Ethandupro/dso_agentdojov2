@@ -446,7 +446,17 @@ class Runner:
         deepagents = logger.context.get("deepagents") or {}
         attacked = unit.pair is not None
         actions = agent_actions(list(messages))
-        victim_trace = victim_trace_digest(messages, markdown) if attacked and self.show_victim_trace else None
+        # The victim's reasoning, by message index, as the harness recorded it (absent for the native loop).
+        reasoning = {
+            r["message"]: r["text"]
+            for r in deepagents.get("reasoning") or []
+            if isinstance(r, dict) and isinstance(r.get("message"), int) and isinstance(r.get("text"), str)
+        }
+        victim_trace = (
+            victim_trace_digest(messages, markdown, reasoning=reasoning)
+            if attacked and self.show_victim_trace
+            else None
+        )
         progress = (
             progress_score(
                 injection_task.GOAL,
