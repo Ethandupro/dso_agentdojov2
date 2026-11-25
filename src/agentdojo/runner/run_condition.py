@@ -55,7 +55,7 @@ from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
 from agentdojo.runner.plugins import Attacker, FixedSkillFile, NoChecker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import write_report
-from agentdojo.runner.run import ConfigMismatchError, Runner, quick_summary, run_dir_for
+from agentdojo.runner.run import DEFAULT_REPLICATE_WINS, ConfigMismatchError, Runner, quick_summary, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy
 from agentdojo.skillfile.judge import (
     DEFAULT_JUDGE_MAX_TOKENS,
@@ -155,7 +155,8 @@ def victim_deepagents_config(
     temperature: float | None = None,
 ) -> DeepAgentsConfig:
     """The victim's settings. A Magistral victim (default since 2026-11-20) thinks: its model card's reasoning system
-    prompt goes ahead of the agent's, with the card's sampling. Other (Qwen) victims run non-thinking at temperature
+    prompt goes ahead of the agent's, with the card's top_p and temperature 0.1 (`VICTIM_TEMPERATURE`, user decision
+    2026-11-25; the card says 0.7). Other (Qwen) victims run non-thinking at temperature
     0, as before. `temperature` (`--victim-temperature`) overrides the default, e.g. a low value so the same
     injection gets (nearly) the same answer every time."""
     if experiment_models.is_magistral(model_id):
@@ -163,7 +164,7 @@ def victim_deepagents_config(
             model_id=model_id,
             base_url=base_url,
             enable_thinking=None,
-            temperature=experiment_models.MAGISTRAL_TEMPERATURE if temperature is None else temperature,
+            temperature=experiment_models.VICTIM_TEMPERATURE if temperature is None else temperature,
             top_p=experiment_models.MAGISTRAL_TOP_P,
             reasoning_system_prompt=(fetch or fetch_hf_text)(model_id, experiment_models.REASONING_PROMPT_FILE),
         )
@@ -204,12 +205,14 @@ def autodojo_settings(
     memory: bool = True,
     strategy_bank: bool = True,
     temperature: float | None = None,
+    analyst: bool = True,
 ) -> AutoDojoSettings:
     settings = AutoDojoSettings(
         attacker=attacker_model_config(model_id, base_url, seed),
         target="filter" if external_checker else "agent",
         memory=memory,
         strategy_bank=strategy_bank,
+        analyst=analyst,
     )
     if temperature is not None:
         settings.temperature = temperature
@@ -224,7 +227,9 @@ def skill_agent_settings(
     strategy_bank: bool = True,
     temperature: float | None = None,
     distill_every: int = 0,
-    distill_mode: Literal["contrast", "plain"] = "contrast",
+    distill_mode: Literal["contrast", "plain", "trajectory"] = "contrast",
+    skill_choice: Literal["ranked", "free"] = "ranked",
+    analyst: bool = True,
 ) -> SkillAgentSettings:
     """Item 7 (D2): the evolving attacker as a tool-using agent with its own skill files. Only the skills design
     (`target='agent'`), so it is never paired with --external-checker."""
@@ -235,6 +240,8 @@ def skill_agent_settings(
         strategy_bank=strategy_bank,
         distill_every=distill_every,
         distill_mode=distill_mode,
+        skill_choice=skill_choice,
+        analyst=analyst,
     )
     if temperature is not None:
         settings.temperature = temperature
@@ -368,14 +375,15 @@ def skill_agent_settings(
     "--victim-temperature",
     type=float,
     default=None,
-    help="Victim sampling temperature (default: Magistral's model-card 0.7). Gets a '-vtemp<T>' results directory.",
+    help=f"Victim sampling temperature (default for Magistral: {experiment_models.VICTIM_TEMPERATURE}, user decision "
+    "2026-11-25; the model card says 0.7). Passing it gets a '-vtemp<T>' results directory.",
 )
 @click.option(
     "--attacker-temperature",
     type=float,
     default=None,
-    help="C2/C4/C0E: the evolving attacker's sampling temperature (default 1.0, as AutoDojo). Gets an '-atemp<T>' "
-    "results directory.",
+    help=f"C2/C4/C0E: the evolving attacker's sampling temperature (default {experiment_models.ATTACKER_TEMPERATURE}, "
+    "user decision 2026-11-25; AutoDojo used 1.0). Passing it gets an '-atemp<T>' results directory.",
 )
 @click.option(
     "--distill-every",
@@ -389,13 +397,42 @@ def skill_agent_settings(
 )
 @click.option(
     "--distill-mode",
-    type=click.Choice(["contrast", "plain"]),
+    type=click.Choice(["contrast", "plain", "trajectory"]),
     default="contrast",
     show_default=True,
     help="With --distill-every: 'contrast' (default) matches a failed and a winning attempt (same item first, then "
     "same strategy on different items) and asks for do/avoid rules from the difference, falling back to 'plain' "
     "until a matched pair exists; 'plain' is the PR #53 distillation over the raw attempts and gets a "
-    "'-distill<K>-plain' results directory.",
+    "'-distill<K>-plain' results directory; 'trajectory' shows the full trial-by-trial arc of each of the last K "
+    "pairs (wins and failures) and asks how the attack changed across trials and which arcs worked (use with "
+    "--distill-every 3); it gets a '-distill<K>-traj' results directory.",
+)
+@click.option(
+    "--skill-choice",
+    type=click.Choice(["ranked", "free"]),
+    default="ranked",
+    show_default=True,
+    help="With --attacker skill-agent: how the attacker sees its notes. 'ranked' (PR #53): with --distill-every, "
+    "UCB-ranked with each note's record, and notes that never help are pruned. 'free': DeepAgents-style, name and "
+    "description only, no ranking or pruning; the attacker picks at runtime. 'free' gets a '-free-skills' results "
+    "directory.",
+)
+@click.option(
+    "--replicate-wins",
+    type=click.IntRange(min=0),
+    default=None,
+    help="C2/C4/C0E: re-run each successful evolving injection this many more times, unchanged, to tell a strong "
+    "injection from victim sampling luck (default 4; 0 = off). Re-runs go to replications.jsonl and never count as "
+    "trials (ASR, ASR@n, pair ASR unchanged); the report adds per-win replication and a robust ASR. A value other "
+    "than 4 gets a '-rep<N>' results directory.",
+)
+@click.option(
+    "--analyst/--no-analyst",
+    default=True,
+    show_default=True,
+    help="C2/C4/C0E with --attacker autodojo or skill-agent: after each failed trial, a second call to the attacker "
+    "model reads the victim's trace (reasoning included, S0 redacted) and diagnoses why it failed; the optimizer "
+    "sees the diagnosis on its leaderboard. Needs the victim trace. --no-analyst gets a '-no-analyst' directory.",
 )
 def main(
     condition: str,
@@ -432,6 +469,9 @@ def main(
     attacker_temperature: float | None,
     distill_every: int,
     distill_mode: str,
+    skill_choice: str,
+    replicate_wins: int | None,
+    analyst: bool,
 ) -> None:
     if env_file is not None:
         load_dotenv(env_file, override=True)
@@ -514,6 +554,14 @@ def main(
         raise click.ClickException("--distill-mode only applies together with --distill-every K")
     if stop_on_success and not evolving_attack:
         raise click.ClickException("--stop-on-success applies to evolving-attack conditions only (C0E, C2, C4)")
+    if replicate_wins is not None and not evolving_attack:
+        raise click.ClickException("--replicate-wins applies to evolving-attack conditions only (C0E, C2, C4)")
+    if skill_choice != "ranked" and not (evolving_attack and attacker_loop == "skill-agent"):
+        raise click.ClickException("--skill-choice applies with --attacker skill-agent only")
+    use_analyst = analyst and evolving_attack and attacker_loop in AUTODOJO_LOOPS and show_victim_trace
+    if not analyst and not (evolving_attack and attacker_loop in AUTODOJO_LOOPS):
+        raise click.ClickException("--no-analyst applies to the autodojo/skill-agent evolving attacker only")
+    replicate = (DEFAULT_REPLICATE_WINS if replicate_wins is None else replicate_wins) if evolving_attack else 0
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -530,7 +578,13 @@ def main(
                     strategy_bank,
                     attacker_temperature,
                     distill_every,
-                    "plain" if distill_mode == "plain" else "contrast",
+                    "plain"
+                    if distill_mode == "plain"
+                    else "trajectory"
+                    if distill_mode == "trajectory"
+                    else "contrast",
+                    "free" if skill_choice == "free" else "ranked",
+                    use_analyst,
                 ),
             )
         else:
@@ -544,6 +598,7 @@ def main(
                     attacker_memory,
                     strategy_bank,
                     attacker_temperature,
+                    use_analyst,
                 ),
             )
     run_dir = run_dir_for(
@@ -567,6 +622,10 @@ def main(
         attacker_temperature=attacker_temperature,
         distill_every=distill_every,
         distill_plain=bool(distill_every) and distill_mode == "plain",
+        distill_trajectory=bool(distill_every) and distill_mode == "trajectory",
+        free_skills=skill_choice == "free",
+        no_analyst=evolving_attack and attacker_loop in AUTODOJO_LOOPS and show_victim_trace and not analyst,
+        replicate_wins=replicate if evolving_attack else None,
     )
     config = RunConfig(
         condition=cond.name,
@@ -613,6 +672,7 @@ def main(
         show_victim_trace=show_victim_trace if evolving_attack else None,
         victim_trace_thinking=True if evolving_attack and show_victim_trace else None,
         stop_on_success=stop_on_success or None,
+        replicate_wins=replicate if evolving_attack else None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),
         manifest_sha256=manifest_sha256(manifest),
@@ -703,6 +763,7 @@ def main(
         graded_score=graded_score,
         show_victim_trace=show_victim_trace,
         stop_on_success=stop_on_success,
+        replicate_wins=replicate,
     )
     try:
         records = runner.run()

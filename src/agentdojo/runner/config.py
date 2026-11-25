@@ -54,6 +54,9 @@ class RunConfig(BaseModel):
     stop_on_success: bool | None = None
     """`--stop-on-success`: evolving pairs stop at their first success (trial 0 included). None when off, so earlier
     runs still resume."""
+    replicate_wins: int | None = None
+    """Evolving-attacker runs: how many times each successful injection is re-run unchanged (`--replicate-wins`,
+    default 4 since 2026-11-25), logged apart from the trials. None when there is no evolving attacker."""
     smoke: bool | None = None
     """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
     (not False) when off, so runs made before the flag existed still resume."""

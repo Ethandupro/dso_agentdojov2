@@ -29,7 +29,7 @@ class ScriptedOutcomeRunner(Runner):
 
     script: dict[tuple[int, int], bool]
 
-    def run_unit(self, unit: Unit) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def run_unit(self, unit: Unit) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
         record: dict[str, Any] = {
             "unit": unit.index,
             "unit_id": unit.id,
@@ -48,7 +48,7 @@ class ScriptedOutcomeRunner(Runner):
                     (pairs.index(unit.pair.id), unit.trial if unit.trial is not None else -1), False
                 ),
             }
-        return record, []
+        return record, [], []
 
 
 def c0e_runner(tmp_path: Path, stop_on_success: bool) -> ScriptedOutcomeRunner:

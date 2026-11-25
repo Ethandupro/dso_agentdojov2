@@ -14,6 +14,8 @@ Files under the run directory (DESIGN.md, "Conditions and result segmentation"):
 - `config.json`: written before any model call; a run resumes only under an identical config.
 - `trials.jsonl`: one record per finished unit (trial or benign task), in unit order.
 - `checker_calls.jsonl`: one line per checker call, with the unit's keys (stays empty without the external checker).
+- `replications.jsonl`: `--replicate-wins N` re-runs each successful injection N more times, unchanged; one line per
+  re-run, with the won trial's keys. Never trials: ASR, ASR@n and pair ASR ignore them; the report adds a robust ASR.
 - `state.json`: the checkpoint (index of the next unit, attacker and skill-file state), replaced atomically.
 - `trial_<t>/<split>/...` and `benign*/...`: AgentDojo trace files, one per unit.
 
@@ -42,7 +44,7 @@ from agentdojo.logging import NullLogger, TraceLogger
 from agentdojo.runner.conditions import Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
-from agentdojo.runner.report import evolving_metrics
+from agentdojo.runner.report import evolving_metrics, replication_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
 from agentdojo.runner.trace import victim_trace_digest
 from agentdojo.task_suite.load_suites import get_suite
@@ -73,6 +75,9 @@ def agent_actions(messages: list[Any]) -> list[str]:
 
 STATE_FORMAT = 1
 
+DEFAULT_REPLICATE_WINS = 4
+"""`run_condition --replicate-wins` default (user request 2026-11-25): each evolving win is re-run 4 more times."""
+
 
 class ConfigMismatchError(Exception):
     pass
@@ -99,6 +104,10 @@ def run_dir_for(
     attacker_temperature: float | None = None,
     distill_every: int = 0,
     distill_plain: bool = False,
+    distill_trajectory: bool = False,
+    free_skills: bool = False,
+    no_analyst: bool = False,
+    replicate_wins: int | None = None,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -121,6 +130,14 @@ def run_dir_for(
         name = f"{name}-distill{distill_every}"
         if distill_plain:
             name = f"{name}-plain"
+        elif distill_trajectory:
+            name = f"{name}-traj"
+    if free_skills:
+        name = f"{name}-free-skills"
+    if no_analyst:
+        name = f"{name}-no-analyst"
+    if replicate_wins is not None and replicate_wins != DEFAULT_REPLICATE_WINS:
+        name = f"{name}-rep{replicate_wins}"
     if stop_on_success:
         name = f"{name}-first-success"
     if victim_temperature is not None:
@@ -142,6 +159,18 @@ def trace_dir(run_dir: Path, unit: Unit) -> Path:
     if unit.pair is None:
         return run_dir / unit.phase
     return run_dir / f"trial_{unit.trial}" / unit.pair.split
+
+
+def replica_dir(run_dir: Path, unit: Unit, k: int) -> Path:
+    """Trace files of the k-th replication of a won trial (kept apart from the trial's own trace)."""
+    assert unit.pair is not None
+    return run_dir / "replications" / f"trial_{unit.trial}" / unit.pair.split / f"replica_{k}"
+
+
+ANALYST_TRACE_CHARS = 12000
+ANALYST_STEP_CHARS = 1200
+ANALYST_THOUGHT_CHARS = 3000
+"""The analyst's (`--analyst`) longer digest of the victim's run: the leaderboard's is 4000 chars in all."""
 
 
 def summarize_checker(lines: list[dict[str, Any]]) -> dict[str, Any]:
@@ -218,6 +247,7 @@ class Runner:
         graded_score: bool = True,
         show_victim_trace: bool = True,
         stop_on_success: bool = False,
+        replicate_wins: int = 0,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
@@ -231,6 +261,8 @@ class Runner:
         self.graded_score = graded_score
         self.show_victim_trace = show_victim_trace
         self.stop_on_success = stop_on_success
+        self.replicate_wins = replicate_wins
+        """Extra runs of each successful injection, unchanged (`--replicate-wins`); never counted as trials."""
         self.skipped: list[int] = []
         """Unit indices skipped by `stop_on_success` (no record, no model call)."""
         self.config = config
@@ -262,6 +294,10 @@ class Runner:
     @property
     def checker_path(self) -> Path:
         return self.run_dir / "checker_calls.jsonl"
+
+    @property
+    def replications_path(self) -> Path:
+        return self.run_dir / "replications.jsonl"
 
     # --- start and resume -------------------------------------------------------------------------------------
 
@@ -298,12 +334,20 @@ class Runner:
             )
         _write_jsonl(self.trials_path, records)
         _write_jsonl(self.checker_path, [c for c in _read_jsonl(self.checker_path) if c["unit"] < cursor])
+        _write_jsonl(self.replications_path, [r for r in _read_jsonl(self.replications_path) if r["unit"] < cursor])
         self.records = records
         return cursor
 
-    def _commit(self, unit: Unit, record: dict[str, Any], checker_lines: list[dict[str, Any]]) -> None:
+    def _commit(
+        self,
+        unit: Unit,
+        record: dict[str, Any],
+        checker_lines: list[dict[str, Any]],
+        replicas: list[dict[str, Any]] | None = None,
+    ) -> None:
         _append_jsonl(self.trials_path, [record])
         _append_jsonl(self.checker_path, checker_lines)
+        _append_jsonl(self.replications_path, replicas or [])
         self.records.append(record)
         self._save_state(unit)
 
@@ -344,6 +388,7 @@ class Runner:
             final_answer=record["final_answer"],
             progress=record.get("progress"),
             victim_trace=record.get("victim_trace"),
+            replication=record.get("replication"),
         )
 
     def attacker_for(self, unit: Unit) -> Attacker:
@@ -359,7 +404,7 @@ class Runner:
             return False
         return any(r["pair"] == unit.pair.id and r["phase"] == unit.phase and r["security"] for r in self.records)
 
-    def run_unit(self, unit: Unit) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def run_unit(self, unit: Unit) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
         start = time.time()
         suite = get_suite(self.config.benchmark_version, unit.suite)
         user_task = suite.user_tasks[unit.user_task]
@@ -396,8 +441,168 @@ class Runner:
         }
 
         checker_lines: list[dict[str, Any]] = []
-        factory: ToolMiddlewareFactory | None = None
         markdown = self.skill_file.markdown
+        attacked = unit.pair is not None
+        run = self._victim_run(
+            unit,
+            user_task,
+            injection_task,
+            injections,
+            injection_text,
+            attacker_name,
+            keys,
+            markdown,
+            trace_dir(self.run_dir, unit),
+            checker_lines.append,
+        )
+        utility, security, messages = run["utility"], run["security"], run["messages"]
+        deepagents, library = run["deepagents"], run["library"]
+        final_answer = run["final_answer"]
+        actions = agent_actions(list(messages))
+        reasoning = run["reasoning"]
+        victim_trace = (
+            victim_trace_digest(messages, markdown, reasoning=reasoning)
+            if attacked and self.show_victim_trace
+            else None
+        )
+        progress = (
+            progress_score(
+                injection_task.GOAL,
+                actions,
+                final_answer,
+                security,
+                goal_tool_names(suite, injection_task.ID),
+            )
+            if attacked and self.graded_score and injection_task is not None
+            else None
+        )
+
+        # Replication (user request 2026-11-25): a successful evolving-attacker injection is re-run unchanged (static
+        # pairs resend one text every trial, so their trials already are replications), against the same pair and
+        # the same skill-file version, `replicate_wins` more times. These runs never count as trials: they go to
+        # replications.jsonl, not trials.jsonl, so trial counts, ASR, ASR@n and the pair ASR are unchanged; the record
+        # only carries their tally (`replication`) for the robust-ASR figures and the attacker's leaderboard.
+        replicas: list[dict[str, Any]] = []
+        evolving = unit.pair is not None and self.attacker_for(unit) is not self.static_attacker
+        if evolving and security and self.replicate_wins > 0 and injection_task is not None:
+            for k in range(1, self.replicate_wins + 1):
+                rep_start = time.time()
+                rep = self._victim_run(
+                    unit,
+                    user_task,
+                    injection_task,
+                    injections,
+                    injection_text,
+                    attacker_name,
+                    keys,
+                    markdown,
+                    replica_dir(self.run_dir, unit, k),
+                    None,
+                )
+                rep_actions = agent_actions(list(rep["messages"]))
+                replicas.append(
+                    {
+                        **keys,
+                        "replica": k,
+                        "utility": rep["utility"],
+                        "security": rep["security"],
+                        "progress": progress_score(
+                            injection_task.GOAL,
+                            rep_actions,
+                            rep["final_answer"],
+                            rep["security"],
+                            goal_tool_names(suite, injection_task.ID),
+                        )
+                        if self.graded_score
+                        else None,
+                        "skills": (
+                            rep["library"].summary(self.security_skill_name if markdown is not None else None)
+                            if rep["library"] is not None
+                            else None
+                        ),
+                        "agent_actions": rep_actions,
+                        "final_answer": rep["final_answer"],
+                        "victim_usage": rep["deepagents"].get("usage"),
+                        "victim_error": rep["deepagents"].get("error"),
+                        "duration_s": round(time.time() - rep_start, 3),
+                    }
+                )
+        replication = (
+            {"runs": len(replicas), "successes": sum(bool(r["security"]) for r in replicas)} if replicas else None
+        )
+
+        record: dict[str, Any] = {
+            **keys,
+            "attack": attacker_name,
+            "injection_text": injection_text,
+            "utility": utility,
+            "security": security if attacked else None,
+            "attacker_success": (security or not utility) if attacked else None,
+            "progress": progress,
+            "replication": replication,
+            "final_answer": final_answer,
+            "victim_trace": victim_trace,
+            "skills": (
+                library.summary(self.security_skill_name if markdown is not None else None)
+                if library is not None
+                else None
+            ),
+            "agent_actions": actions,
+            "checker": summarize_checker(checker_lines) if self.defense == "checker" and markdown is not None else None,
+            "victim_usage": deepagents.get("usage"),
+            "victim_served_models": deepagents.get("served_models"),
+            "victim_error": deepagents.get("error"),
+            "trace": str(
+                trace_dir(self.run_dir, unit)
+                .relative_to(self.run_dir)
+                .joinpath(
+                    (run["pipeline_name"] or "").replace("/", "_"),
+                    unit.suite,
+                    unit.user_task,
+                    attacker_name or "none",
+                    f"{unit.pair.injection_task if unit.pair else 'none'}.json",
+                )
+            ),
+            "duration_s": round(time.time() - start, 3),
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        if unit.pair is not None:
+            attacker = self.attacker_for(unit)
+            if attacker is not self.static_attacker and isinstance(attacker, ObservingAttacker):
+                # Cross-pair memory: what this trial's text achieved against the skill-file version it faced. The
+                # analyst (if on) reads a longer trace than the leaderboard's, built from the same messages.
+                feedback = self._feedback(record)
+                if attacked and self.show_victim_trace:
+                    feedback.analyst_trace = victim_trace_digest(
+                        messages,
+                        markdown,
+                        reasoning=reasoning,
+                        max_chars=ANALYST_TRACE_CHARS,
+                        step_chars=ANALYST_STEP_CHARS,
+                        thought_chars=ANALYST_THOUGHT_CHARS,
+                    )
+                attacker.observe(unit.pair, feedback, skill_version)
+        record["skill_step"] = self.skill_file.after_trial(record)
+        record["skill_version_after"] = self.skill_file.version_name
+        return record, checker_lines, replicas
+
+    def _victim_run(
+        self,
+        unit: Unit,
+        user_task: Any,
+        injection_task: Any,
+        injections: dict[str, str],
+        injection_text: str | None,
+        attacker_name: str | None,
+        keys: dict[str, Any],
+        markdown: str | None,
+        logdir: Path,
+        checker_log: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """One run of the victim on `unit` with the given injections and security-skill body (a trial, or one replica
+        of a won trial). With the external checker, its lines go to `checker_log` (replicas pass None: not logged)."""
+        suite = get_suite(self.config.benchmark_version, unit.suite)
+        factory: ToolMiddlewareFactory | None = None
         library: SkillLibrary | None = None
         if self.defense == "skills":
             skills = list(self.agent_skills)
@@ -413,7 +618,7 @@ class Runner:
             factory = make_checker_factory(
                 self.checker_fn,
                 markdown,
-                log=checker_lines.append,
+                log=checker_log or (lambda _line: None),
                 log_context=keys,
                 injections=[injection_text] if injection_text else [],
                 min_span_chars=self.min_span_chars,
@@ -421,7 +626,7 @@ class Runner:
         pipeline = self.victim_factory(unit, factory)
 
         delegate = NullLogger()
-        delegate.logdir = str(trace_dir(self.run_dir, unit))  # type: ignore[attr-defined]
+        delegate.logdir = str(logdir)  # type: ignore[attr-defined]
         with TraceLogger(
             delegate=delegate,
             suite_name=unit.suite,
@@ -444,72 +649,22 @@ class Runner:
             else None
         )
         deepagents = logger.context.get("deepagents") or {}
-        attacked = unit.pair is not None
-        actions = agent_actions(list(messages))
         # The victim's reasoning, by message index, as the harness recorded it (absent for the native loop).
         reasoning = {
             r["message"]: r["text"]
             for r in deepagents.get("reasoning") or []
             if isinstance(r, dict) and isinstance(r.get("message"), int) and isinstance(r.get("text"), str)
         }
-        victim_trace = (
-            victim_trace_digest(messages, markdown, reasoning=reasoning)
-            if attacked and self.show_victim_trace
-            else None
-        )
-        progress = (
-            progress_score(
-                injection_task.GOAL,
-                actions,
-                final_answer,
-                security,
-                goal_tool_names(suite, injection_task.ID),
-            )
-            if attacked and self.graded_score and injection_task is not None
-            else None
-        )
-        record: dict[str, Any] = {
-            **keys,
-            "attack": attacker_name,
-            "injection_text": injection_text,
+        return {
             "utility": utility,
-            "security": security if attacked else None,
-            "attacker_success": (security or not utility) if attacked else None,
-            "progress": progress,
+            "security": security,
+            "messages": messages,
             "final_answer": final_answer,
-            "victim_trace": victim_trace,
-            "skills": (
-                library.summary(self.security_skill_name if markdown is not None else None)
-                if library is not None
-                else None
-            ),
-            "agent_actions": actions,
-            "checker": summarize_checker(checker_lines) if self.defense == "checker" and markdown is not None else None,
-            "victim_usage": deepagents.get("usage"),
-            "victim_served_models": deepagents.get("served_models"),
-            "victim_error": deepagents.get("error"),
-            "trace": str(
-                Path(delegate.logdir)  # type: ignore[attr-defined]
-                .relative_to(self.run_dir)
-                .joinpath(
-                    (pipeline.name or "").replace("/", "_"),
-                    unit.suite,
-                    unit.user_task,
-                    attacker_name or "none",
-                    f"{unit.pair.injection_task if unit.pair else 'none'}.json",
-                )
-            ),
-            "duration_s": round(time.time() - start, 3),
-            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "deepagents": deepagents,
+            "reasoning": reasoning,
+            "library": library,
+            "pipeline_name": pipeline.name,
         }
-        if unit.pair is not None:
-            attacker = self.attacker_for(unit)
-            if attacker is not self.static_attacker and isinstance(attacker, ObservingAttacker):
-                # Cross-pair memory: what this trial's text achieved against the skill-file version it faced.
-                attacker.observe(unit.pair, self._feedback(record), skill_version)
-        record["skill_step"] = self.skill_file.after_trial(record)
-        record["skill_version_after"] = self.skill_file.version_name
-        return record, checker_lines
 
     # --- the loop ---------------------------------------------------------------------------------------------
 
@@ -529,8 +684,8 @@ class Runner:
                 done += 1
                 self.echo(f"[{unit.index + 1}/{len(self.units)}] {unit.id}: skipped (pair already succeeded)")
                 continue
-            record, checker_lines = self.run_unit(unit)
-            self._commit(unit, record, checker_lines)
+            record, checker_lines, replicas = self.run_unit(unit)
+            self._commit(unit, record, checker_lines, replicas)
             done += 1
             outcome = (
                 f"utility={record['utility']}"
@@ -562,4 +717,7 @@ def quick_summary(records: list[dict[str, Any]], trials_per_pair: int | None = N
     evo = evolving_metrics(records, trials_per_pair) if trials_per_pair else None
     if evo is not None:
         summary["pairs"] = {k: v for k, v in evo.items() if k != "first_success"}
+    rep = replication_metrics([r for r in attacked if r["phase"] in ("attack", "train")], evo)
+    if rep is not None:
+        summary["replication"] = {k: v for k, v in rep.items() if k not in ("per_win", "histogram")}
     return summary

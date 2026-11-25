@@ -9,10 +9,10 @@ pairs, then submits one injection per trial with `submit_injection`. Keeping it 
 box, and the whole loop is testable with a scripted model and no server. See `config()` for the recorded deviation.
 
 Everything else is inherited from `AutoDojoAttacker`: the per-pair leaderboard of real outcomes, the cross-pair
-playbook memory, the goal-literal guard, the retry-then-fall-back path, and the archive/checkpoint. Only the single
-optimizer call is replaced by the agent loop, and the skill library is added to the checkpoint. The attacker stays
-black-box: it sees only success/failure (plus the S0-redacted victim trace, as the base attacker already does), never
-the skill file or the victim's raw reasoning.
+playbook memory, the goal-literal guard, the retry-then-fall-back path, the analyst and the archive/checkpoint. Only
+the single optimizer call is replaced by the agent loop, and the skill library is added to the checkpoint. The
+attacker is grey-box: it sees outcomes, the graded score and the S0-redacted victim trace (reasoning included since
+2026-11-25), never the skill file itself.
 """
 
 import json
@@ -67,7 +67,7 @@ def _note_body(note: dict[str, Any]) -> str:
     """A distilled note's body: the do/avoid/because parts of a contrastive note, or a plain `body`."""
     parts = [
         (label, str(note.get(key) or "").strip())
-        for label, key in (("DO", "do"), ("AVOID", "avoid"), ("BECAUSE", "because"))
+        for label, key in (("TRAJECTORY", "trajectory"), ("DO", "do"), ("AVOID", "avoid"), ("BECAUSE", "because"))
     ]
     if any(text for _, text in parts):
         return "\n".join(f"{label}: {text}" for label, text in parts if text)
@@ -88,13 +88,16 @@ class SkillAgentSettings(AutoDojoSettings):
     """Distillation (`run_condition --distill-every K`, user request 2026-11-23): every K finished pairs, one extra
     attacker call reads those pairs' attempts, wins and failures, and writes general pattern notes into the library.
     0 = off (the agent only writes notes itself during a trial, as in PR #49)."""
-    distill_mode: Literal["contrast", "plain"] = "contrast"
+    distill_mode: Literal["contrast", "plain", "trajectory"] = "contrast"
     """How a distillation call learns (user request 2026-11-24, default `contrast`). `contrast`: the attempts are
     first grouped into matched win/fail pairs -- mainly a failed and a winning evolution on the SAME item, then a
     win and a fail that used the same strategy on different items -- and the attacker explains, for each match, what
     changed in the text, where the agent's reasoning diverged, and a rule "do X, avoid Y, because Z", then merges
     those into at most `distill_max_notes` do/avoid notes. With no matched pair yet it falls back to `plain`, which
-    is the PR #53 distillation over the raw list of attempts."""
+    is the PR #53 distillation over the raw list of attempts. `trajectory` (user request 2026-11-25, used with
+    `distill_every=3`): the full trial-by-trial arc of each finished pair, wins and failures, with strategy, score,
+    replication and the analyst's diagnoses, and the attacker describes how the attack changed across trials and which
+    arcs led to success, then writes notes on how to sequence trials (TRAJECTORY/DO/AVOID/BECAUSE)."""
     distill_max_contrasts: int = 6
     """Most matched win/fail pairs shown to one contrastive distillation call (same-item matches first)."""
     distill_max_attempts: int = 40
@@ -110,6 +113,15 @@ class SkillAgentSettings(AutoDojoSettings):
     """With distillation on, a note loaded this many times that never won and averages at most `prune_max_score` is
     dropped from the library (a cheap version of JailbreakSkill's keep-only-if-it-helps gate). 0 = never prune."""
     prune_max_score: float = 1.0
+    skill_choice: Literal["ranked", "free"] = "ranked"
+    """How the agent sees its notes (user request 2026-11-25, `run_condition --skill-choice`). `ranked`: with
+    distillation on, `list_skills` ranks notes by UCB with each note's record, and notes that never help are pruned
+    (PR #53). `free`: DeepAgents-style, notes listed only by name and description, alphabetically, no records and no
+    pruning; the agent decides at runtime which to load. Records are still kept for the report."""
+    trajectory_text_chars: int = 300
+    """`distill_mode='trajectory'`: each trial's text and the agent's response are clipped to this in the prompt."""
+    reliable_win_rate: float = 0.5
+    """With `--replicate-wins`, a win anchors a contrast only if at least this share of its re-runs also succeeded."""
 
 
 class SkillAgentAttacker(AutoDojoAttacker):
@@ -134,7 +146,12 @@ class SkillAgentAttacker(AutoDojoAttacker):
         """Notes dropped for never helping, with their record and the trial that triggered it."""
 
     def _listing(self) -> str:
-        """The note menu: ranked with each note's record when distillation is on, plain otherwise (as in PR #49)."""
+        """The note menu: name and description only with `skill_choice='free'`; ranked with each note's record when
+        distillation is on; plain otherwise (as in PR #49)."""
+        if self.settings.skill_choice == "free":
+            if not self.store.skills:
+                return self.store.listing()
+            return f"{prompts.FREE_SKILLS_HEADER}\n{self.store.listing()}"
         if self.settings.distill_every > 0:
             return self.store.ranked_listing(self.settings.note_exploration)
         return self.store.listing()
@@ -150,7 +167,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
         # Credit the notes the agent loaded before writing this trial's text, then drop notes that never help.
         entry = next((e for e in self.archive if e["pair"] == pair.id and e["trial"] == feedback.trial), {})
         self.store.record_use(entry.get("skills_loaded") or [], feedback.security, feedback.progress)
-        if self.settings.prune_after_uses > 0:
+        if self.settings.prune_after_uses > 0 and self.settings.skill_choice == "ranked":
             for dropped in self.store.prune(self.settings.prune_after_uses, self.settings.prune_max_score):
                 self.pruned.append({**dropped, "pair": pair.id, "trial": feedback.trial})
         n = self.settings.distill_text_chars
@@ -164,7 +181,11 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 "utility": feedback.utility,
                 "progress": feedback.progress,
                 "strategy": entry.get("strategy"),
+                "diagnosis": entry.get("diagnosis"),
+                "skills_loaded": entry.get("skills_loaded") or [],
                 "response": _clip(feedback.victim_trace or feedback.final_answer, n),
+                "analysis": self.analysis_for(pair.id, feedback.trial),
+                "replication": feedback.replication,
                 "literals": goal_literals(self.goal(pair)),
             }
         )
@@ -194,9 +215,45 @@ class SkillAgentAttacker(AutoDojoAttacker):
         return "\n\n".join(lines)
 
     def reliable_win(self, attempt: dict[str, Any]) -> bool:
-        """Whether a win may anchor a contrast. Always True for now: this is the hook for a replication check
-        (re-run a win a few times and keep only wins that hold up), which was discussed but not approved."""
-        return bool(attempt["security"])
+        """Whether a win may anchor a contrast: with `--replicate-wins`, only a win whose re-runs succeeded at least
+        `reliable_win_rate` of the time (a lucky sample teaches nothing); without replication data, every win."""
+        if not attempt["security"]:
+            return False
+        replication = attempt.get("replication")
+        if not replication or not replication.get("runs"):
+            return True
+        return replication["successes"] / replication["runs"] >= self.settings.reliable_win_rate
+
+    def _arcs_block(self, attempts: list[dict[str, Any]]) -> str:
+        """`distill_mode='trajectory'`: one block per pair, its trials in order."""
+        n = self.settings.trajectory_text_chars
+        by_pair: dict[str, list[dict[str, Any]]] = {}
+        for t in attempts:
+            by_pair.setdefault(t["pair"], []).append(t)
+        blocks = []
+        for i, (pair, trials) in enumerate(by_pair.items(), 1):
+            trials = sorted(trials, key=lambda t: t["trial"])
+            won = [t["trial"] for t in trials if t["security"]]
+            verdict = f"first SUCCEEDED on trial {won[0]}" if won else f"never succeeded in {len(trials)} trials"
+            lines = [f"ITEM {i} ({trials[0]['suite']}): {verdict}."]
+            for t in trials:
+                outcome = "SUCCEEDED" if t["security"] else "failed"
+                if t.get("progress") is not None:
+                    outcome += f", progress {t['progress']}/4"
+                rep = t.get("replication")
+                if t["security"] and rep and rep.get("runs"):
+                    outcome += f", held up in {rep['successes']}/{rep['runs']} re-runs"
+                strategy = f" strategy={t['strategy']}" if t.get("strategy") else ""
+                lines.append(f"  trial {t['trial']}{strategy}: {outcome}")
+                lines.append(f"    TEXT: {_clip(t['text'], n)}")
+                if t.get("diagnosis"):
+                    lines.append(f"    OPTIMIZER'S PLAN: {_clip(t['diagnosis'], n)}")
+                if t.get("analysis"):
+                    lines.append(f"    ANALYST: {_clip(t['analysis'], n)}")
+                else:
+                    lines.append(f"    AGENT: {_clip(t.get('response'), n) or '(nothing recorded)'}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     def contrast_pairs(self, attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Matched win/fail pairs among `attempts`, most informative first, at most `distill_max_contrasts`.
@@ -280,9 +337,11 @@ class SkillAgentAttacker(AutoDojoAttacker):
         (`BudgetExhaustedError` still propagates)."""
         s = self.settings
         members = set(pairs)
-        attempts = [t for t in self.trajectories if t["pair"] in members][-s.distill_max_attempts :]
+        attempts = [t for t in self.trajectories if t["pair"] in members]
+        if s.distill_mode != "trajectory":
+            attempts = attempts[-s.distill_max_attempts :]
         contrasts = self.contrast_pairs(attempts) if s.distill_mode == "contrast" else []
-        mode = "contrast" if contrasts else "plain"
+        mode = "trajectory" if s.distill_mode == "trajectory" else ("contrast" if contrasts else "plain")
         event: dict[str, Any] = {
             "pairs": list(pairs),
             "attempts": len(attempts),
@@ -301,7 +360,17 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 for c in contrasts
             ]
         try:
-            if contrasts:
+            if mode == "trajectory":
+                messages = [
+                    {"role": "system", "content": prompts.TRAJECTORY_DISTILL_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": prompts.trajectory_distill_task(
+                            self._notes_block(), self._arcs_block(attempts), s.distill_max_notes
+                        ),
+                    },
+                ]
+            elif contrasts:
                 messages = [
                     {"role": "system", "content": prompts.CONTRAST_DISTILL_SYSTEM_PROMPT},
                     {
@@ -330,6 +399,15 @@ class SkillAgentAttacker(AutoDojoAttacker):
                     for a in parsed["contrasts"][: len(contrasts)]
                     if isinstance(a, dict)
                 ]
+            if mode == "trajectory":
+                arcs = parsed.get("arcs")
+                event["arcs"] = [
+                    {k: _clip(str(a.get(k, "")), 400) for k in ("item", "arc", "outcome")}
+                    for a in (arcs if isinstance(arcs, list) else [])[: len(members)]
+                    if isinstance(a, dict)
+                ]
+                if parsed.get("comparison"):
+                    event["comparison"] = _clip(str(parsed["comparison"]), 600)
             raw_notes = parsed.get("skills")
             notes: list[Any] = raw_notes if isinstance(raw_notes, list) else []
             for note in notes[: s.distill_max_notes]:
@@ -549,12 +627,23 @@ class SkillAgentAttacker(AutoDojoAttacker):
             "prompt_sha256": {
                 "system": sha256_text(prompts.SKILL_AGENT_SYSTEM_PROMPT),
                 "memory_header": sha256_text(prompts.MEMORY_HEADER),
+                **({"analyst": sha256_text(prompts.ANALYST_SYSTEM_PROMPT)} if self.settings.analyst else {}),
+                **(
+                    {"free_skills_header": sha256_text(prompts.FREE_SKILLS_HEADER)}
+                    if self.settings.skill_choice == "free"
+                    else {}
+                ),
                 **(
                     {
                         "distill_system": sha256_text(prompts.DISTILL_SYSTEM_PROMPT),
                         **(
                             {"contrast_distill_system": sha256_text(prompts.CONTRAST_DISTILL_SYSTEM_PROMPT)}
                             if self.settings.distill_mode == "contrast"
+                            else {}
+                        ),
+                        **(
+                            {"trajectory_distill_system": sha256_text(prompts.TRAJECTORY_DISTILL_SYSTEM_PROMPT)}
+                            if self.settings.distill_mode == "trajectory"
                             else {}
                         ),
                     }
@@ -599,6 +688,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
             raise ValueError(f"unknown skill-agent attacker state format {fmt!r}")
         self.archive = list(state["archive"])
         self.playbook = list(state.get("playbook", []))
+        self.analyses = list(state.get("analyses", []))
         self.store.load_from_state(state.get("skills") or {})
         self.trajectories = list(state.get("trajectories", []))
         self.distillations = list(state.get("distillations", []))
