@@ -611,6 +611,7 @@ def main(
         smoke=smoke or None,
         graded_score=graded_score if evolving_attack else None,
         show_victim_trace=show_victim_trace if evolving_attack else None,
+        victim_trace_thinking=True if evolving_attack and show_victim_trace else None,
         stop_on_success=stop_on_success or None,
         benchmark_version=manifest_data["benchmark_version"],
         manifest_path=str(manifest),

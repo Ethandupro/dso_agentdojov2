@@ -24,11 +24,14 @@ from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import (
     CONTEXT_OVERFLOW_FINAL_MESSAGE,
     DEEPAGENTS_BUILTIN_TOOL_NAMES,
+    REASONING_KWARG,
     DeepAgentsConfig,
     DeepAgentsPipeline,
+    ReasoningChatOpenAI,
     ThinkingPromptChatOpenAI,
     ToolMiddlewareFactory,
     is_context_overflow_error,
+    make_local_chat_model,
     thinking_prompt_chunks,
 )
 from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
@@ -699,3 +702,53 @@ def test_checker_runs_get_their_own_trace_directory():
     suffix = benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0)
     assert suffix.startswith("-checker-Qwen_Qwen3.5-9B-skill-")
     assert suffix != benchmark_script.checker_pipeline_suffix("Qwen/Qwen3.5-9B", s0 + "\nnew rule")
+
+
+def test_local_model_keeps_the_servers_reasoning_out_of_band():
+    model = make_local_chat_model("m", "http://localhost:8000/v1")
+    assert isinstance(model, ReasoningChatOpenAI)
+    response = {
+        "id": "x",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Paid.", "reasoning_content": "The bill asks for more."},
+            }
+        ],
+    }
+    message = model._create_chat_result(response).generations[0].message
+    assert message.content == "Paid."
+    assert message.additional_kwargs[REASONING_KWARG] == "The bill asks for more."
+    # Newer vLLM builds name the field `reasoning`; a reply without reasoning gets no key.
+    response["choices"][0]["message"] = {"role": "assistant", "content": "Paid.", "reasoning": "Hmm."}
+    assert model._create_chat_result(response).generations[0].message.additional_kwargs[REASONING_KWARG] == "Hmm."
+    response["choices"][0]["message"] = {"role": "assistant", "content": "Paid."}
+    assert REASONING_KWARG not in model._create_chat_result(response).generations[0].message.additional_kwargs
+    # The reasoning is never sent back to the model.
+    payload = model._get_request_payload([HumanMessage("hi"), message, HumanMessage("again")])
+    assert all("reasoning" not in json.dumps(m) for m in payload["messages"])
+
+
+def test_reasoning_is_recorded_per_message_and_kept_out_of_the_content():
+    suite = get_suite(BENCHMARK_VERSION, "banking")
+    call = {"name": "get_balance", "args": {}, "id": "call_0", "type": "tool_call"}
+    model = ScriptedChatModel(
+        script=[
+            AIMessage(content="", tool_calls=[call], additional_kwargs={REASONING_KWARG: "Check the balance first."}),
+            AIMessage(content="done", additional_kwargs={REASONING_KWARG: "Now answer."}),
+        ]
+    )
+    _, _, _, messages, extra = DeepAgentsPipeline(model).query(
+        "balance?", FunctionsRuntime(suite.tools), suite.load_and_inject_default_environment({})
+    )
+    reasoning = extra["deepagents"]["reasoning"]
+    assert [r["text"] for r in reasoning] == ["Check the balance first.", "Now answer."]
+    for r in reasoning:
+        assert messages[r["message"]]["role"] == "assistant" and r["agent"] == "main"
+    assert messages[reasoning[-1]["message"]] is messages[-1]
+    # AgentDojo scores the content as the model's output, so the reasoning must not be in it.
+    assert all("Now answer" not in json.dumps(m["content"]) for m in messages if m["content"])

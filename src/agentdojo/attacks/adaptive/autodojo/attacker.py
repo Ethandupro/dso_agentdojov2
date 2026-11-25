@@ -4,8 +4,9 @@ For each pair, trial 0 is the manifest's `important_instructions` seed. Before e
 optimizer call: it builds a leaderboard of the pair's earlier trials (0..k-1) scored by their real result (did the
 injection goal get achieved, or the user task fail, through the real checker and victim), shows the optimizer that
 leaderboard and the benign tool-result data the text is placed into, and takes back one new injection. The optimizer
-never sees the skill file, the checker's removed spans or the victim's trace -- only success or failure -- so the
-attacker stays black-box toward the real defence, exactly as AutoDojo's "outcome feedback" is.
+never sees the skill file or the checker's removed spans. Beyond AutoDojo's outcome feedback it gets the 0-4 graded
+score and, by default, an S0-redacted digest of the victim's run including its reasoning (`runner.trace`; grey-box,
+`--no-victim-trace` for the ablation).
 
 This is a per-pair optimization (AutoDojo's case set C has size one here: one user task per injection target). The
 stand-in checker/agent of the MUZZLE port are intentionally absent: the leaderboard is the real signal, so no

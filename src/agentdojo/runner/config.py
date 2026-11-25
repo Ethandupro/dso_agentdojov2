@@ -47,6 +47,10 @@ class RunConfig(BaseModel):
     show_victim_trace: bool | None = None
     """Evolving-attacker runs: True if the attacker's leaderboard shows an S0-redacted digest of the victim's run,
     False for the `-no-victim-trace` ablation; None when there is no evolving attacker."""
+    victim_trace_thinking: bool | None = None
+    """True when the victim trace also shows the victim's reasoning (the server's `reasoning_content`, recorded by the
+    harness since 2026-11-25; earlier traces had none). Set whenever `show_victim_trace` is True, so a run started
+    before this change (trace without thinking) is never resumed as one with it."""
     stop_on_success: bool | None = None
     """`--stop-on-success`: evolving pairs stop at their first success (trial 0 included). None when off, so earlier
     runs still resume."""

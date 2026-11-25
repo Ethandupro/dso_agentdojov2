@@ -8,10 +8,16 @@ It is a deliberate grey-box signal: the attacker sees the victim's reasoning, no
 evolving defence from leaking into the attacker (above all in C4, where S0 changes during the run), any wording the
 victim copied from the current S0 skill is redacted first: exact lines and any 6-word span shared with S0 become
 `[S0 redacted]`. Identical in C2 and C4.
+
+The reasoning (2026-11-25): vLLM's reasoning parser returns Magistral's `[THINK]` text in a separate
+`reasoning_content` field, which LangChain's `ChatOpenAI` dropped, so traces before this date held no thinking at all.
+The harness now keeps it (`ReasoningChatOpenAI`) and records it per message as `deepagents.reasoning`, outside the
+message content so AgentDojo's scoring is unchanged; `victim_trace_digest` shows it as `thought:` lines, S0-redacted
+like everything else.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 MASK = "[S0 redacted]"
@@ -69,22 +75,35 @@ def _clip(text: str, limit: int) -> str:
 def victim_trace_digest(
     messages: Sequence[Any],
     s0_markdown: str | None,
-    max_chars: int = 2000,
+    max_chars: int = 4000,
     step_chars: int = 400,
+    reasoning: Mapping[int, str] | None = None,
+    thought_chars: int = 800,
 ) -> str:
     """A short, ordered digest of the victim's run for the attacker's leaderboard: each assistant step's thinking and
-    text, the tools it called, and each tool result, S0-redacted and truncated. Capped at `max_chars`."""
+    text, the tools it called, and each tool result, S0-redacted and truncated. Capped at `max_chars`.
+
+    `reasoning` maps a message's index in `messages` to the reasoning the model produced for it, when the server
+    returned it outside the message content (the DeepAgents harness records it as `deepagents.reasoning`; see
+    `ReasoningChatOpenAI`). Each thought is cut to `thought_chars`, other lines to `step_chars`. Thinking blocks
+    inside a message's content are shown too."""
+    reasoning = reasoning or {}
     lines: list[str] = []
-    for message in messages:
+    for index, message in enumerate(messages):
         role = message.get("role")
         if role == "assistant":
+            thought = (reasoning.get(index) or "").strip()
+            if thought:
+                lines.append(f"thought: {_clip(thought, thought_chars)}")
             for block in message.get("content") or []:
                 kind = block.get("type")
                 body = (block.get("content") or "").strip()
                 if not body:
                     continue
-                label = "thought" if kind in ("thinking", "redacted_thinking") else "said"
-                lines.append(f"{label}: {_clip(body, step_chars)}")
+                if kind in ("thinking", "redacted_thinking"):
+                    lines.append(f"thought: {_clip(body, thought_chars)}")
+                else:
+                    lines.append(f"said: {_clip(body, step_chars)}")
             for call in message.get("tool_calls") or []:
                 args = ", ".join(f"{k}={v!r}" for k, v in dict(call.args).items())
                 lines.append(_clip(f"called: {call.function}({args})", step_chars))
