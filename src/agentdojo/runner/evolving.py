@@ -120,7 +120,9 @@ class EvolvingSkillFile:
     @property
     def extra_skills(self) -> list[AgentSkill]:
         """Security library: the specialised security skills, listed for the victim next to S0."""
-        return self.evolver.agent_skills() if isinstance(self.evolver, SecurityLibraryEvolver) else []
+        if not isinstance(self.evolver, SecurityLibraryEvolver):
+            return []
+        return [AgentSkill(name, description, body) for name, description, body in self.evolver.skill_entries()]
 
     @property
     def library_versions(self) -> dict[str, str] | None:

@@ -39,7 +39,6 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
-from agentdojo.agent_pipeline.agent_skills import AgentSkill
 from agentdojo.skillfile.checks import (
     EditContext,
     EditPolicy,
@@ -322,9 +321,10 @@ class SecurityLibraryEvolver:
         """Each specialised skill's version, for the trial record."""
         return {name: ev.version_name for name, ev in self.skills.items()}
 
-    def agent_skills(self) -> list[AgentSkill]:
-        """The specialised skills as entries of the victim's skill list (S0 is added by the runner as before)."""
-        return [AgentSkill(name, ev.current.description, ev.current_markdown) for name, ev in self.skills.items()]
+    def skill_entries(self) -> list[tuple[str, str, str]]:
+        """The specialised skills as (name, description, body), for the victim's skill list (S0 is added by the
+        runner as before). Plain tuples, so this module needs no agent framework."""
+        return [(name, ev.current.description, ev.current_markdown) for name, ev in self.skills.items()]
 
     def security_names(self) -> list[str]:
         return [self.general_name, *self.skills]

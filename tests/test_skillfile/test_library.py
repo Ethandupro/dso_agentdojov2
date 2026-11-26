@@ -101,17 +101,17 @@ def create_skill(lib: SecurityLibraryEvolver):
 def test_library_starts_as_s0_alone_and_the_judge_creates_a_skill(tmp_path: Path, s0: SkillFile):
     judge = LibraryJudge([assign(NEW, NEW, create=True)])
     lib = library(tmp_path, s0, judge)
-    assert lib.agent_skills() == [] and lib.security_names() == [S0_NAME] and lib.versions() == {}
+    assert lib.skill_entries() == [] and lib.security_names() == [S0_NAME] and lib.versions() == {}
     steps = create_skill(lib)
     # One library step; the wins were the new skill's evidence, so no edit step runs and S0 is untouched.
     assert [(s.skill, s.outcome) for s in steps] == [(NEW, "applied")] and not judge.edit_calls
     assert steps[0].applied_edits[0]["op"] == "CREATE"
     assert lib.version_name == "S0" and lib.general.pending == []
-    [skill] = lib.agent_skills()
-    assert (skill.name, skill.description) == (NEW, NEW_SKILL["description"])
-    assert NEW_SKILL["rules"][0] in skill.body and S0_NAME in skill.body
+    [(name, description, body)] = lib.skill_entries()
+    assert (name, description) == (NEW, NEW_SKILL["description"])
+    assert NEW_SKILL["rules"][0] in body and S0_NAME in body
     assert lib.versions() == {NEW: "S0"}
-    assert (tmp_path / "library" / NEW / "S0.md").read_text() == skill.body
+    assert (tmp_path / "library" / NEW / "S0.md").read_text() == body
     saved = json.loads((tmp_path / "library" / "library_step_0001.json").read_text())
     assert saved["created"] == NEW and saved["library_before"] == [S0_NAME]
     # The judge saw the library as S0 only, and both trials with what was loaded.
@@ -140,7 +140,7 @@ def test_loaded_skill_goes_to_its_rules_step_without_a_forced_load_run(tmp_path:
     assert [(s.skill, s.outcome) for s in steps] == [("library", "no_edits"), (NEW, "applied")]
     assert steps[1].applied_edits == [{"op": "ADD", "section": "Rules", "text": NEW_RULE, "keeps": ""}]
     assert lib.versions() == {NEW: "S1"} and lib.version_name == "S0"
-    assert NEW_RULE in lib.agent_skills()[0].body
+    assert NEW_RULE in lib.skill_entries()[0][2]
     system, user = judge.edit_calls[0]
     assert f"specialised skill of a security library, {NEW}" in system
     assert "[A1]" in user and "[A2]" not in user and "[S1]" not in user  # only this skill's rules are editable
@@ -167,7 +167,7 @@ def test_not_loaded_skill_is_routed_by_the_forced_load_check(tmp_path: Path, s0:
     assert all(r["forced_load"] == {"runs": 1, "attacker_successes": still_won} for r in routed)
     assert f"Re-run with the skill {NEW} already loaded, 1 times" in judge.edit_calls[0][1]
     if op == "DESCRIBE":
-        assert lib.agent_skills()[0].description == NEW_DESCRIPTION
+        assert lib.skill_entries()[0][1] == NEW_DESCRIPTION
 
 
 def test_general_assignments_use_s0s_own_buckets(tmp_path: Path, s0: SkillFile):
@@ -191,7 +191,7 @@ def test_a_bad_library_reply_is_retried_then_every_win_counts_as_general(tmp_pat
     lib = library(tmp_path, s0, judge)
     steps = create_skill(lib)
     assert len(judge.library_calls) == 2 and "at least 2 must share its kind" in judge.library_calls[1][1]
-    assert steps[0].outcome == "carried_over" and lib.agent_skills() == []
+    assert steps[0].outcome == "carried_over" and lib.skill_entries() == []
     assert [s.skill for s in steps[1:]] == [None]  # both wins went to S0's rules step
 
 
@@ -229,7 +229,7 @@ def test_library_state_round_trip(tmp_path: Path, s0: SkillFile):
     resumed = library(tmp_path, s0, judge)
     resumed.load_state(state)
     assert resumed.versions() == {NEW: "S0"} and resumed.prefixes == {NEW: "A"}
-    assert resumed.agent_skills() == lib.agent_skills()
+    assert resumed.skill_entries() == lib.skill_entries()
     assert resumed.skills[NEW].history is resumed.general.history and len(resumed.general.history) == 3
     assert resumed.general.pending[0].security_loaded == [S0_NAME, NEW]
     assert resumed.state_dict() == state
