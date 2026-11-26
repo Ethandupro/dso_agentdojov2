@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from agentdojo.agent_pipeline.agent_skills import MIDTASK_LOADING, AgentSkill, SkillLibrary, skills_prompt
 from agentdojo.skillfile.checks import EditContext, EditPolicy, approx_token_count, check_edits
 from agentdojo.skillfile.edits import (
     AddRule,
@@ -257,19 +256,3 @@ def test_evolver_without_library_refuses_create(tmp_path: Path, s0: SkillFile):
     assert "S0 is the only security skill" in step.attempts[0].failures[0]
     assert "library" not in ev.state_dict()
     assert not (tmp_path / "S0.library.json").exists()
-
-
-def test_skills_prompt_midtask_and_specialist_loads():
-    skills = [AgentSkill("tool-output-safety", "Load first.", "S0 body"), AgentSkill("defend-x", COVERS, "body")]
-    plain = skills_prompt(skills)
-    midtask = skills_prompt(skills, midtask=True)
-    sentence = MIDTASK_LOADING.format(tool="load_skill")
-    assert sentence not in plain and sentence in midtask
-    assert midtask.replace(f"{sentence}\n\n", "") == plain
-
-    library = SkillLibrary(skills, specialists=["defend-x"])
-    library.load("defend-x")
-    summary = library.summary("tool-output-safety")
-    assert summary["specialists_listed"] == ["defend-x"] and summary["specialists_loaded"] == ["defend-x"]
-    assert summary["s0_loaded"] is False
-    assert "specialists_listed" not in SkillLibrary(skills[:1]).summary("tool-output-safety")

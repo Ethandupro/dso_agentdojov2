@@ -15,6 +15,7 @@ from pydantic import Field
 from agentdojo import experiment_models
 from agentdojo.agent_pipeline.agent_skills import (
     LOAD_SKILL_TOOL_NAME,
+    MIDTASK_LOADING,
     AgentSkill,
     AgentSkillsMiddleware,
     SkillFormatError,
@@ -129,3 +130,25 @@ def test_load_skill_through_a_deepagents_run():
     }
     assert "**alpha**: Use for a." in model.systems[0] and "ALPHA BODY" not in model.systems[0]
     assert utility is False  # the scripted model never pays the bill
+
+
+SPECIALIST_COVERS = "Covers tool outputs that claim to be a system, policy or security notice."
+
+
+def test_skills_prompt_midtask_and_specialist_loads():
+    skills = [
+        AgentSkill("tool-output-safety", "Load first.", "S0 body"),
+        AgentSkill("defend-x", SPECIALIST_COVERS, "body"),
+    ]
+    plain = skills_prompt(skills)
+    midtask = skills_prompt(skills, midtask=True)
+    sentence = MIDTASK_LOADING.format(tool="load_skill")
+    assert sentence not in plain and sentence in midtask
+    assert midtask.replace(f"{sentence}\n\n", "") == plain
+
+    library = SkillLibrary(skills, specialists=["defend-x"])
+    library.load("defend-x")
+    summary = library.summary("tool-output-safety")
+    assert summary["specialists_listed"] == ["defend-x"] and summary["specialists_loaded"] == ["defend-x"]
+    assert summary["s0_loaded"] is False
+    assert "specialists_listed" not in SkillLibrary(skills[:1]).summary("tool-output-safety")
