@@ -150,6 +150,17 @@ def test_refuses_mixed_manifests_and_filters_on_limit(tmp_path: Path):
     assert (smoke / "comparison-limit5.html").exists() and (smoke / "comparison-limit5.json").exists()
 
 
+def test_refuses_mixed_skill_loading(tmp_path: Path):
+    write_run(tmp_path, "C1", fixed_attack_run(True))  # before 2026-11-26: no key, i.e. "index"
+    write_run(tmp_path, "C3", evolving_run([True] * 3, False, True), skills={"loading": "prompt"})
+    with pytest.raises(RunMismatchError, match="--skill-loading"):
+        find_runs(tmp_path)
+    same = tmp_path / "same"
+    write_run(same, "C1", fixed_attack_run(True), skills={"loading": "prompt"})
+    write_run(same, "C3", evolving_run([True] * 3, False, True), skills={"loading": "prompt"})
+    assert len(find_runs(same)) == 2
+
+
 def test_position_bins_follow_run_order():
     rows = [{"unit": 100 - i, "pair": f"p{i}"} for i in range(25)]  # written in reverse unit order
     bins = position_bins(rows)

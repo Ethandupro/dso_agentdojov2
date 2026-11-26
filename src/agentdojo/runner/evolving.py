@@ -89,6 +89,8 @@ class EvolvingSkillFile:
         trials_per_pair: int | None = None,
         stop_on_success: bool = False,
     ) -> None:
+        """The victim reads S0 with the index of specialised skills when `evolver.s0_index` (`--skill-loading index`
+        or `both`); without specialised skills S0 is unchanged either way."""
         if evolver.trigger.batched and trials_per_pair is None:
             raise ValueError("the batched trigger needs trials_per_pair to tell when a train pair is done")
         self.evolver = evolver
@@ -109,7 +111,11 @@ class EvolvingSkillFile:
 
     @property
     def markdown(self) -> str:
-        return self.evolver.current_markdown
+        return self.evolver.library.s0_markdown(index=self.evolver.s0_index)
+
+    @property
+    def specialist_skills(self) -> list[tuple[str, str, str]]:
+        return self.evolver.library.victim_skills()
 
     @property
     def description(self) -> str | None:
