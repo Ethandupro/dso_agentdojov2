@@ -57,6 +57,13 @@ tasks need at least one skill, and loading a skill that turns out not to apply c
 its first tool call. Loading is still the agent's choice, and applies to every skill alike, so C0 and C1 differ only
 in whether S0 is listed."""
 
+PRELOADED_SKILLS_PROMPT = """\
+These skills are already loaded for this task. Follow their instructions:
+
+{bodies}"""
+"""The forced-load check of the security library (`skillfile.library`): a won trial is re-run with one skill's body
+already in the system prompt, to tell "the skill was not loaded" from "the skill did not help". Never used in trials."""
+
 SkillsPromptStyle = Literal["nudge", "plain"]
 SKILLS_PROMPTS: dict[SkillsPromptStyle, str] = {"nudge": NUDGE_SKILLS_PROMPT, "plain": PLAIN_SKILLS_PROMPT}
 
@@ -130,6 +137,8 @@ class SkillLibrary:
 
     skills: list[AgentSkill]
     loads: list[SkillLoad] = field(default_factory=list)
+    preloaded: list[str] = field(default_factory=list)
+    """Skills whose bodies were put in the system prompt (the forced-load check); empty in trials."""
 
     def __post_init__(self) -> None:
         names = [s.name for s in self.skills]
@@ -166,6 +175,7 @@ class SkillLibrary:
                 else None
             ),
             "s0_loaded": None if security_skill is None else self.loaded(security_skill),
+            **({"preloaded": list(self.preloaded)} if self.preloaded else {}),
         }
 
 
@@ -176,10 +186,21 @@ class AgentSkillsMiddleware(AgentMiddleware):
     recorded in the same `SkillLibrary`.
     """
 
-    def __init__(self, library: SkillLibrary, prompt_style: SkillsPromptStyle = "nudge") -> None:
+    def __init__(
+        self, library: SkillLibrary, prompt_style: SkillsPromptStyle = "nudge", preloaded: Sequence[str] = ()
+    ) -> None:
         super().__init__()
         self.library = library
         self.prompt = skills_prompt(library.skills, prompt_style)
+        if preloaded:
+            bodies = []
+            for name in preloaded:
+                skill = library.get(name)
+                if skill is None:
+                    raise SkillFormatError(f"cannot preload {name!r}: not in the skill list")
+                bodies.append(f'<skill name="{name}">\n{skill.body}</skill>')
+            library.preloaded = list(preloaded)
+            self.prompt = f"{self.prompt}\n\n" + PRELOADED_SKILLS_PROMPT.format(bodies="\n\n".join(bodies))
 
         def load_skill(name: str) -> str:
             """Read the full instructions of one skill from your skill library."""

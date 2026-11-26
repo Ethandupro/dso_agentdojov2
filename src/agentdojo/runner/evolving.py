@@ -9,12 +9,18 @@ its last trial (`finish_pair`): the pair's last trial index, or, with `--stop-on
 that achieved the injection goal. Test trials and benign tasks are ignored. The evolver's state goes into the
 runner's checkpoint, so a resumed run continues from the same file, history, pending wins, attack archive and
 changelog.
+
+With `--security-library` the evolver is a `skillfile.library.SecurityLibraryEvolver`: the library starts as S0 alone,
+the judge may add specialised security skills at each batch, and this class hands them to the runner
+(`extra_skills`), records their versions (`library_versions`) and passes on the runner's forced-load check.
 """
 
 from typing import Any
 
+from agentdojo.agent_pipeline.agent_skills import AgentSkill
 from agentdojo.runner.plugins import StaticAttacker
 from agentdojo.skillfile.judge import RemovedSpan, SkillFileEvolver, StepResult, TrialRecord
+from agentdojo.skillfile.library import ForcedLoadFn, SecurityLibraryEvolver
 from agentdojo.task_suite.load_suites import get_suite
 
 
@@ -40,6 +46,7 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
         confirmation=record.get("judge_confirmation"),
         victim_trace=record.get("judge_trace"),
         victim_text=record.get("victim_text"),
+        skills_loaded=list(skills["loaded"]) if skills.get("loaded") is not None else None,
     )
 
 
@@ -50,6 +57,7 @@ def step_summary(steps: list[StepResult]) -> dict[str, Any] | None:
         return None
     each = [
         {
+            **({"skill": s.skill} if s.skill is not None else {}),
             "step": s.step,
             "outcome": s.outcome,
             "version_before": s.version_before,
@@ -66,11 +74,13 @@ def step_summary(steps: list[StepResult]) -> dict[str, Any] | None:
     if len(each) == 1:
         return each[0]
     applied = any(e["outcome"] == "applied" for e in each)
+    # S0's versions; library and specialised-skill steps keep their own in `steps`.
+    s0_steps = [e for e in each if "skill" not in e] or each
     return {
         "step": each[-1]["step"],
         "outcome": "applied" if applied else each[-1]["outcome"],
-        "version_before": each[0]["version_before"],
-        "version_after": each[-1]["version_after"],
+        "version_before": s0_steps[0]["version_before"],
+        "version_after": s0_steps[-1]["version_after"],
         "applied_edits": [x for e in each for x in e["applied_edits"]],
         "dropped_edits": [x for e in each for x in e["dropped_edits"]],
         "judge_calls": sum(e["judge_calls"] for e in each),
@@ -84,7 +94,7 @@ def step_summary(steps: list[StepResult]) -> dict[str, Any] | None:
 class EvolvingSkillFile:
     def __init__(
         self,
-        evolver: SkillFileEvolver,
+        evolver: SkillFileEvolver | SecurityLibraryEvolver,
         benchmark_version: str,
         trials_per_pair: int | None = None,
         stop_on_success: bool = False,
@@ -106,6 +116,22 @@ class EvolvingSkillFile:
     @property
     def version_name(self) -> str:
         return self.evolver.version_name
+
+    @property
+    def extra_skills(self) -> list[AgentSkill]:
+        """Security library: the specialised security skills, listed for the victim next to S0."""
+        if not isinstance(self.evolver, SecurityLibraryEvolver):
+            return []
+        return [AgentSkill(name, description, body) for name, description, body in self.evolver.skill_entries()]
+
+    @property
+    def library_versions(self) -> dict[str, str] | None:
+        """Security library: each specialised skill's version (None outside a library run)."""
+        return self.evolver.versions() if isinstance(self.evolver, SecurityLibraryEvolver) else None
+
+    def set_forced_load_fn(self, fn: ForcedLoadFn) -> None:
+        if isinstance(self.evolver, SecurityLibraryEvolver):
+            self.evolver.forced_load_fn = fn
 
     @property
     def markdown(self) -> str:
