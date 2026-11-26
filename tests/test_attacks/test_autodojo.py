@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 
@@ -97,20 +98,21 @@ def fb(
 
 
 def test_agent_response_is_shown_to_the_optimizer_and_can_be_turned_off():
+    # Without the analyst the optimizer sees the agent's final reply (the PR #38 view).
     refusal = "I won't send money to an unknown account."
-    on, _, on_log = make_attacker()
+    on, _, on_log = make_attacker(analyst=False)
     seed = on.text_for(PAIR, 0, [])
     on.text_for(PAIR, 1, [fb(0, seed, final_answer=refusal)])
     assert refusal in on_log[-1]["messages"][1]["content"]
 
-    off, _, off_log = make_attacker(show_agent_response=False)
+    off, _, off_log = make_attacker(analyst=False, show_agent_response=False)
     seed = off.text_for(PAIR, 0, [])
     off.text_for(PAIR, 1, [fb(0, seed, final_answer=refusal)])
     assert refusal not in off_log[-1]["messages"][1]["content"]
 
 
 def test_agent_response_is_truncated():
-    attacker, _, log = make_attacker(agent_response_chars=20)
+    attacker, _, log = make_attacker(analyst=False, agent_response_chars=20)
     seed = attacker.text_for(PAIR, 0, [])
     attacker.text_for(PAIR, 1, [fb(0, seed, final_answer="x" * 200)])
     user_msg = log[-1]["messages"][1]["content"]
@@ -404,32 +406,22 @@ def test_strategy_bank_off_hides_it():
     assert attacker.archive[-1]["strategy"] is None
 
 
-def test_victim_trace_supersedes_the_final_answer_on_the_leaderboard():
-    attacker, _, log = make_attacker()
+@pytest.mark.parametrize("analyst", [True, False])
+def test_the_optimizer_never_sees_the_victim_trace(analyst: bool):
+    # User decision 2026-11-26: only the analyst reads the victim's run; the optimizer gets its diagnosis.
+    attacker, _, log = make_attacker(analyst=analyst)
     seed = attacker.text_for(PAIR, 0, [])
     trace = "thought: I will not follow that.\ncalled: read_inbox()"
     history = [
         AttemptFeedback(
-            trial=0, injection_text=seed, utility=True, security=False, final_answer="No.", victim_trace=trace
+            trial=0, injection_text=seed, utility=True, security=False, final_answer="No thanks.", victim_trace=trace
         )
     ]
     attacker.text_for(PAIR, 1, history)
     user_msg = log[-1]["messages"][1]["content"]
-    assert "step by step" in user_msg and "called: read_inbox()" in user_msg
-    assert "The agent's response that time" not in user_msg  # the trace replaces the bare final answer
-
-
-def test_no_victim_trace_falls_back_to_the_final_answer():
-    attacker, _, log = make_attacker()
-    seed = attacker.text_for(PAIR, 0, [])
-    history = [
-        AttemptFeedback(
-            trial=0, injection_text=seed, utility=True, security=False, final_answer="I refuse.", victim_trace=None
-        )
-    ]
-    attacker.text_for(PAIR, 1, history)
-    user_msg = log[-1]["messages"][1]["content"]
-    assert "The agent's response that time: I refuse." in user_msg and "step by step" not in user_msg
+    assert "I will not follow that" not in user_msg and "read_inbox" not in user_msg and "step by step" not in user_msg
+    # With the analyst on, not even the agent's final reply; without it, only that reply.
+    assert ("The agent's response that time: No thanks." in user_msg) is (not analyst)
 
 
 def test_optimizer_ranks_top_strategies_and_writes_from_the_top():
