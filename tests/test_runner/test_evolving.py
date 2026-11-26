@@ -257,3 +257,35 @@ def test_c3_batched_trigger_confirms_wins_and_steps_after_the_pair(tmp_path: Pat
     assert len(replicas) == 6 and {r["purpose"] for r in replicas} == {"judge_confirmation"}
     assert {r["phase"] for r in replicas} == {"train"}
     assert all(r["judge_confirmation"] is None for r in records if r["phase"] != "train")
+
+
+def test_c3_rich_evidence_records_quotes_and_never_writes_the_victim_text(tmp_path: Path):
+    cond = CONDITIONS["C3"]
+    run_dir = run_dir_for(tmp_path, cond, 0, 1)
+    units = build_units(cond, MANIFEST, 3, 1)
+    judge = DeterministicJudge()
+    evolver = SkillFileEvolver(
+        load_skill_file(S0_PATH), judge, run_dir / "skill_files", approx_token_count, rich_evidence=True
+    )
+    static = StaticAttacker(MANIFEST)
+    records = Runner(
+        config=make_config("C3", 1),
+        condition=cond,
+        run_dir=run_dir,
+        units=units,
+        attacker=static,
+        static_attacker=static,
+        skill_file=EvolvingSkillFile(evolver, "v1.2.2"),
+        victim_factory=LoadingGivingUpVictim,
+        echo=lambda _: None,
+        judge_evidence=True,
+    ).run()
+    train = [r for r in records if r["phase"] == "train"]
+    assert all(r["s0_rules_quoted"] == [] and isinstance(r["judge_trace"], str) for r in train)
+    assert "(the load_skill output, not shown)" in train[0]["judge_trace"]
+    written = (run_dir / "trials.jsonl").read_text()
+    assert '"victim_text"' not in written
+    assert all("s0_rules_quoted" not in r and "judge_trace" not in r for r in records if r["phase"] != "train")
+    # The first step has no earlier trials, so the quote table starts with the second.
+    assert "<run>" in judge.calls[0] and "<rule_quotes>" not in judge.calls[0]
+    assert "<rule_quotes>" in judge.calls[1]

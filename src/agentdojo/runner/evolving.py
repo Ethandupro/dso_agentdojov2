@@ -38,6 +38,8 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
         agent_actions=list(record.get("agent_actions") or []),
         final_answer=record.get("final_answer"),
         confirmation=record.get("judge_confirmation"),
+        victim_trace=record.get("judge_trace"),
+        victim_text=record.get("victim_text"),
     )
 
 
@@ -117,7 +119,12 @@ class EvolvingSkillFile:
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         if record["pair"] is None:
             return None
-        step = self.evolver.record_trial(trial_record_from_run_record(record, self.benchmark_version))
+        trial = trial_record_from_run_record(record, self.benchmark_version)
+        # The victim's own text is only used to find the rules it quoted; it never goes to trials.jsonl.
+        record.pop("victim_text", None)
+        step = self.evolver.record_trial(trial)
+        if self.evolver.rich_evidence and record["phase"] == "train":
+            record["s0_rules_quoted"] = trial.cited_rules
         steps = [step] if step is not None else []
         if self.evolver.trigger.batched and record["phase"] == "train" and self.pair_finished(record):
             steps.extend(self.evolver.finish_pair())
