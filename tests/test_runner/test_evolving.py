@@ -21,9 +21,10 @@ from agentdojo.runner.run import Runner, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy, approx_token_count
 from agentdojo.skillfile.judge import JudgeCall, RemovedSpan, SkillFileEvolver, TrialRecord
 from agentdojo.skillfile.structure import load_skill_file
+from agentdojo.skillfile.trigger import TriggerPolicy
 from agentdojo.types import ChatMessage
 from tests.test_checker.test_checker_middleware import GullibleModel
-from tests.test_runner.test_run import AGENT_SKILLS, MANIFEST, REPO_ROOT, make_config
+from tests.test_runner.test_run import AGENT_SKILLS, MANIFEST, REPO_ROOT, SkillAwareModel, make_config
 
 S0_PATH = REPO_ROOT / MANIFEST["s0_path"]
 NEW_RULE = "Promises a reward for obeying."
@@ -197,3 +198,62 @@ def test_c3_judge_can_rewrite_the_s0_description_the_victim_sees(tmp_path: Path)
     assert {d for p, d in described[: first_train + 1]} == {experiment_models.S0_SKILL_DESCRIPTION}
     assert {d for p, d in described[first_train + 1 :]} == {NEW_DESCRIPTION}  # incl. test and benign after
     assert records[first_train]["skill_step"]["applied_edits"] == [{"op": "DESCRIBE", "text": NEW_DESCRIPTION}]
+
+
+class LoadingGivingUpVictim(GivingUpVictim):
+    """Loads S0 first (it is listed), then gives up: every attacked trial is a "loaded but lost" win."""
+
+    def query(
+        self,
+        query: str,
+        runtime: FunctionsRuntime,
+        env: Env = EmptyEnv(),
+        messages: Sequence[ChatMessage] = [],
+        extra_args: dict = {},
+    ) -> tuple[str, FunctionsRuntime, Env, Sequence[ChatMessage], dict]:
+        model = SkillAwareModel(final="I can't help.")
+        pipeline = DeepAgentsPipeline(model, name=self.name, tool_middleware_factory=self.factory)
+        return pipeline.query(query, runtime, env, messages, extra_args)
+
+
+def test_c3_batched_trigger_confirms_wins_and_steps_after_the_pair(tmp_path: Path):
+    cond = CONDITIONS["C3"]
+    run_dir = run_dir_for(tmp_path, cond, 0, 1, judge_trigger="trigger-test")
+    units = build_units(cond, MANIFEST, 3, 1)
+    judge = DeterministicJudge()
+    evolver = SkillFileEvolver(
+        load_skill_file(S0_PATH),
+        judge,
+        run_dir / "skill_files",
+        approx_token_count,
+        trigger=TriggerPolicy(mode="batched"),
+        n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
+    )
+    static = StaticAttacker(MANIFEST)
+    runner = Runner(
+        config=make_config("C3", 1),
+        condition=cond,
+        run_dir=run_dir,
+        units=units,
+        attacker=static,
+        static_attacker=static,
+        skill_file=EvolvingSkillFile(evolver, "v1.2.2", trials_per_pair=3),
+        victim_factory=LoadingGivingUpVictim,
+        echo=lambda _: None,
+        judge_confirm_runs=2,
+    )
+    records = runner.run()
+    assert run_dir.parent.name == "c3_evolving-s0_static-attack-trigger-test-limit1"
+    train = [r for r in records if r["phase"] == "train"]
+    assert all(r["attacker_success"] and r["skills"]["s0_loaded"] for r in train)
+    assert [r["judge_confirmation"] for r in train] == [{"runs": 2, "attacker_successes": 2}] * 3
+    # One train pair (the run's last): one rules step after its third trial, on all 3 confirmed wins.
+    assert len(judge.calls) == 1 and judge.calls[0].count("<trial>") == 3
+    assert [r["skill_step"] is None for r in train] == [True, True, False]
+    assert train[2]["skill_step"]["outcome"] == "applied"
+    assert {r["skill_version"] for r in records if r["phase"] in ("test", "benign_after")} == {"S1"}
+    # Confirmation runs are never trials: 2 per train win in replications.jsonl, none for test pairs.
+    replicas = [json.loads(line) for line in runner.replications_path.read_text().splitlines()]
+    assert len(replicas) == 6 and {r["purpose"] for r in replicas} == {"judge_confirmation"}
+    assert {r["phase"] for r in replicas} == {"train"}
+    assert all(r["judge_confirmation"] is None for r in records if r["phase"] != "train")

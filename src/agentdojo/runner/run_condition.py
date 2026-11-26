@@ -58,6 +58,8 @@ from agentdojo.runner.report import write_report
 from agentdojo.runner.run import DEFAULT_REPLICATE_WINS, ConfigMismatchError, Runner, quick_summary, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy
 from agentdojo.skillfile.judge import (
+    BATCH_FOCUS,
+    BATCH_INTRO,
     DEFAULT_JUDGE_MAX_TOKENS,
     DEFAULT_JUDGE_MODEL,
     JUDGE_SYSTEM_PROMPTS,
@@ -67,6 +69,7 @@ from agentdojo.skillfile.judge import (
 )
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
+from agentdojo.skillfile.trigger import TriggerPolicy
 
 JUDGE_KEY_ENV = experiment_models.JUDGE_API_KEY_ENV
 
@@ -318,6 +321,39 @@ def skill_agent_settings(
     "the agent loads S0 (decided 2026-11-19 by user). Never with --external-checker.",
 )
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
+@click.option(
+    "--judge-trigger",
+    type=click.Choice(["batched", "every-win"]),
+    default="batched",
+    show_default=True,
+    help="C3/C4: when the judge runs. 'batched' (design note 2026-11-26): collect train wins, keep only wins that "
+    "repeat on re-run, route them by cause ('not loaded' -> description-only step, 'loaded but lost' -> rules-only "
+    "step), and run the judge every --judge-batch-pairs finished train pairs on each bucket with at least "
+    "--judge-min-losses wins. 'every-win' (the design before 2026-11-26): one step after every train win; it gets an "
+    "'-every-win' results directory.",
+)
+@click.option(
+    "--judge-batch-pairs",
+    type=click.IntRange(min=1),
+    default=TriggerPolicy.batch_pairs,
+    show_default=True,
+    help="Batched trigger: a judge step after every this many finished train pairs (and after the last one).",
+)
+@click.option(
+    "--judge-confirm-runs",
+    type=click.IntRange(min=0),
+    default=TriggerPolicy.confirm_runs,
+    show_default=True,
+    help="Batched trigger: re-run each train win this many more times, unchanged (never trials); it counts only if "
+    "at least one re-run also succeeds (0 = every win counts).",
+)
+@click.option(
+    "--judge-min-losses",
+    type=click.IntRange(min=1),
+    default=TriggerPolicy.min_losses,
+    show_default=True,
+    help="Batched trigger: confirmed wins a bucket needs before the judge runs on it; smaller buckets carry over.",
+)
 @click.option("--attacker-model-id", default=experiment_models.ATTACKER_MODEL_ID, show_default=True, help="C2/C4.")
 @click.option("--attacker-base-url", default=experiment_models.ATTACKER_BASE_URL, show_default=True, help="C2/C4.")
 @click.option(
@@ -457,6 +493,10 @@ def main(
     judge_model: str,
     judge_edits_description: bool,
     digest_size: int,
+    judge_trigger: str,
+    judge_batch_pairs: int,
+    judge_confirm_runs: int,
+    judge_min_losses: int,
     attacker_model_id: str,
     attacker_base_url: str,
     attacker_loop: str,
@@ -562,6 +602,28 @@ def main(
     if not analyst and not (evolving_attack and attacker_loop in AUTODOJO_LOOPS):
         raise click.ClickException("--no-analyst applies to the autodojo/skill-agent evolving attacker only")
     replicate = (DEFAULT_REPLICATE_WINS if replicate_wins is None else replicate_wins) if evolving_attack else 0
+    trigger = TriggerPolicy(
+        mode="batched" if judge_trigger == "batched" else "every-win",
+        batch_pairs=judge_batch_pairs,
+        confirm_runs=judge_confirm_runs,
+        min_losses=judge_min_losses,
+    )
+    default_trigger = TriggerPolicy(mode="batched")
+    trigger_flags_changed = (judge_batch_pairs, judge_confirm_runs, judge_min_losses) != (
+        default_trigger.batch_pairs,
+        default_trigger.confirm_runs,
+        default_trigger.min_losses,
+    )
+    if not cond.evolving_skill and (judge_trigger != "batched" or trigger_flags_changed):
+        raise click.ClickException("--judge-trigger and --judge-batch-pairs/-confirm-runs/-min-losses are C3/C4 only")
+    if not trigger.batched and trigger_flags_changed:
+        raise click.ClickException("--judge-batch-pairs/-confirm-runs/-min-losses apply to --judge-trigger batched")
+    trigger_suffix: str | None = None
+    if cond.evolving_skill:
+        if not trigger.batched:
+            trigger_suffix = "every-win"
+        elif trigger_flags_changed:
+            trigger_suffix = f"trigger-b{judge_batch_pairs}c{judge_confirm_runs}m{judge_min_losses}"
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -626,6 +688,7 @@ def main(
         free_skills=skill_choice == "free",
         no_analyst=evolving_attack and attacker_loop in AUTODOJO_LOOPS and show_victim_trace and not analyst,
         replicate_wins=replicate if evolving_attack else None,
+        judge_trigger=trigger_suffix,
     )
     config = RunConfig(
         condition=cond.name,
@@ -701,6 +764,14 @@ def main(
                 "seed": seed,
                 "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPTS[defense]),
                 "digest_size": digest_size,
+                "trigger": {
+                    **trigger.to_dict(),
+                    **(
+                        {"batch_prompt_sha256": sha256_text(BATCH_INTRO + json.dumps(BATCH_FOCUS, sort_keys=True))}
+                        if trigger.batched
+                        else {}
+                    ),
+                },
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
                 "common_words": len(policy.common_words),
                 "token_counter": f"vLLM /tokenize of {token_model_id}",
@@ -730,8 +801,15 @@ def main(
             policy=policy,
             digest_size=digest_size,
             defense=defense,
+            trigger=trigger,
+            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
-        skill_file = EvolvingSkillFile(evolver, manifest_data["benchmark_version"])
+        skill_file = EvolvingSkillFile(
+            evolver,
+            manifest_data["benchmark_version"],
+            trials_per_pair=trials_per_pair,
+            stop_on_success=stop_on_success,
+        )
     elif cond.s0:
         skill_file = FixedSkillFile(s0_text)
     else:
@@ -764,6 +842,7 @@ def main(
         show_victim_trace=show_victim_trace,
         stop_on_success=stop_on_success,
         replicate_wins=replicate,
+        judge_confirm_runs=trigger.confirm_runs if cond.evolving_skill and trigger.batched else 0,
     )
     try:
         records = runner.run()
