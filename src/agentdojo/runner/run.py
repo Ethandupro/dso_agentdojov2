@@ -56,6 +56,7 @@ from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacke
 from agentdojo.runner.report import evolving_metrics, replication_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
 from agentdojo.runner.trace import judge_trace_digest, victim_own_text, victim_trace_digest
+from agentdojo.skillfile.judge import TrialRecord
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -283,6 +284,11 @@ class Runner:
         before the record is written) and, for wins, a run digest for the judge (`judge_trace`)."""
         """C3/C4 batched trigger: unchanged re-runs of each train win (injection goal OR user task failed), so the
         judge sees only wins that repeat. Never counted as trials."""
+        self._forced_replicas: list[dict[str, Any]] = []
+        self._unit_index = 0
+        """Security library: forced-load re-runs made during this unit's library step."""
+        if hasattr(skill_file, "set_forced_load_fn"):
+            skill_file.set_forced_load_fn(self.forced_load_check)  # type: ignore[attr-defined]
         self.skipped: list[int] = []
         """Unit indices skipped by `stop_on_success` (no record, no model call)."""
         self.config = config
@@ -444,7 +450,7 @@ class Runner:
             injections = {vector: injection_text for vector in unit.pair.vectors}
 
         skill_version = self.skill_file.version_name
-        keys = {
+        keys: dict[str, Any] = {
             "condition": self.condition.name,
             "run_id": self.config.run_id,
             "seed": self.config.seed,
@@ -459,6 +465,11 @@ class Runner:
             "trial": unit.trial,
             "skill_version": skill_version,
         }
+        library_versions = getattr(self.skill_file, "library_versions", None)
+        if library_versions is not None:
+            keys["library_versions"] = library_versions
+        self._forced_replicas = []
+        self._unit_index = unit.index
 
         checker_lines: list[dict[str, Any]] = []
         markdown = self.skill_file.markdown
@@ -615,7 +626,79 @@ class Runner:
                 attacker.observe(unit.pair, feedback, skill_version)
         record["skill_step"] = self.skill_file.after_trial(record)
         record["skill_version_after"] = self.skill_file.version_name
+        if library_versions is not None:
+            record["library_versions_after"] = getattr(self.skill_file, "library_versions", None)
+        # Forced-load checks the library step ran (on earlier train wins) go to replications.jsonl with this unit.
+        replicas.extend(self._forced_replicas)
+        self._forced_replicas = []
         return record, checker_lines, replicas
+
+    def forced_load_check(self, trial: TrialRecord, skill_name: str) -> dict[str, int]:
+        """Security library: re-run a won train trial unchanged (same text, current library) except that
+        `skill_name` is already loaded. Never a trial: the line goes to replications.jsonl with
+        `purpose: "forced_load_check"`; its `unit` is the won trial's and `during_unit` the unit whose batch ran the
+        check. Returns `{"runs": 1, "attacker_successes": 0 or 1}`."""
+        unit = next(
+            u
+            for u in self.units
+            if u.phase == "train" and u.pair is not None and u.pair.id == trial.pair and u.trial == trial.trial
+        )
+        assert unit.pair is not None
+        suite = get_suite(self.config.benchmark_version, unit.suite)
+        user_task = suite.user_tasks[unit.user_task]
+        injection_task = suite.injection_tasks[unit.pair.injection_task]
+        injections = {vector: trial.injection_text for vector in unit.pair.vectors}
+        keys: dict[str, Any] = {
+            "condition": self.condition.name,
+            "run_id": self.config.run_id,
+            "seed": self.config.seed,
+            "unit": unit.index,
+            "unit_id": unit.id,
+            "phase": unit.phase,
+            "suite": unit.suite,
+            "user_task": unit.user_task,
+            "injection_task": unit.pair.injection_task,
+            "pair": unit.pair.id,
+            "split": unit.split,
+            "trial": unit.trial,
+            "skill_version": self.skill_file.version_name,
+            "library_versions": getattr(self.skill_file, "library_versions", None),
+        }
+        n = len(self._forced_replicas) + 1
+        start = time.time()
+        logdir = self.run_dir / "replications" / f"trial_{unit.trial}" / unit.pair.split / f"forced_{skill_name}_{n}"
+        run = self._victim_run(
+            unit,
+            user_task,
+            injection_task,
+            injections,
+            trial.injection_text,
+            "forced_load",
+            keys,
+            self.skill_file.markdown,
+            logdir,
+            None,
+            preload=(skill_name,),
+        )
+        won = bool(run["security"] or not run["utility"])
+        self._forced_replicas.append(
+            {
+                **keys,
+                "replica": n,
+                "purpose": "forced_load_check",
+                "forced_skill": skill_name,
+                "during_unit": self._unit_index,
+                "utility": run["utility"],
+                "security": run["security"],
+                "skills": run["library"].summary(self.security_skill_name) if run["library"] is not None else None,
+                "agent_actions": agent_actions(list(run["messages"])),
+                "final_answer": run["final_answer"],
+                "victim_usage": run["deepagents"].get("usage"),
+                "victim_error": run["deepagents"].get("error"),
+                "duration_s": round(time.time() - start, 3),
+            }
+        )
+        return {"runs": 1, "attacker_successes": int(won)}
 
     def _judge_evidence(
         self, unit: Unit, attacked: bool, won: bool, messages: list[Any], reasoning: dict[int, str]
@@ -698,6 +781,7 @@ class Runner:
         markdown: str | None,
         logdir: Path,
         checker_log: Callable[[dict[str, Any]], None] | None,
+        preload: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """One run of the victim on `unit` with the given injections and security-skill body (a trial, or one replica
         of a won trial). With the external checker, its lines go to `checker_log` (replicas pass None: not logged)."""
@@ -709,9 +793,10 @@ class Runner:
             if markdown is not None:
                 description = getattr(self.skill_file, "description", None) or self.security_skill_description
                 skills.append(AgentSkill(self.security_skill_name, description, markdown))
+                skills.extend(getattr(self.skill_file, "extra_skills", []))
             if skills:
                 library = SkillLibrary(skills)
-                middleware = AgentSkillsMiddleware(library, self.skills_prompt_style)
+                middleware = AgentSkillsMiddleware(library, self.skills_prompt_style, preload)
                 factory = lambda _query: [middleware]
         elif markdown is not None:
             assert self.checker_fn is not None

@@ -70,6 +70,12 @@ from agentdojo.skillfile.judge import (
     openrouter_client,
     openrouter_judge_fn,
 )
+from agentdojo.skillfile.library import (
+    LIBRARY_SYSTEM_PROMPT,
+    SKILL_PREFIXES,
+    LibraryPolicy,
+    SecurityLibraryEvolver,
+)
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 from agentdojo.skillfile.trigger import TriggerPolicy
@@ -336,6 +342,34 @@ def skill_agent_settings(
     "'-every-win' results directory.",
 )
 @click.option(
+    "--security-library/--single-security-skill",
+    "security_library",
+    default=False,
+    show_default=True,
+    help="C3/C4 (opt-in variant, user request 2026-11-26): the security skills form a library. It starts as S0 alone "
+    "(no prebuilt skills); at every batch of the batched trigger the judge assigns each confirmed train win to the "
+    "skill that should have stopped it and may create one specialised security skill, which the victim sees in its "
+    "skill list and loads by choice. Code routes each win: S0's steps, the skill's rules step if it was loaded, or "
+    "for a skill that was not loaded a forced-load re-run that tells a loading problem (description step) from a "
+    "rules problem. Needs --judge-trigger batched. Results directory '-security-library'.",
+)
+@click.option(
+    "--library-max-skills",
+    type=click.IntRange(min=1, max=len(SKILL_PREFIXES)),
+    default=LibraryPolicy().max_skills,
+    show_default=True,
+    help="--security-library: specialised skills the library may hold (S0 not counted).",
+)
+@click.option(
+    "--library-forced-load-runs",
+    type=click.IntRange(min=0),
+    default=LibraryPolicy().forced_load_runs,
+    show_default=True,
+    help="--security-library: re-runs of a win whose assigned skill was not loaded, with that skill already loaded "
+    "(0: no check; such wins go to the skill's description step). Never trials: replications.jsonl, purpose "
+    "forced_load_check.",
+)
+@click.option(
     "--judge-evidence",
     type=click.Choice(["rich", "basic"]),
     default="rich",
@@ -517,6 +551,9 @@ def main(
     judge_edits_description: bool,
     digest_size: int,
     judge_trigger: str,
+    security_library: bool,
+    library_max_skills: int,
+    library_forced_load_runs: int,
     judge_evidence: str,
     rule_match: str,
     judge_batch_pairs: int,
@@ -659,6 +696,21 @@ def main(
     paraphrase_match = rich_evidence and rule_match == "paraphrase"
     if rich_evidence and not paraphrase_match:
         trigger_suffix = f"{trigger_suffix}-verbatim-quotes" if trigger_suffix else "verbatim-quotes"
+    library_policy = LibraryPolicy(max_skills=library_max_skills, forced_load_runs=library_forced_load_runs)
+    library_flags_changed = library_policy != LibraryPolicy()
+    if (security_library or library_flags_changed) and not cond.evolving_skill:
+        raise click.ClickException("--security-library and its --library-* flags are C3/C4 only")
+    if library_flags_changed and not security_library:
+        raise click.ClickException("--library-max-skills/-forced-load-runs apply with --security-library")
+    if security_library:
+        if external_checker:
+            raise click.ClickException("--security-library is a victim-skills design; drop --external-checker")
+        if not trigger.batched:
+            raise click.ClickException("--security-library needs --judge-trigger batched")
+        library_suffix = "security-library"
+        if library_flags_changed:
+            library_suffix = f"{library_suffix}-k{library_max_skills}f{library_forced_load_runs}"
+        trigger_suffix = f"{trigger_suffix}-{library_suffix}" if trigger_suffix else library_suffix
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -824,6 +876,17 @@ def main(
                         else {}
                     ),
                 },
+                **(
+                    {
+                        "library": {
+                            **library_policy.to_dict(),
+                            "prompt_sha256": sha256_text(LIBRARY_SYSTEM_PROMPT),
+                            "starts_from": "S0 only",
+                        }
+                    }
+                    if security_library
+                    else {}
+                ),
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
                 "common_words": len(policy.common_words),
                 "token_counter": f"vLLM /tokenize of {token_model_id}",
@@ -859,7 +922,9 @@ def main(
             n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
         skill_file = EvolvingSkillFile(
-            evolver,
+            SecurityLibraryEvolver(evolver, experiment_models.S0_SKILL_NAME, library_policy)
+            if security_library
+            else evolver,
             manifest_data["benchmark_version"],
             trials_per_pair=trials_per_pair,
             stop_on_success=stop_on_success,
