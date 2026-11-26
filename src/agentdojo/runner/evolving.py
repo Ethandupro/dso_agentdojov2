@@ -120,8 +120,14 @@ class EvolvingSkillFile:
         if record["pair"] is None:
             return None
         trial = trial_record_from_run_record(record, self.benchmark_version)
-        # The victim's own text is only used to find the rules it quoted; it never goes to trials.jsonl.
+        # The victim's own text is only used to find the rules it used; it never goes to trials.jsonl.
         record.pop("victim_text", None)
+        train = record["phase"] == "train" and not self.evolver.frozen
+        if train and self.evolver.rich_evidence and trial.victim_text is not None:
+            match = self.evolver.match_rules(trial.victim_text)
+            trial.cited_rules = match.rule_ids
+            trial.victim_text = None
+            record["s0_rule_match"] = match.to_dict()
         step = self.evolver.record_trial(trial)
         if self.evolver.rich_evidence and record["phase"] == "train":
             record["s0_rules_quoted"] = trial.cited_rules

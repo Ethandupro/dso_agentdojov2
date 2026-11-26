@@ -108,3 +108,9 @@ def test_cli_writes_cost_json_and_ignores_units_past_checkpoint(tmp_path: Path):
 def test_example_prices_file_loads():
     path = Path(__file__).parents[2] / "skillfile_evolution" / "prices.example.json"
     assert load_prices(path) == {}
+
+
+def test_rule_match_calls_count_as_judge_usage():
+    records = [*RECORDS, {"unit": 3, "pair": "p", "s0_rule_match": {"input_tokens": 90, "output_tokens": 10}}]
+    usage = component_usage(CONFIG, STATE, records, LINES)
+    assert usage["judge"]["calls"] == 3 and usage["judge"]["total_tokens"] == 540

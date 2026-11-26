@@ -282,6 +282,7 @@ def test_c3_rich_evidence_records_quotes_and_never_writes_the_victim_text(tmp_pa
     ).run()
     train = [r for r in records if r["phase"] == "train"]
     assert all(r["s0_rules_quoted"] == [] and isinstance(r["judge_trace"], str) for r in train)
+    assert all(r["s0_rule_match"]["rule_ids"] == [] and r["s0_rule_match"]["error"] is None for r in train)
     assert "(the load_skill output, not shown)" in train[0]["judge_trace"]
     written = (run_dir / "trials.jsonl").read_text()
     assert '"victim_text"' not in written

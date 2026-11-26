@@ -64,6 +64,7 @@ from agentdojo.skillfile.judge import (
     DEFAULT_JUDGE_MODEL,
     JUDGE_SYSTEM_PROMPTS,
     QUOTE_WORDS,
+    RULE_MATCH_SYSTEM_PROMPT,
     UNTRUSTED_NOTE,
     SkillFileEvolver,
     openrouter_client,
@@ -345,6 +346,16 @@ def skill_agent_settings(
     "'basic' (before 2026-11-26): tool calls and final answer only; it gets a '-basic-evidence' results directory.",
 )
 @click.option(
+    "--rule-match",
+    type=click.Choice(["paraphrase", "verbatim"]),
+    default="paraphrase",
+    show_default=True,
+    help="C3/C4 with --judge-evidence rich: how the rules the victim used are found. 'paraphrase' (user request "
+    "2026-11-26): verbatim 5-word quotes plus one call to the judge model per train trial that finds rules the victim "
+    "restated in its own words, each backed by a sentence code checks against the victim's text. 'verbatim': quotes "
+    "only, no extra calls; it gets a '-verbatim-quotes' results directory.",
+)
+@click.option(
     "--judge-batch-pairs",
     type=click.IntRange(min=1),
     default=TriggerPolicy.batch_pairs,
@@ -507,6 +518,7 @@ def main(
     digest_size: int,
     judge_trigger: str,
     judge_evidence: str,
+    rule_match: str,
     judge_batch_pairs: int,
     judge_confirm_runs: int,
     judge_min_losses: int,
@@ -642,6 +654,11 @@ def main(
     rich_evidence = cond.evolving_skill and judge_evidence == "rich"
     if cond.evolving_skill and not rich_evidence:
         trigger_suffix = f"{trigger_suffix}-basic-evidence" if trigger_suffix else "basic-evidence"
+    if rule_match != "paraphrase" and not rich_evidence:
+        raise click.ClickException("--rule-match applies to C3/C4 with --judge-evidence rich")
+    paraphrase_match = rich_evidence and rule_match == "paraphrase"
+    if rich_evidence and not paraphrase_match:
+        trigger_suffix = f"{trigger_suffix}-verbatim-quotes" if trigger_suffix else "verbatim-quotes"
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -793,7 +810,16 @@ def main(
                 "evidence": {
                     "mode": judge_evidence,
                     **(
-                        {"untrusted_note_sha256": sha256_text(UNTRUSTED_NOTE), "quote_words": QUOTE_WORDS}
+                        {
+                            "untrusted_note_sha256": sha256_text(UNTRUSTED_NOTE),
+                            "quote_words": QUOTE_WORDS,
+                            "rule_match": rule_match,
+                            **(
+                                {"rule_match_prompt_sha256": sha256_text(RULE_MATCH_SYSTEM_PROMPT)}
+                                if paraphrase_match
+                                else {}
+                            ),
+                        }
                         if rich_evidence
                         else {}
                     ),
@@ -829,6 +855,7 @@ def main(
             defense=defense,
             trigger=trigger,
             rich_evidence=rich_evidence,
+            rule_match_fn=openrouter_judge_fn(judge_model, seed=seed) if paraphrase_match else None,
             n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
         skill_file = EvolvingSkillFile(
