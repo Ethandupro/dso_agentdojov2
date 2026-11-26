@@ -63,6 +63,9 @@ from agentdojo.skillfile.judge import (
     DEFAULT_JUDGE_MAX_TOKENS,
     DEFAULT_JUDGE_MODEL,
     JUDGE_SYSTEM_PROMPTS,
+    QUOTE_WORDS,
+    RULE_MATCH_SYSTEM_PROMPT,
+    UNTRUSTED_NOTE,
     SkillFileEvolver,
     openrouter_client,
     openrouter_judge_fn,
@@ -333,6 +336,26 @@ def skill_agent_settings(
     "'-every-win' results directory.",
 )
 @click.option(
+    "--judge-evidence",
+    type=click.Choice(["rich", "basic"]),
+    default="rich",
+    show_default=True,
+    help="C3/C4: what the judge sees. 'rich' (PR 2, design note 2026-11-26): for each triggering trial a short digest "
+    "of the victim's run (thinking, tool calls, tool results; nothing redacted, skill bodies left out) and the rules "
+    "it quoted; per-rule quote counts over the train trials so far; and an untrusted-data note in the system prompt. "
+    "'basic' (before 2026-11-26): tool calls and final answer only; it gets a '-basic-evidence' results directory.",
+)
+@click.option(
+    "--rule-match",
+    type=click.Choice(["paraphrase", "verbatim"]),
+    default="paraphrase",
+    show_default=True,
+    help="C3/C4 with --judge-evidence rich: how the rules the victim used are found. 'paraphrase' (user request "
+    "2026-11-26): verbatim 5-word quotes plus one call to the judge model per train trial that finds rules the victim "
+    "restated in its own words, each backed by a sentence code checks against the victim's text. 'verbatim': quotes "
+    "only, no extra calls; it gets a '-verbatim-quotes' results directory.",
+)
+@click.option(
     "--judge-batch-pairs",
     type=click.IntRange(min=1),
     default=TriggerPolicy.batch_pairs,
@@ -494,6 +517,8 @@ def main(
     judge_edits_description: bool,
     digest_size: int,
     judge_trigger: str,
+    judge_evidence: str,
+    rule_match: str,
     judge_batch_pairs: int,
     judge_confirm_runs: int,
     judge_min_losses: int,
@@ -624,6 +649,16 @@ def main(
             trigger_suffix = "every-win"
         elif trigger_flags_changed:
             trigger_suffix = f"trigger-b{judge_batch_pairs}c{judge_confirm_runs}m{judge_min_losses}"
+    if judge_evidence != "rich" and not cond.evolving_skill:
+        raise click.ClickException("--judge-evidence is C3/C4 only")
+    rich_evidence = cond.evolving_skill and judge_evidence == "rich"
+    if cond.evolving_skill and not rich_evidence:
+        trigger_suffix = f"{trigger_suffix}-basic-evidence" if trigger_suffix else "basic-evidence"
+    if rule_match != "paraphrase" and not rich_evidence:
+        raise click.ClickException("--rule-match applies to C3/C4 with --judge-evidence rich")
+    paraphrase_match = rich_evidence and rule_match == "paraphrase"
+    if rich_evidence and not paraphrase_match:
+        trigger_suffix = f"{trigger_suffix}-verbatim-quotes" if trigger_suffix else "verbatim-quotes"
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -772,6 +807,23 @@ def main(
                         else {}
                     ),
                 },
+                "evidence": {
+                    "mode": judge_evidence,
+                    **(
+                        {
+                            "untrusted_note_sha256": sha256_text(UNTRUSTED_NOTE),
+                            "quote_words": QUOTE_WORDS,
+                            "rule_match": rule_match,
+                            **(
+                                {"rule_match_prompt_sha256": sha256_text(RULE_MATCH_SYSTEM_PROMPT)}
+                                if paraphrase_match
+                                else {}
+                            ),
+                        }
+                        if rich_evidence
+                        else {}
+                    ),
+                },
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
                 "common_words": len(policy.common_words),
                 "token_counter": f"vLLM /tokenize of {token_model_id}",
@@ -802,6 +854,8 @@ def main(
             digest_size=digest_size,
             defense=defense,
             trigger=trigger,
+            rich_evidence=rich_evidence,
+            rule_match_fn=openrouter_judge_fn(judge_model, seed=seed) if paraphrase_match else None,
             n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
         skill_file = EvolvingSkillFile(
@@ -843,6 +897,7 @@ def main(
         stop_on_success=stop_on_success,
         replicate_wins=replicate,
         judge_confirm_runs=trigger.confirm_runs if cond.evolving_skill and trigger.batched else 0,
+        judge_evidence=rich_evidence,
     )
     try:
         records = runner.run()

@@ -38,7 +38,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from agentdojo.agent_pipeline.agent_skills import AgentSkill, AgentSkillsMiddleware, SkillLibrary, SkillsPromptStyle
+from agentdojo.agent_pipeline.agent_skills import (
+    LOAD_SKILL_TOOL_NAME,
+    AgentSkill,
+    AgentSkillsMiddleware,
+    SkillLibrary,
+    SkillsPromptStyle,
+)
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import ToolMiddlewareFactory
 from agentdojo.checker.middleware import CheckerFn, make_checker_factory
@@ -49,7 +55,7 @@ from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import evolving_metrics, replication_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
-from agentdojo.runner.trace import victim_trace_digest
+from agentdojo.runner.trace import judge_trace_digest, victim_own_text, victim_trace_digest
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -255,6 +261,7 @@ class Runner:
         stop_on_success: bool = False,
         replicate_wins: int = 0,
         judge_confirm_runs: int = 0,
+        judge_evidence: bool = False,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
@@ -271,6 +278,9 @@ class Runner:
         self.replicate_wins = replicate_wins
         """Extra runs of each successful injection, unchanged (`--replicate-wins`); never counted as trials."""
         self.judge_confirm_runs = judge_confirm_runs
+        self.judge_evidence = judge_evidence
+        """C3/C4 rich judge evidence (PR 2): train trials carry the victim's own text (to find quoted rules; dropped
+        before the record is written) and, for wins, a run digest for the judge (`judge_trace`)."""
         """C3/C4 batched trigger: unchanged re-runs of each train win (injection goal OR user task failed), so the
         judge sees only wins that repeat. Never counted as trials."""
         self.skipped: list[int] = []
@@ -560,6 +570,7 @@ class Runner:
             "progress": progress,
             "replication": replication,
             "judge_confirmation": confirmation,
+            **self._judge_evidence(unit, attacked, attacker_success, list(messages), reasoning),
             "final_answer": final_answer,
             "victim_trace": victim_trace,
             "skills": (
@@ -605,6 +616,19 @@ class Runner:
         record["skill_step"] = self.skill_file.after_trial(record)
         record["skill_version_after"] = self.skill_file.version_name
         return record, checker_lines, replicas
+
+    def _judge_evidence(
+        self, unit: Unit, attacked: bool, won: bool, messages: list[Any], reasoning: dict[int, str]
+    ) -> dict[str, Any]:
+        """C3/C4 train trials with rich judge evidence: `victim_text` (popped by the evolving skill file before the
+        record is written) and, for a win, `judge_trace`, the run digest the judge reads."""
+        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase == "train" and attacked):
+            return {}
+        hidden = frozenset({LOAD_SKILL_TOOL_NAME})
+        return {
+            "victim_text": victim_own_text(messages, reasoning),
+            "judge_trace": judge_trace_digest(messages, reasoning, hidden) if won else None,
+        }
 
     def _replica(
         self,

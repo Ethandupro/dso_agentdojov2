@@ -72,22 +72,13 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + " ...[truncated]"
 
 
-def victim_trace_digest(
+def _digest_lines(
     messages: Sequence[Any],
-    s0_markdown: str | None,
-    max_chars: int = 4000,
-    step_chars: int = 400,
-    reasoning: Mapping[int, str] | None = None,
-    thought_chars: int = 800,
-) -> str:
-    """A short, ordered digest of the victim's run for the attacker's leaderboard: each assistant step's thinking and
-    text, the tools it called, and each tool result, S0-redacted and truncated. Capped at `max_chars`.
-
-    `reasoning` maps a message's index in `messages` to the reasoning the model produced for it, when the server
-    returned it outside the message content (the DeepAgents harness records it as `deepagents.reasoning`; see
-    `ReasoningChatOpenAI`). Each thought is cut to `thought_chars`, other lines to `step_chars`. Thinking blocks
-    inside a message's content are shown too."""
-    reasoning = reasoning or {}
+    reasoning: Mapping[int, str],
+    step_chars: int,
+    thought_chars: int,
+    hidden_tools: frozenset[str] = frozenset(),
+) -> list[str]:
     lines: list[str] = []
     for index, message in enumerate(messages):
         role = message.get("role")
@@ -108,8 +99,63 @@ def victim_trace_digest(
                 args = ", ".join(f"{k}={v!r}" for k, v in dict(call.args).items())
                 lines.append(_clip(f"called: {call.function}({args})", step_chars))
         elif role == "tool":
+            call = message.get("tool_call")
+            if call is not None and call.function in hidden_tools:
+                lines.append(f"tool result: (the {call.function} output, not shown)")
+                continue
             body = " ".join(b.get("content") or "" for b in message.get("content") or []).strip()
             if body:
                 lines.append(f"tool result: {_clip(body, step_chars)}")
+    return lines
+
+
+def victim_trace_digest(
+    messages: Sequence[Any],
+    s0_markdown: str | None,
+    max_chars: int = 4000,
+    step_chars: int = 400,
+    reasoning: Mapping[int, str] | None = None,
+    thought_chars: int = 800,
+) -> str:
+    """A short, ordered digest of the victim's run for the attacker's leaderboard: each assistant step's thinking and
+    text, the tools it called, and each tool result, S0-redacted and truncated. Capped at `max_chars`.
+
+    `reasoning` maps a message's index in `messages` to the reasoning the model produced for it, when the server
+    returned it outside the message content (the DeepAgents harness records it as `deepagents.reasoning`; see
+    `ReasoningChatOpenAI`). Each thought is cut to `thought_chars`, other lines to `step_chars`. Thinking blocks
+    inside a message's content are shown too."""
+    lines = _digest_lines(messages, reasoning or {}, step_chars, thought_chars)
     digest = redact_s0("\n".join(lines), s0_markdown)
     return digest if len(digest) <= max_chars else digest[:max_chars] + " ...[truncated]"
+
+
+def judge_trace_digest(
+    messages: Sequence[Any],
+    reasoning: Mapping[int, str] | None = None,
+    hidden_tools: frozenset[str] = frozenset(),
+    max_chars: int = 4000,
+    step_chars: int = 400,
+    thought_chars: int = 1200,
+) -> str:
+    """The same digest for the C3/C4 judge (PR 2 of the 2026-11-26 design note): the judge owns S0, so nothing is
+    redacted, which lets it see which rules the victim quoted. The outputs of `hidden_tools` (`load_skill`: the
+    skill bodies, which the judge already has) are left out to save room."""
+    lines = _digest_lines(messages, reasoning or {}, step_chars, thought_chars, hidden_tools)
+    digest = "\n".join(lines)
+    return digest if len(digest) <= max_chars else digest[:max_chars] + " ...[truncated]"
+
+
+def victim_own_text(messages: Sequence[Any], reasoning: Mapping[int, str] | None = None, max_chars: int = 30000) -> str:
+    """Everything the victim itself wrote (thinking and replies, not tool results), uncut up to `max_chars`: what the
+    judge's rule-quote counts are computed from."""
+    reasoning = reasoning or {}
+    parts: list[str] = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        if reasoning.get(index):
+            parts.append(reasoning[index])
+        for block in message.get("content") or []:
+            if block.get("content"):
+                parts.append(block["content"])
+    return "\n".join(parts)[:max_chars]
