@@ -16,6 +16,9 @@ Files under the run directory (DESIGN.md, "Conditions and result segmentation"):
 - `checker_calls.jsonl`: one line per checker call, with the unit's keys (stays empty without the external checker).
 - `replications.jsonl`: `--replicate-wins N` re-runs each successful injection N more times, unchanged; one line per
   re-run, with the won trial's keys. Never trials: ASR, ASR@n and pair ASR ignore them; the report adds a robust ASR.
+  In C3/C4 with the batched judge trigger, each train win is also re-run `judge_confirm_runs` times (reusing
+  `--replicate-wins` re-runs where there are any) so the judge only sees wins that repeat; those lines have
+  `purpose: "judge_confirmation"` and their tally is the record's `judge_confirmation`, never `replication`.
 - `state.json`: the checkpoint (index of the next unit, attacker and skill-file state), replaced atomically.
 - `trial_<t>/<split>/...` and `benign*/...`: AgentDojo trace files, one per unit.
 
@@ -35,7 +38,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from agentdojo.agent_pipeline.agent_skills import AgentSkill, AgentSkillsMiddleware, SkillLibrary, SkillsPromptStyle
+from agentdojo.agent_pipeline.agent_skills import (
+    LOAD_SKILL_TOOL_NAME,
+    AgentSkill,
+    AgentSkillsMiddleware,
+    SkillLibrary,
+    SkillsPromptStyle,
+)
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.agent_pipeline.deepagents_pipeline import ToolMiddlewareFactory
 from agentdojo.checker.middleware import CheckerFn, make_checker_factory
@@ -46,7 +55,8 @@ from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import evolving_metrics, replication_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
-from agentdojo.runner.trace import victim_trace_digest
+from agentdojo.runner.trace import judge_trace_digest, victim_own_text, victim_trace_digest
+from agentdojo.skillfile.library import SkillLoading
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -108,12 +118,17 @@ def run_dir_for(
     free_skills: bool = False,
     no_analyst: bool = False,
     replicate_wins: int | None = None,
+    judge_trigger: str | None = None,
+    skill_loading: str = "index",
+    limit_each_split: bool = False,
 ) -> Path:
     name = condition.run_id
     if external_checker:
         name = f"{name}-external-checker"
     elif skills_prompt_style != "nudge":
         name = f"{name}-{skills_prompt_style}-skills"
+    if skill_loading != "index" and not external_checker:
+        name = f"{name}-load-{skill_loading}"
     if suites:
         name = f"{name}-{'+'.join(sorted(suites))}"
     if no_attacker_memory:
@@ -138,6 +153,8 @@ def run_dir_for(
         name = f"{name}-no-analyst"
     if replicate_wins is not None and replicate_wins != DEFAULT_REPLICATE_WINS:
         name = f"{name}-rep{replicate_wins}"
+    if judge_trigger:
+        name = f"{name}-{judge_trigger}"
     if stop_on_success:
         name = f"{name}-first-success"
     if victim_temperature is not None:
@@ -152,6 +169,8 @@ def run_dir_for(
         name = f"{name}-single-point"
     if limit is not None:
         name = f"{name}-limit{limit}"
+        if limit_each_split:
+            name = f"{name}-each-split"
     return results_root / name / f"seed_{seed}"
 
 
@@ -248,12 +267,18 @@ class Runner:
         show_victim_trace: bool = True,
         stop_on_success: bool = False,
         replicate_wins: int = 0,
+        judge_confirm_runs: int = 0,
+        judge_evidence: bool = False,
+        skill_loading: SkillLoading = "index",
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
         if defense == "skills" and checker_fn is not None:
             raise ValueError("a checker model is only used with defense='checker'")
         self.defense = defense
+        self.skill_loading: SkillLoading = skill_loading
+        """`prompt` or `both`: the shared skills prompt tells the agent it may load skills mid-task (L2). The S0 index
+        (`index`, `both`) is rendered by the evolving skill file, not here."""
         self.agent_skills = list(agent_skills or [])
         self.skills_prompt_style: SkillsPromptStyle = skills_prompt_style
         self.security_skill_name = security_skill_name
@@ -263,6 +288,12 @@ class Runner:
         self.stop_on_success = stop_on_success
         self.replicate_wins = replicate_wins
         """Extra runs of each successful injection, unchanged (`--replicate-wins`); never counted as trials."""
+        self.judge_confirm_runs = judge_confirm_runs
+        self.judge_evidence = judge_evidence
+        """C3/C4 rich judge evidence (PR 2): train trials carry the victim's own text (to find quoted rules; dropped
+        before the record is written) and, for wins, a run digest for the judge (`judge_trace`)."""
+        """C3/C4 batched trigger: unchanged re-runs of each train win (injection goal OR user task failed), so the
+        judge sees only wins that repeat. Never counted as trials."""
         self.skipped: list[int] = []
         """Unit indices skipped by `stop_on_success` (no record, no model call)."""
         self.config = config
@@ -442,6 +473,7 @@ class Runner:
 
         checker_lines: list[dict[str, Any]] = []
         markdown = self.skill_file.markdown
+        defender_text = self._defender_text(markdown)
         attacked = unit.pair is not None
         run = self._victim_run(
             unit,
@@ -461,7 +493,7 @@ class Runner:
         actions = agent_actions(list(messages))
         reasoning = run["reasoning"]
         victim_trace = (
-            victim_trace_digest(messages, markdown, reasoning=reasoning)
+            victim_trace_digest(messages, defender_text, reasoning=reasoning)
             if attacked and self.show_victim_trace
             else None
         )
@@ -486,9 +518,42 @@ class Runner:
         evolving = unit.pair is not None and self.attacker_for(unit) is not self.static_attacker
         if evolving and security and self.replicate_wins > 0 and injection_task is not None:
             for k in range(1, self.replicate_wins + 1):
-                rep_start = time.time()
-                rep = self._victim_run(
+                replicas.append(
+                    self._replica(
+                        unit,
+                        suite,
+                        user_task,
+                        injection_task,
+                        injections,
+                        injection_text,
+                        attacker_name,
+                        keys,
+                        markdown,
+                        k,
+                        "replicate_wins",
+                    )
+                )
+        replication = (
+            {"runs": len(replicas), "successes": sum(bool(r["security"]) for r in replicas)} if replicas else None
+        )
+
+        # Batched judge trigger (C3/C4 train, design note 2026-11-26): a win counts for the judge only if it repeats.
+        # `--replicate-wins` re-runs of the same text are reused; the rest are run here, marked as confirmation runs.
+        confirmation: dict[str, int] | None = None
+        attacker_success = bool(security or not utility)
+        if (
+            self.judge_confirm_runs > 0
+            and self.condition.evolving_skill
+            and unit.phase == "train"
+            and attacked
+            and attacker_success
+            and injection_task is not None
+        ):
+            reused = replicas[: self.judge_confirm_runs]
+            extra = [
+                self._replica(
                     unit,
+                    suite,
                     user_task,
                     injection_task,
                     injections,
@@ -496,41 +561,17 @@ class Runner:
                     attacker_name,
                     keys,
                     markdown,
-                    replica_dir(self.run_dir, unit, k),
-                    None,
+                    k,
+                    "judge_confirmation",
                 )
-                rep_actions = agent_actions(list(rep["messages"]))
-                replicas.append(
-                    {
-                        **keys,
-                        "replica": k,
-                        "utility": rep["utility"],
-                        "security": rep["security"],
-                        "progress": progress_score(
-                            injection_task.GOAL,
-                            rep_actions,
-                            rep["final_answer"],
-                            rep["security"],
-                            goal_tool_names(suite, injection_task.ID),
-                        )
-                        if self.graded_score
-                        else None,
-                        "skills": (
-                            rep["library"].summary(self.security_skill_name if markdown is not None else None)
-                            if rep["library"] is not None
-                            else None
-                        ),
-                        "agent_actions": rep_actions,
-                        "final_answer": rep["final_answer"],
-                        "victim_usage": rep["deepagents"].get("usage"),
-                        "victim_error": rep["deepagents"].get("error"),
-                        "duration_s": round(time.time() - rep_start, 3),
-                    }
-                )
-        replication = (
-            {"runs": len(replicas), "successes": sum(bool(r["security"]) for r in replicas)} if replicas else None
-        )
-
+                for k in range(len(replicas) + 1, len(replicas) + 1 + self.judge_confirm_runs - len(reused))
+            ]
+            runs = reused + extra
+            confirmation = {
+                "runs": len(runs),
+                "attacker_successes": sum(bool(r["security"] or not r["utility"]) for r in runs),
+            }
+            replicas = replicas + extra
         record: dict[str, Any] = {
             **keys,
             "attack": attacker_name,
@@ -540,6 +581,8 @@ class Runner:
             "attacker_success": (security or not utility) if attacked else None,
             "progress": progress,
             "replication": replication,
+            "judge_confirmation": confirmation,
+            **self._judge_evidence(unit, attacked, attacker_success, list(messages), reasoning),
             "final_answer": final_answer,
             "victim_trace": victim_trace,
             "skills": (
@@ -575,7 +618,7 @@ class Runner:
                 if attacked and self.show_victim_trace:
                     feedback.analyst_trace = victim_trace_digest(
                         messages,
-                        markdown,
+                        defender_text,
                         reasoning=reasoning,
                         max_chars=ANALYST_TRACE_CHARS,
                         step_chars=ANALYST_STEP_CHARS,
@@ -585,6 +628,84 @@ class Runner:
         record["skill_step"] = self.skill_file.after_trial(record)
         record["skill_version_after"] = self.skill_file.version_name
         return record, checker_lines, replicas
+
+    def _defender_text(self, markdown: str | None) -> str | None:
+        """Everything of the defence the victim can read this trial, for the attacker-side redaction: S0 as served
+        (with its index) plus each specialised security skill's description and body (C3/C4 library). Without the
+        specialised skills, a victim that loads one would show its rules to the analyst and the attacker."""
+        if markdown is None:
+            return None
+        specialists = getattr(self.skill_file, "specialist_skills", [])
+        return "\n\n".join([markdown, *(f"{description}\n{body}" for _name, description, body in specialists)])
+
+    def _judge_evidence(
+        self, unit: Unit, attacked: bool, won: bool, messages: list[Any], reasoning: dict[int, str]
+    ) -> dict[str, Any]:
+        """C3/C4 train trials with rich judge evidence: `victim_text` (popped by the evolving skill file before the
+        record is written) and, for a win, `judge_trace`, the run digest the judge reads."""
+        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase == "train" and attacked):
+            return {}
+        hidden = frozenset({LOAD_SKILL_TOOL_NAME})
+        return {
+            "victim_text": victim_own_text(messages, reasoning),
+            "judge_trace": judge_trace_digest(messages, reasoning, hidden) if won else None,
+        }
+
+    def _replica(
+        self,
+        unit: Unit,
+        suite: Any,
+        user_task: Any,
+        injection_task: Any,
+        injections: dict[str, str],
+        injection_text: str | None,
+        attacker_name: str | None,
+        keys: dict[str, Any],
+        markdown: str | None,
+        k: int,
+        purpose: Literal["replicate_wins", "judge_confirmation"],
+    ) -> dict[str, Any]:
+        """One unchanged re-run of a won trial (same text, same skill-file version), as a replications.jsonl line."""
+        rep_start = time.time()
+        rep = self._victim_run(
+            unit,
+            user_task,
+            injection_task,
+            injections,
+            injection_text,
+            attacker_name,
+            keys,
+            markdown,
+            replica_dir(self.run_dir, unit, k),
+            None,
+        )
+        rep_actions = agent_actions(list(rep["messages"]))
+        return {
+            **keys,
+            "replica": k,
+            "purpose": purpose,
+            "utility": rep["utility"],
+            "security": rep["security"],
+            "progress": progress_score(
+                injection_task.GOAL,
+                rep_actions,
+                rep["final_answer"],
+                rep["security"],
+                goal_tool_names(suite, injection_task.ID),
+            )
+            if self.graded_score
+            else None,
+            "skills": (
+                rep["library"].summary(self.security_skill_name if markdown is not None else None)
+                if rep["library"] is not None
+                else None
+            ),
+            "agent_actions": rep_actions,
+            "final_answer": rep["final_answer"],
+            "victim_usage": rep["deepagents"].get("usage"),
+            "victim_error": rep["deepagents"].get("error"),
+            "duration_s": round(time.time() - rep_start, 3),
+        }
 
     def _victim_run(
         self,
@@ -606,12 +727,18 @@ class Runner:
         library: SkillLibrary | None = None
         if self.defense == "skills":
             skills = list(self.agent_skills)
+            specialists: list[str] = []
             if markdown is not None:
                 description = getattr(self.skill_file, "description", None) or self.security_skill_description
                 skills.append(AgentSkill(self.security_skill_name, description, markdown))
+                for name, specialist_description, body in getattr(self.skill_file, "specialist_skills", []):
+                    skills.append(AgentSkill(name, specialist_description, body))
+                    specialists.append(name)
             if skills:
-                library = SkillLibrary(skills)
-                middleware = AgentSkillsMiddleware(library, self.skills_prompt_style)
+                library = SkillLibrary(skills, specialists=specialists)
+                middleware = AgentSkillsMiddleware(
+                    library, self.skills_prompt_style, midtask=self.skill_loading in ("prompt", "both")
+                )
                 factory = lambda _query: [middleware]
         elif markdown is not None:
             assert self.checker_fn is not None

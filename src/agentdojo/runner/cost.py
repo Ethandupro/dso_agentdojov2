@@ -4,7 +4,8 @@ Every component already logs its own tokens, in different places:
 
 - victim: `victim_usage` on each trial record (per DeepAgents agent);
 - checker: `input_tokens`/`output_tokens` on each `checker_calls.jsonl` line;
-- judge (C3/C4): `judge_calls`, `judge_input_tokens`, `judge_output_tokens` on each record's `skill_step`;
+- judge (C3/C4): `judge_calls`, `judge_input_tokens`, `judge_output_tokens` on each record's `skill_step`, plus the
+  judge model's rule-matching call on each train trial (`s0_rule_match`, rich evidence);
 - attacker (MUZZLE, C2/C4): `usage` on each rewrite in the attacker's archive in `state.json`.
 
 This module adds them up so a run report can say what the defence costs next to what the victim costs.
@@ -78,6 +79,12 @@ def component_usage(
         judge["calls"] += step.get("judge_calls") or 0
         judge["input_tokens"] += step.get("judge_input_tokens") or 0
         judge["output_tokens"] += step.get("judge_output_tokens") or 0
+        # Paraphrase-aware rule matching (C3/C4 rich evidence) calls the judge model once per train trial.
+        match = r.get("s0_rule_match") or {}
+        if match.get("input_tokens") or match.get("output_tokens"):
+            judge["calls"] += 1
+            judge["input_tokens"] += match.get("input_tokens") or 0
+            judge["output_tokens"] += match.get("output_tokens") or 0
 
     attacker = usage["attacker"]
     for entry in (state.get("attacker") or {}).get("archive") or []:

@@ -34,7 +34,7 @@ import openai
 from dotenv import load_dotenv
 
 from agentdojo import experiment_models
-from agentdojo.agent_pipeline.agent_skills import SKILLS_PROMPTS, load_skills_dir
+from agentdojo.agent_pipeline.agent_skills import MIDTASK_LOADING, SKILLS_PROMPTS, load_skills_dir
 from agentdojo.agent_pipeline.deepagents_pipeline import (
     DeepAgentsConfig,
     DeepAgentsPipeline,
@@ -58,15 +58,25 @@ from agentdojo.runner.report import write_report
 from agentdojo.runner.run import DEFAULT_REPLICATE_WINS, ConfigMismatchError, Runner, quick_summary, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy
 from agentdojo.skillfile.judge import (
+    BATCH_FOCUS,
+    BATCH_INTRO,
     DEFAULT_JUDGE_MAX_TOKENS,
     DEFAULT_JUDGE_MODEL,
     JUDGE_SYSTEM_PROMPTS,
+    KIND_MATCH_PROMPT,
+    LIBRARY_FOCUS,
+    LIBRARY_PROMPT,
+    QUOTE_WORDS,
+    RULE_MATCH_SYSTEM_PROMPT,
+    UNTRUSTED_NOTE,
     SkillFileEvolver,
     openrouter_client,
     openrouter_judge_fn,
 )
+from agentdojo.skillfile.library import INDEX_OPENING, SKILL_LOADINGS, SPECIALIST_WHEN_TEXT, LibraryPolicy
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
+from agentdojo.skillfile.trigger import TriggerPolicy
 
 JUDGE_KEY_ENV = experiment_models.JUDGE_API_KEY_ENV
 
@@ -279,6 +289,13 @@ def skill_agent_settings(
     help=f"Smoke run preset: single-injection-point pairs only, {SMOKE_PAIRS} pairs (or --limit) taken in turn from "
     f"each suite ({','.join(SMOKE_SUITES)} unless --suites is given). Gets its own '-smoke' results directory.",
 )
+@click.option(
+    "--limit-each-split",
+    is_flag=True,
+    default=False,
+    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3/C4 always do), so C1's "
+    "test pairs match C3/C4's test phase. Gets its own '-each-split' results directory.",
+)
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
 @click.option("--victim-model-id", default=experiment_models.VICTIM_MODEL_ID, show_default=True)
@@ -302,6 +319,17 @@ def skill_agent_settings(
     "tool call; 'plain' (the first pilot's prompt) only offers them. 'plain' runs get a '-plain-skills' directory.",
 )
 @click.option(
+    "--skill-loading",
+    type=click.Choice(SKILL_LOADINGS),
+    default="index",
+    show_default=True,
+    help="How a security skill can be loaded once a tool output shows it applies (design note 2026-11-26). 'index' "
+    "(L1): S0 ends with a short index of the judge's specialised skills (C3/C4; nothing changes while there are "
+    "none). 'prompt' (L2): the shared skills prompt also says skills may be loaded mid-task; this changes every "
+    "condition, so C0-C2 must be re-run with the same setting before comparing. 'both': L1 and L2. Non-default "
+    "values get a '-load-<value>' results directory.",
+)
+@click.option(
     "--skills-dir",
     type=click.Path(path_type=Path, file_okay=False),
     default=experiment_models.AGENT_SKILLS_DIR,
@@ -318,6 +346,70 @@ def skill_agent_settings(
     "the agent loads S0 (decided 2026-11-19 by user). Never with --external-checker.",
 )
 @click.option("--digest-size", type=int, default=20, show_default=True, help="Trials in the judge's history digest.")
+@click.option(
+    "--judge-trigger",
+    type=click.Choice(["batched", "every-win"]),
+    default="batched",
+    show_default=True,
+    help="C3/C4: when the judge runs. 'batched' (design note 2026-11-26): collect train wins, keep only wins that "
+    "repeat on re-run, route them by cause ('not loaded' -> description-only step, 'loaded but lost' -> rules-only "
+    "step), and run the judge every --judge-batch-pairs finished train pairs on each bucket with at least "
+    "--judge-min-losses wins. 'every-win' (the design before 2026-11-26): one step after every train win; it gets an "
+    "'-every-win' results directory.",
+)
+@click.option(
+    "--judge-evidence",
+    type=click.Choice(["rich", "basic"]),
+    default="rich",
+    show_default=True,
+    help="C3/C4: what the judge sees. 'rich' (PR 2, design note 2026-11-26): for each triggering trial a short digest "
+    "of the victim's run (thinking, tool calls, tool results; nothing redacted, skill bodies left out) and the rules "
+    "it quoted; per-rule quote counts over the train trials so far; and an untrusted-data note in the system prompt. "
+    "'basic' (before 2026-11-26): tool calls and final answer only; it gets a '-basic-evidence' results directory.",
+)
+@click.option(
+    "--rule-match",
+    type=click.Choice(["paraphrase", "verbatim"]),
+    default="paraphrase",
+    show_default=True,
+    help="C3/C4 with --judge-evidence rich: how the rules the victim used are found. 'paraphrase' (user request "
+    "2026-11-26): verbatim 5-word quotes plus one call to the judge model per train trial that finds rules the victim "
+    "restated in its own words, each backed by a sentence code checks against the victim's text. 'verbatim': quotes "
+    "only, no extra calls; it gets a '-verbatim-quotes' results directory.",
+)
+@click.option(
+    "--defender",
+    type=click.Choice(["library", "single"]),
+    default="library",
+    show_default=True,
+    help="C3/C4: 'library' (decided 2026-11-26 by user, the study's main defender): starts from S0 only; at each "
+    "rewrite step the judge may CREATE specialised security skills (up to 6) that the victim can load next to S0, "
+    "and losses are routed by which skill covers the attack. Needs --judge-trigger batched, --judge-evidence rich "
+    "and --rule-match paraphrase. 'single': S0 is the only security skill (#59/#60 behaviour); it gets a "
+    "'-single-s0' results directory.",
+)
+@click.option(
+    "--judge-batch-pairs",
+    type=click.IntRange(min=1),
+    default=TriggerPolicy.batch_pairs,
+    show_default=True,
+    help="Batched trigger: a judge step after every this many finished train pairs (and after the last one).",
+)
+@click.option(
+    "--judge-confirm-runs",
+    type=click.IntRange(min=0),
+    default=TriggerPolicy.confirm_runs,
+    show_default=True,
+    help="Batched trigger: re-run each train win this many more times, unchanged (never trials); it counts only if "
+    "at least one re-run also succeeds (0 = every win counts).",
+)
+@click.option(
+    "--judge-min-losses",
+    type=click.IntRange(min=1),
+    default=TriggerPolicy.min_losses,
+    show_default=True,
+    help="Batched trigger: confirmed wins a bucket needs before the judge runs on it; smaller buckets carry over.",
+)
 @click.option("--attacker-model-id", default=experiment_models.ATTACKER_MODEL_ID, show_default=True, help="C2/C4.")
 @click.option("--attacker-base-url", default=experiment_models.ATTACKER_BASE_URL, show_default=True, help="C2/C4.")
 @click.option(
@@ -445,6 +537,7 @@ def main(
     subset_path: Path | None,
     single_injection_point: bool,
     smoke: bool,
+    limit_each_split: bool,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -454,11 +547,19 @@ def main(
     min_span_chars: int,
     external_checker: bool,
     skills_prompt_style: str,
+    skill_loading: str,
     skills_dir: Path,
     env_file: Path | None,
     judge_model: str,
     judge_edits_description: bool,
     digest_size: int,
+    judge_trigger: str,
+    judge_evidence: str,
+    rule_match: str,
+    defender: str,
+    judge_batch_pairs: int,
+    judge_confirm_runs: int,
+    judge_min_losses: int,
     attacker_model_id: str,
     attacker_base_url: str,
     attacker_loop: str,
@@ -508,14 +609,23 @@ def main(
             subset_tasks = load_subset(subset_path, manifest_data)
         except ValueError as e:
             raise click.ClickException(str(e)) from e
+    if limit_each_split and (cond.evolving_skill or limit is None):
+        raise click.ClickException(
+            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3/C4 already take N pairs from each split"
+        )
     pair_filter = PairFilter(
-        user_tasks=subset_tasks, single_injection_point=single_injection_point, balance_suites=smoke
+        user_tasks=subset_tasks,
+        single_injection_point=single_injection_point,
+        balance_suites=smoke,
+        limit_each_split=limit_each_split,
     )
     units = build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple, pair_filter)
     if not any(u.pair is not None for u in units):
         raise click.ClickException("the suite/subset/single-injection-point cuts leave no pairs to run")
 
     use_checker = external_checker and cond.s0
+    if external_checker and skill_loading != "index":
+        raise click.ClickException("--skill-loading is about the victim's skills; drop --external-checker")
     defense = "checker" if external_checker else "skills"
     agent_skills = [] if external_checker else load_skills_dir(skills_dir)
     if any(s.name == experiment_models.S0_SKILL_NAME for s in agent_skills):
@@ -564,6 +674,50 @@ def main(
     if not analyst and not (evolving_attack and attacker_loop in AUTODOJO_LOOPS):
         raise click.ClickException("--no-analyst applies to the autodojo/skill-agent evolving attacker only")
     replicate = (DEFAULT_REPLICATE_WINS if replicate_wins is None else replicate_wins) if evolving_attack else 0
+    trigger = TriggerPolicy(
+        mode="batched" if judge_trigger == "batched" else "every-win",
+        batch_pairs=judge_batch_pairs,
+        confirm_runs=judge_confirm_runs,
+        min_losses=judge_min_losses,
+    )
+    default_trigger = TriggerPolicy(mode="batched")
+    trigger_flags_changed = (judge_batch_pairs, judge_confirm_runs, judge_min_losses) != (
+        default_trigger.batch_pairs,
+        default_trigger.confirm_runs,
+        default_trigger.min_losses,
+    )
+    if not cond.evolving_skill and (judge_trigger != "batched" or trigger_flags_changed):
+        raise click.ClickException("--judge-trigger and --judge-batch-pairs/-confirm-runs/-min-losses are C3/C4 only")
+    if not trigger.batched and trigger_flags_changed:
+        raise click.ClickException("--judge-batch-pairs/-confirm-runs/-min-losses apply to --judge-trigger batched")
+    trigger_suffix: str | None = None
+    if cond.evolving_skill:
+        if not trigger.batched:
+            trigger_suffix = "every-win"
+        elif trigger_flags_changed:
+            trigger_suffix = f"trigger-b{judge_batch_pairs}c{judge_confirm_runs}m{judge_min_losses}"
+    if judge_evidence != "rich" and not cond.evolving_skill:
+        raise click.ClickException("--judge-evidence is C3/C4 only")
+    rich_evidence = cond.evolving_skill and judge_evidence == "rich"
+    if cond.evolving_skill and not rich_evidence:
+        trigger_suffix = f"{trigger_suffix}-basic-evidence" if trigger_suffix else "basic-evidence"
+    if rule_match != "paraphrase" and not rich_evidence:
+        raise click.ClickException("--rule-match applies to C3/C4 with --judge-evidence rich")
+    paraphrase_match = rich_evidence and rule_match == "paraphrase"
+    if rich_evidence and not paraphrase_match:
+        trigger_suffix = f"{trigger_suffix}-verbatim-quotes" if trigger_suffix else "verbatim-quotes"
+    if defender != "library" and not cond.evolving_skill:
+        raise click.ClickException("--defender is C3/C4 only")
+    use_library = cond.evolving_skill and defender == "library"
+    if use_library and (external_checker or not trigger.batched or not paraphrase_match):
+        raise click.ClickException(
+            "--defender library needs the skills design with --judge-trigger batched, --judge-evidence rich and "
+            "--rule-match paraphrase (it routes losses by which skill covers the attack). Add --defender single to "
+            "run the single-S0 defender instead."
+        )
+    if cond.evolving_skill and not use_library:
+        trigger_suffix = f"{trigger_suffix}-single-s0" if trigger_suffix else "single-s0"
+    library_policy = LibraryPolicy(enabled=use_library)
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -628,6 +782,9 @@ def main(
         free_skills=skill_choice == "free",
         no_analyst=evolving_attack and attacker_loop in AUTODOJO_LOOPS and show_victim_trace and not analyst,
         replicate_wins=replicate if evolving_attack else None,
+        judge_trigger=trigger_suffix,
+        skill_loading=skill_loading,
+        limit_each_split=limit_each_split,
     )
     config = RunConfig(
         condition=cond.name,
@@ -652,6 +809,16 @@ def main(
                 "load_tool": "load_skill",
                 "prompt_style": skills_prompt_style,
                 "prompt_sha256": sha256_text(SKILLS_PROMPTS[skills_prompt_style]),  # type: ignore[index]
+                # Only when not the default, so runs from before 2026-11-26 still resume.
+                **(
+                    {
+                        "loading": skill_loading,
+                        "midtask_prompt_sha256": sha256_text(MIDTASK_LOADING),
+                        **({"index_sha256": sha256_text(INDEX_OPENING)} if skill_loading == "both" else {}),
+                    }
+                    if skill_loading != "index"
+                    else {}
+                ),
             }
         ),
         skill_mode=cond.skill_mode,
@@ -670,6 +837,7 @@ def main(
         ),
         single_injection_point=single_injection_point,
         smoke=smoke or None,
+        limit_each_split=limit_each_split or None,
         graded_score=graded_score if evolving_attack else None,
         show_victim_trace=show_victim_trace if evolving_attack else None,
         victim_trace_thinking=True if evolving_attack and show_victim_trace else None,
@@ -703,7 +871,45 @@ def main(
                 "seed": seed,
                 "system_prompt_sha256": sha256_text(JUDGE_SYSTEM_PROMPTS[defense]),
                 "digest_size": digest_size,
+                "trigger": {
+                    **trigger.to_dict(),
+                    **(
+                        {"batch_prompt_sha256": sha256_text(BATCH_INTRO + json.dumps(BATCH_FOCUS, sort_keys=True))}
+                        if trigger.batched
+                        else {}
+                    ),
+                },
+                "evidence": {
+                    "mode": judge_evidence,
+                    **(
+                        {
+                            "untrusted_note_sha256": sha256_text(UNTRUSTED_NOTE),
+                            "quote_words": QUOTE_WORDS,
+                            "rule_match": rule_match,
+                            **(
+                                {"rule_match_prompt_sha256": sha256_text(RULE_MATCH_SYSTEM_PROMPT)}
+                                if paraphrase_match
+                                else {}
+                            ),
+                        }
+                        if rich_evidence
+                        else {}
+                    ),
+                },
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
+                **(
+                    {
+                        "library": {
+                            **library_policy.to_dict(),
+                            "prompt_sha256": sha256_text(LIBRARY_PROMPT),
+                            "focus_sha256": sha256_text(json.dumps(LIBRARY_FOCUS, sort_keys=True)),
+                            "kind_match_prompt_sha256": sha256_text(KIND_MATCH_PROMPT),
+                            "skill_text_sha256": sha256_text(SPECIALIST_WHEN_TEXT + INDEX_OPENING),
+                        }
+                    }
+                    if use_library
+                    else {}
+                ),
                 "common_words": len(policy.common_words),
                 "token_counter": f"vLLM /tokenize of {token_model_id}",
                 "on_api_failure": "retry 5 times, then stop the run (resumable)",
@@ -732,8 +938,20 @@ def main(
             policy=policy,
             digest_size=digest_size,
             defense=defense,
+            trigger=trigger,
+            rich_evidence=rich_evidence,
+            rule_match_fn=openrouter_judge_fn(judge_model, seed=seed) if paraphrase_match else None,
+            s0_description=experiment_models.S0_SKILL_DESCRIPTION if not external_checker else "",
+            s0_index=skill_loading in ("index", "both"),
+            library_policy=library_policy,
+            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
-        skill_file = EvolvingSkillFile(evolver, manifest_data["benchmark_version"])
+        skill_file = EvolvingSkillFile(
+            evolver,
+            manifest_data["benchmark_version"],
+            trials_per_pair=trials_per_pair,
+            stop_on_success=stop_on_success,
+        )
     elif cond.s0:
         skill_file = FixedSkillFile(s0_text)
     else:
@@ -766,6 +984,9 @@ def main(
         show_victim_trace=show_victim_trace,
         stop_on_success=stop_on_success,
         replicate_wins=replicate,
+        judge_confirm_runs=trigger.confirm_runs if cond.evolving_skill and trigger.batched else 0,
+        judge_evidence=rich_evidence,
+        skill_loading=skill_loading,  # type: ignore[arg-type]
     )
     try:
         records = runner.run()

@@ -21,7 +21,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agentdojo.skillfile.edits import AddRule, DeleteRule, DescribeSkill, Edit, MergeRules, ModifyRule
+from agentdojo.skillfile.edits import (
+    AddRule,
+    CreateSkill,
+    DeleteRule,
+    DescribeSkill,
+    Edit,
+    MergeRules,
+    ModifyRule,
+    RetireSkill,
+)
 from agentdojo.skillfile.structure import PRINCIPLES_SECTION, SkillFile
 
 TokenCounter = Callable[[str], int]
@@ -134,6 +143,10 @@ def _edit_problems(
     seen_ids: set[str],
 ) -> list[str]:
     problems: list[str] = []
+    if isinstance(edit, CreateSkill | RetireSkill):
+        return [f"{edit.op} is not available in this run: S0 is the only security skill"]
+    if isinstance(edit, AddRule | DescribeSkill) and edit.skill:
+        return ["this run has only one security skill (S0); leave 'skill' out"]
     if isinstance(edit, DescribeSkill):
         if not policy.description_editable:
             return ["the skill's description cannot be edited in this run"]
@@ -182,12 +195,21 @@ def check_edits(
     context: EditContext,
     policy: EditPolicy,
     count_tokens: TokenCounter,
+    allowed_ops: frozenset[str] | None = None,
 ) -> list[CheckFailure]:
+    """`allowed_ops`: the operations this step may use (None: all). A batched step on "not loaded" losses may only
+    use DESCRIBE, and a step on "loaded but lost" losses may not (see `trigger`)."""
     failures: list[CheckFailure] = []
     if len(edits) > policy.max_edits:
         failures.append(CheckFailure(f"{len(edits)} edits; at most {policy.max_edits} are allowed per step"))
     seen_ids: set[str] = set()
     for index, edit in enumerate(edits):
+        if allowed_ops is not None and edit.op not in allowed_ops:
+            allowed = ", ".join(sorted(allowed_ops))
+            failures.append(
+                CheckFailure(f"edit {index + 1} ({edit.op}): not allowed in this step; use {allowed}", edit_index=index)
+            )
+            continue
         for problem in _edit_problems(edit, skill_file, context, policy, count_tokens, seen_ids):
             failures.append(CheckFailure(f"edit {index + 1} ({edit.op}): {problem}", edit_index=index))
     return failures
