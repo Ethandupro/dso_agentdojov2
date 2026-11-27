@@ -6,10 +6,11 @@ segmentation": cross-condition comparisons come from the per-condition results, 
 It reads every `results/<run_id>/seed_<n>/` run (full runs only; `--limit N` compares smoke runs instead), refuses to
 mix runs built from different manifests, pools the seeds of each condition, and computes:
 
-- H1: test-phase ASR on the final file in C3 and C4 against C1 on the same test pairs, with benign utility before
-  and after evolution.
-- H2: C2 against C4 on train-split injection tasks only (C4's attacker never rewrites test pairs), overall and by
-  position in the run (train pairs in run order, 10 bins; the main curve) and by trial index 0/1/2.
+- H1: test-phase ASR on the final file in C3 against C1 on the same test pairs, with benign utility before and after
+  evolution.
+- H2: C2 against C4 on every pair (C4 has no train/test split since 2026-11-27: one run where the skills keep
+  adapting and the attacker keeps rewriting), overall, by position in the run (pairs in run order, 10 bins; the main
+  curve) and by trial index; plus C4's benign utility before and after.
 - C0 against C1: what the checker with S0 adds.
 
 Differences are A minus B with 95% paired cluster-bootstrap intervals over injection tasks (benign: user tasks).
@@ -120,9 +121,9 @@ H2_BINS = 10
 
 
 def position_bins(rows: Sequence[Row], bins: int = H2_BINS) -> list[list[str]]:
-    """Train pairs in run order, cut into `bins` near-equal groups (fewer when there are fewer pairs).
+    """Pairs in run order, cut into `bins` near-equal groups (fewer when there are fewer pairs).
 
-    C2 and C4 run the train pairs in the same manifest order, so bin k holds the same pairs in both runs.
+    C2 and C4 run the pairs in the same manifest order, so bin k holds the same pairs in both runs.
     """
     order: dict[str, int] = {}
     for r in sorted(rows, key=lambda r: r["unit"]):
@@ -177,7 +178,7 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
     # H1: test ASR on the final file vs C1 on the same test pairs, at benign utility before/after.
     c1_test = _select(rows.get("C1", []), ("attack",), "test")
-    for cond in ("C3", "C4"):
+    for cond in ("C3",):
         test = _select(rows.get(cond, []), ("test",))
         if not test or not c1_test:
             result["missing"].append(f"H1 {cond} vs C1 needs both runs")
@@ -197,9 +198,9 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
             cluster_bootstrap(c1_benign, lambda r: r["utility"], user_task_cluster).to_dict() if c1_benign else None
         )
 
-    # H2: C2 vs C4 on train-split injection tasks, overall and by trial index.
-    c2_train = _select(rows.get("C2", []), ("attack",), "train")
-    c4_train = _select(rows.get("C4", []), ("train",))
+    # H2: C2 vs C4 on every pair, overall, by position and by trial index.
+    c2_train = _select(rows.get("C2", []), ("attack",))
+    c4_train = _select(rows.get("C4", []), ("attack",))
     if c2_train and c4_train:
         trials = sorted({r["trial"] for r in c2_train + c4_train})
         result["h2"] = {
@@ -218,6 +219,11 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
                 for t in trials
             },
         }
+        c4_before = _select(rows["C4"], ("benign_before",))
+        c4_after = _select(rows["C4"], ("benign_after",))
+        result["h2"]["benign_utility_after_vs_before"] = (
+            _diff(c4_after, c4_before, lambda r: r["utility"], benign=True) if c4_before and c4_after else None
+        )
     else:
         result["missing"].append("H2 needs C2 and C4 runs")
 
@@ -292,12 +298,12 @@ def render_html(result: dict[str, Any]) -> str:
 
     out.append(
         "<h2>H1: final skill file vs S0 on held-out injection tasks</h2>"
-        "<p class='muted'>C3/C4 test phase (final, frozen file) against C1 on the same test pairs. "
+        "<p class='muted'>C3 test phase (final, frozen file) against C1 on the same test pairs. "
         "A negative ASR difference means the evolved file blocks more. H1 claims a gain only if benign utility "
         "holds (after minus before).</p>"
     )
     if not result["h1"]:
-        out.append("<p>Not available yet: needs C1 and C3 or C4 results.</p>")
+        out.append("<p>Not available yet: needs C1 and C3 results.</p>")
     for cond, h1 in result["h1"].items():
         out.append(f"<h3>{_e(cond)} vs C1</h3>")
         out.append(_comparison_table(f"{cond} test", "C1 test pairs", h1["test_vs_c1"]))
@@ -318,19 +324,25 @@ def render_html(result: dict[str, Any]) -> str:
 
     out.append(
         "<h2>H2: static vs evolving skill file under the evolving attacker</h2>"
-        "<p class='muted'>C2 minus C4 on train-split injection tasks only. A positive difference means the evolving "
-        "file (C4) holds up better against the adapting attacker. Main curve: position in the run (train pairs in run "
-        "order, cut into equal bins; the same pairs in each bin for C2 and C4), where the C4 file learns as it goes. "
-        "Second view: trial index 0/1/2, the attacker refining one pair.</p>"
+        "<p class='muted'>C2 minus C4 on every pair. A positive difference means the evolving skills (C4) hold up "
+        "better against the adapting attacker. Main curve: position in the run (pairs in run order, cut into equal "
+        "bins; the same pairs in each bin for C2 and C4), where the C4 skills learn as they go. Second view: trial "
+        "index, the attacker refining one pair.</p>"
     )
     if result["h2"] is None:
-        out.append("<p>Not available yet: needs C2 and C4 results (MUZZLE).</p>")
+        out.append("<p>Not available yet: needs C2 and C4 results.</p>")
     else:
-        out.append(_comparison_table("C2 (train inj.)", "C4 (train phase)", result["h2"]["overall"]))
+        out.append(_comparison_table("C2", "C4", result["h2"]["overall"]))
+        if result["h2"].get("benign_utility_after_vs_before") is not None:
+            out.append(
+                TABLE_HEAD.format(a="C4 after (final skills)", b="C4 before (S0)")
+                + _diff_row("Benign utility", result["h2"]["benign_utility_after_vs_before"])
+                + "</tbody></table>"
+            )
         by_pos = result["h2"]["by_position"]
         out.append(
             _point_whisker_chart(
-                "ASR over the run (train pairs in run order)",
+                "ASR over the run (pairs in run order)",
                 [f"{b['bin'] + 1}" for b in by_pos],
                 {"C2": [b["c2_asr"] for b in by_pos], "C4": [b["c4_asr"] for b in by_pos]},
             )

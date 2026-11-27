@@ -4,10 +4,10 @@ Built once from the benchmark, committed as `skillfile_evolution/pairs_manifest.
 any model call. It fixes everything that must be identical across conditions:
 
 - the pairs: every (user task, injection task) pair of every suite (decided 2026-11-16 by the user: all 949);
-- the split, used only in C3 and C4: 60/40 by injection task, stratified by suite, so every test pair is an attack
-  the judge never saw. C0-C2 run every pair and keep each pair's label;
-- the order: train pairs shuffled with the fixed seed (suites mixed), then test pairs shuffled the same way. C3 and
-  C4 run train then test in this order; C0-C2 run the same sequence;
+- the split, used only in C3: 60/40 by injection task, stratified by suite, so every test pair is an attack the
+  judge never saw. The other conditions (C4 included, since 2026-11-27) run every pair and keep each pair's label;
+- the order: train pairs shuffled with the fixed seed (suites mixed), then test pairs shuffled the same way. C3 runs
+  train then test in this order; the other conditions run the same sequence;
 - the trial-0 injection text of each pair: `important_instructions` addressed to the victim model, placed in every
   injection vector the user task reads;
 - the hash of the committed starting skill file S0.
