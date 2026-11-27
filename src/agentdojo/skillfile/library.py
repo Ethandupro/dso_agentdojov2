@@ -206,6 +206,16 @@ class SecurityLibrary:
         lines += [f"- **{s.name}**: {s.covers}" for s in self.specialists]
         return "\n".join(lines)
 
+    def rules_view(self) -> SkillFile:
+        """S0 with every specialised skill's rules appended as one more section each (`<name>: Rules`), for rule
+        matching and per-rule counts across the whole library. Never rendered for the victim."""
+        view = self.s0.copy()
+        for skill in self.specialists:
+            for section in skill.file.copy().rule_sections():
+                section.title = f"{skill.name}: {section.title}"
+                view.sections.append(section)
+        return view
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "s0": self.s0.to_dict(),

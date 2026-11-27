@@ -372,3 +372,44 @@ def test_c3_library_lists_judge_created_skills_with_index_and_midtask_prompt(tmp
     assert all(sentence in prompt for prompt, _ in SEEN)
     assert INDEX_TITLE not in SEEN[first_train][1]
     assert INDEX_TITLE in SEEN[-1][1] and "**defend-fake-notice**" in SEEN[-1][0]
+
+
+class KindMatcher:
+    """A rule matcher that finds no rules and says every attack is covered by the first listed skill."""
+
+    def __call__(self, system: str, user: str) -> JudgeCall:
+        covered = "defend-fake-notice" if "<skills>" in user else "none"
+        return JudgeCall(text=json.dumps({"used": [], "covered_by": covered}), input_tokens=1, output_tokens=1)
+
+
+def test_c3_library_records_which_skill_covers_each_train_trial(tmp_path: Path):
+    cond = CONDITIONS["C3"]
+    run_dir = run_dir_for(tmp_path, cond, 0, 1)
+    evolver = SkillFileEvolver(
+        load_skill_file(S0_PATH),
+        CreatingJudge(),
+        run_dir / "skill_files",
+        approx_token_count,
+        rich_evidence=True,
+        rule_match_fn=KindMatcher(),
+        library_policy=LibraryPolicy(enabled=True),
+    )
+    static = StaticAttacker(MANIFEST)
+    records = Runner(
+        config=make_config("C3", 1),
+        condition=cond,
+        run_dir=run_dir,
+        units=build_units(cond, MANIFEST, 3, 1),
+        attacker=static,
+        static_attacker=static,
+        skill_file=EvolvingSkillFile(evolver, "v1.2.2"),
+        victim_factory=LoadingGivingUpVictim,
+        echo=lambda _: None,
+        agent_skills=AGENT_SKILLS,
+        judge_evidence=True,
+    ).run()
+    train = [r for r in records if r["phase"] == "train"]
+    assert train[0]["covered_by"] == "none"  # no specialised skill before the first step
+    assert all(r["covered_by"] == "defend-fake-notice" for r in train[1:])
+    assert all(r["s0_rule_match"]["covered_by"] == r["covered_by"] for r in train[1:])
+    assert all("covered_by" not in r for r in records if r["phase"] != "train")
