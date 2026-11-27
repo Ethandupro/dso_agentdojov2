@@ -31,7 +31,7 @@ def test_default_temperature_is_0_6():
     assert AutoDojoSettings(attacker=MODEL).temperature == 0.6
 
 
-def test_analyst_diagnoses_failed_trials_and_feeds_the_leaderboard():
+def test_analyst_diagnoses_trials_and_feeds_the_leaderboard():
     log: list[list[dict]] = []
     agent = ScriptedAgent([text_turn(json.dumps(ANALYSIS))], log)
     atk = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=MODEL), llm_factory=lambda: agent)
@@ -45,18 +45,18 @@ def test_analyst_diagnoses_failed_trials_and_feeds_the_leaderboard():
     # Shown next to that attempt on the leaderboard.
     board = prompts.leaderboard_block(atk._leaderboard([fb(0, False)], pair.id))
     assert "ANALYST'S DIAGNOSIS of that run" in board
-    # Wins, trials without a trace and repeats are not analysed.
+    # Wins are analysed too (told it succeeded); trials without a trace and repeats are not.
     atk.observe(pair, fb(0, False, analyst_trace="again"), None)
     atk.observe(pair, fb(1, True, analyst_trace="x"), None)
     atk.observe(pair, fb(2, False), None)
-    assert len(log) == 1
+    assert len(log) == 2 and "RESULT: ACHIEVED" in log[1][1]["content"]
     # Checkpointed, and counted in the report.
     state = json.loads(json.dumps(atk.state_dict()))
     again = AutoDojoAttacker(MANIFEST, AutoDojoSettings(attacker=MODEL), llm_factory=lambda: agent)
     again.load_state(state)
     assert again.analysis_for(pair.id, 0) == text
     metrics = attacker_metrics({"attacker": state}, [])
-    assert metrics is not None and metrics["analyst"] == {"diagnoses": 1, "errors": 0}
+    assert metrics is not None and metrics["analyst"] == {"diagnoses": 2, "errors": 0}
     assert "analyst" in atk.config()["prompt_sha256"]
 
 
@@ -194,3 +194,25 @@ def test_report_splits_wins_by_note_loading():
     lib = metrics["skill_library"]
     assert (lib["rewrites_with_note"], lib["win_rate_with_note"]) == (2, 0.5)
     assert (lib["rewrites_without_note"], lib["win_rate_without_note"]) == (1, 0.0)
+
+
+def test_distillation_sees_the_analyst_not_the_victim_trace():
+    log: list[list[dict]] = []
+    atk = make(json.dumps(ANALYSIS), log, distill_every=1, distill_mode="plain")
+    pair = PAIRS[0]
+    text = atk.text_for(pair, 0, [])
+    secret = "thought: SECRET-REASONING called: read_inbox()"
+    feedback = AttemptFeedback(
+        trial=0,
+        injection_text=text,
+        security=False,
+        utility=True,
+        final_answer="SECRET-REPLY",
+        victim_trace=secret,
+        analyst_trace=secret,
+    )
+    atk.observe(pair, feedback, None)
+    atk.text_for(PAIRS[1], 0, [])
+    distill_prompt = log[-1][1]["content"]
+    assert "ANALYST:" in distill_prompt
+    assert "SECRET-REASONING" not in distill_prompt and "SECRET-REPLY" not in distill_prompt

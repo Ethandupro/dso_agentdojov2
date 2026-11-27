@@ -5,8 +5,8 @@ optimizer call: it builds a leaderboard of the pair's earlier trials (0..k-1) sc
 injection goal get achieved, or the user task fail, through the real checker and victim), shows the optimizer that
 leaderboard and the benign tool-result data the text is placed into, and takes back one new injection. The optimizer
 never sees the skill file or the checker's removed spans. Beyond AutoDojo's outcome feedback it gets the 0-4 graded
-score and, by default, an S0-redacted digest of the victim's run including its reasoning (`runner.trace`; grey-box,
-`--no-victim-trace` for the ablation).
+score and, by default, the analyst's diagnosis of each trial. The analyst alone reads the S0-redacted digest of the
+victim's run, reasoning included (`runner.trace`); the optimizer never sees the run itself (user decision 2026-11-26).
 
 This is a per-pair optimization (AutoDojo's case set C has size one here: one user task per injection target). The
 stand-in checker/agent of the MUZZLE port are intentionally absent: the leaderboard is the real signal, so no
@@ -79,7 +79,8 @@ DEVIATIONS = (
     "always generates. The optimizer prompt names the defence it faces (`target`: the agent itself, or a filter).",
     "A generated text missing one of the goal's literal values (email, URL, long account number) is sent back to the "
     "optimizer with the values named, within `max_tries`; the first C2 pilot's rewrites mangled the IBAN.",
-    "The leaderboard shows the agent's own final response on each past attempt (`show_agent_response`), truncated; "
+    "Without the analyst, the leaderboard shows the agent's own final response on each past attempt "
+    "(`show_agent_response`), truncated; "
     "AutoDojo's outcome feedback is the binary result, but the first pilots showed the optimizer could not adapt to "
     "refusals it could not see. Still black-box: the agent's output only, never the skill file or its reasoning.",
     "Cross-pair memory (`memory`, on by default since 2026-11-20): winning texts and the optimizer's diagnoses from "
@@ -89,9 +90,10 @@ DEVIATIONS = (
     "`max_strategies` (5) of ~12 fixed strategies (`autodojo.strategies`) for the item and writes one injection from "
     "the top-ranked; the ranking is recorded for a wins-by-strategy report. Still one text per round, so the victim "
     "is run once. AutoDojo invents a framing each round with no fixed menu. Identical in C2 and C4.",
-    "Analyst (`analyst`, on by default since 2026-11-25): after each failed trial a second call to the attacker model "
+    "Analyst (`analyst`, on by default since 2026-11-25): after each trial a second call to the attacker model "
     "reads a longer S0-redacted trace of the victim's run (reasoning included) and writes a diagnosis the optimizer "
-    "sees on the leaderboard. AutoDojo's diagnosis stage reads only outcomes. Identical in C2 and C4.",
+    "sees on the leaderboard. The optimizer never sees the trace itself, nor the agent's reply (2026-11-26). "
+    "AutoDojo's diagnosis stage reads only outcomes. Identical in C2 and C4.",
 )
 
 
@@ -140,6 +142,11 @@ class AutoDojoSettings(BaseModel):
     trace."""
     agent_response_chars: int = 600
     """Each shown agent response is truncated to this many characters."""
+    attacker_sees_victim_trace: bool = False
+    """Never True since 2026-11-26 (user decision): the optimizer never sees the victim's run itself (its reasoning,
+    tool calls, tool outputs). Only the analyst reads that trace, and the optimizer gets the analyst's diagnosis. With
+    the analyst on, the optimizer sees outcome, graded score, replication and the diagnosis only; with `--no-analyst`
+    it sees the agent's final reply instead (the PR #38 view). Recorded so runs from before the change never resume."""
     target: Literal["agent", "filter"] = "agent"
     """Which defence the optimizer is told it faces: `agent` (skills design, default since 2026-11-19: no filter, the
     agent may be addressed directly) or `filter` (external-checker design: text must pass as ordinary data)."""
@@ -162,11 +169,11 @@ class AutoDojoSettings(BaseModel):
     `max_strategies` for the item (its "sub-strategies") and writes one injection from the top-ranked; the ranking is
     recorded. Still one text per round, so the victim is run once."""
     analyst: bool = True
-    """The analyst (user request 2026-11-25, `run_condition --analyst/--no-analyst`): after every failed trial a second
+    """The analyst (user request 2026-11-25, `run_condition --analyst/--no-analyst`): after every trial a second
     call to the attacker model (same server, its own prompt) reads a longer S0-redacted trace of the victim's run,
     its reasoning included, and writes a short diagnosis -- did the agent see the text, how did it react to it, what
-    blocked it, what to change -- which the optimizer sees next to that attempt on the leaderboard. Needs the victim
-    trace (`--show-victim-trace`)."""
+    blocked it (or what made it comply), what to change -- which the optimizer sees next to that attempt on the
+    leaderboard, in place of the run itself. Needs the victim trace (`--show-victim-trace`)."""
     analyst_temperature: float = 0.3
     """The analyst reads and reports; it is sampled cooler than the optimizer."""
     analyst_max_tokens: int = 600
@@ -197,7 +204,7 @@ class AutoDojoAttacker:
         self.playbook: list[dict[str, Any]] = []
         """Winning trials of this run: pair, trial, suite, injection task, text, the skill-file version beaten."""
         self.analyses: list[dict[str, Any]] = []
-        """The analyst's diagnoses (`settings.analyst`), one per failed trial: pair, trial, text shown, usage/error."""
+        """The analyst's diagnoses (`settings.analyst`), one per evolving trial: pair, trial, text shown, usage/error."""
 
     def analysis_for(self, pair_id: str, trial: int) -> str | None:
         for entry in self.analyses:
@@ -206,12 +213,11 @@ class AutoDojoAttacker:
         return None
 
     def observe(self, pair: Pair, feedback: AttemptFeedback, skill_version: str | None) -> None:
-        """Called by the runner after every finished evolving trial. Runs the analyst on a failed trial (if on), and
-        keeps texts that really succeeded (security broken) for later pairs; a trial already seen (a rerun unit after
-        a crash) is ignored."""
+        """Called by the runner after every finished evolving trial. Runs the analyst on the trial (if on; wins too,
+        so distillation learns why a text worked), and keeps texts that really succeeded (security broken) for later
+        pairs; a trial already seen (a rerun unit after a crash) is ignored."""
         if (
             self.settings.analyst
-            and not feedback.security
             and feedback.analyst_trace
             and not any(e["pair"] == pair.id and e["trial"] == feedback.trial for e in self.analyses)
         ):
@@ -270,6 +276,7 @@ class AutoDojoAttacker:
                 "content": prompts.analyst_task(
                     self.goal(pair),
                     feedback.injection_text,
+                    feedback.security,
                     feedback.utility,
                     feedback.progress,
                     feedback.analyst_trace or "",
@@ -335,7 +342,8 @@ class AutoDojoAttacker:
     def _leaderboard(self, history: list[AttemptFeedback], pair_id: str | None = None) -> list[dict[str, Any]]:
         """The pair's earlier trials as leaderboard entries, best first (success, then the user task surviving, then
         most recent), capped at `leaderboard_size`. Each carries its replication tally (a win re-run unchanged, when
-        `--replicate-wins` is on) and the analyst's diagnosis (failed trials, when the analyst is on)."""
+        `--replicate-wins` is on). What the optimizer learns of the victim's run: only the analyst's diagnosis when the
+        analyst is on; only the agent's final reply when it is off. Never the run itself (user decision 2026-11-26)."""
         limit = self.settings.agent_response_chars
         entries = [
             {
@@ -344,10 +352,11 @@ class AutoDojoAttacker:
                 "utility": fb.utility,
                 "trial": fb.trial,
                 "progress": fb.progress,
-                "response": _clip(fb.final_answer, limit) if self.settings.show_agent_response else None,
-                # The victim trace supersedes the final answer when present (it already ends with what the agent
-                # said): it shows the attacker why the injection was ignored, S0 already redacted by the runner.
-                "trace": fb.victim_trace if self.settings.show_agent_response else None,
+                "response": (
+                    _clip(fb.final_answer, limit)
+                    if self.settings.show_agent_response and not self.settings.analyst
+                    else None
+                ),
                 "replication": fb.replication,
                 "analysis": self.analysis_for(pair_id, fb.trial) if pair_id is not None else None,
             }

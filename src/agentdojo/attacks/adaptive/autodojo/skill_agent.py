@@ -183,12 +183,21 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 "strategy": entry.get("strategy"),
                 "diagnosis": entry.get("diagnosis"),
                 "skills_loaded": entry.get("skills_loaded") or [],
-                "response": _clip(feedback.victim_trace or feedback.final_answer, n),
+                # Never the victim's run itself (user decision 2026-11-26): the analyst's diagnosis when it is on,
+                # else the agent's final reply.
+                "response": None if self.settings.analyst else _clip(feedback.final_answer, n),
                 "analysis": self.analysis_for(pair.id, feedback.trial),
                 "replication": feedback.replication,
                 "literals": goal_literals(self.goal(pair)),
             }
         )
+
+    @staticmethod
+    def _view(t: dict[str, Any], n: int) -> str:
+        """What a distillation prompt shows of the victim's run: the analyst's diagnosis, else the agent's reply."""
+        if t.get("analysis"):
+            return f"ANALYST: {_clip(t['analysis'], n)}"
+        return f"AGENT'S REPLY: {_clip(t.get('response'), n) or '(nothing recorded)'}"
 
     def _finished_pairs(self, current: str) -> list[str]:
         """Pairs with recorded trials, in run order, other than the one about to start (pairs run one after another)."""
@@ -210,7 +219,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
             score = f", progress {t['progress']}/4" if t.get("progress") is not None else ""
             lines.append(
                 f"[{i}] item {t['suite']} #{t['pair'].split('/', 1)[-1]}, trial {t['trial']}: {outcome}{score}"
-                f"\nTEXT: {_clip(t['text'], n)}\nAGENT: {t['response'] or '(nothing recorded)'}"
+                f"\nTEXT: {_clip(t['text'], n)}\n{self._view(t, n)}"
             )
         return "\n\n".join(lines)
 
@@ -248,10 +257,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
                 lines.append(f"    TEXT: {_clip(t['text'], n)}")
                 if t.get("diagnosis"):
                     lines.append(f"    OPTIMIZER'S PLAN: {_clip(t['diagnosis'], n)}")
-                if t.get("analysis"):
-                    lines.append(f"    ANALYST: {_clip(t['analysis'], n)}")
-                else:
-                    lines.append(f"    AGENT: {_clip(t.get('response'), n) or '(nothing recorded)'}")
+                lines.append(f"    {self._view(t, n)}")
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 
@@ -299,7 +305,7 @@ class SkillAgentAttacker(AutoDojoAttacker):
             score = f", progress {t['progress']}/4" if t.get("progress") is not None else ""
             return (
                 f"{label} (item {t['suite']} #{t['pair'].split('/', 1)[-1]}, trial {t['trial']}{score}):\n"
-                f"TEXT: {_clip(t['text'], n)}\nAGENT: {t['response'] or '(nothing recorded)'}"
+                f"TEXT: {_clip(t['text'], n)}\n{self._view(t, n)}"
             )
 
         blocks = []
