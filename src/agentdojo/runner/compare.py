@@ -6,10 +6,11 @@ segmentation": cross-condition comparisons come from the per-condition results, 
 It reads every `results/<run_id>/seed_<n>/` run (full runs only; `--limit N` compares smoke runs instead), refuses to
 mix runs built from different manifests, pools the seeds of each condition, and computes:
 
-- H1: test-phase ASR on the final file in C3 and C4 against C1 on the same test pairs, with benign utility before
-  and after evolution.
-- H2: C2 against C4 on train-split injection tasks only (C4's attacker never rewrites test pairs), overall and by
-  position in the run (train pairs in run order, 10 bins; the main curve) and by trial index 0/1/2.
+- H1: test-phase ASR on the final file in C3 against C1 on the same test pairs, with benign utility before and after
+  evolution.
+- H2: C2 against C4 on every pair (C4 has no train/test split since 2026-11-27: one run where the skills keep
+  adapting and the attacker keeps rewriting), overall, by position in the run (pairs in run order, 10 bins; the main
+  curve) and by trial index; plus C4's benign utility before and after.
 - C0 against C1: what the checker with S0 adds.
 
 Differences are A minus B with 95% paired cluster-bootstrap intervals over injection tasks (benign: user tasks).
@@ -84,21 +85,7 @@ def find_runs(results_root: Path, limit: int | None = None) -> list[dict[str, An
             "these runs use different --skill-loading settings, so their victims saw different skills prompts. "
             f"Re-run with one setting, or move the other runs aside:\n  {detail}"
         )
-    protocols = {c4_protocol(r["config"]) for r in runs if r["config"]["condition"] == "C4"}
-    if len(protocols) > 1:
-        detail = "\n  ".join(
-            f"{r['dir']}: --c4-protocol {c4_protocol(r['config'])}" for r in runs if r["config"]["condition"] == "C4"
-        )
-        raise RunMismatchError(
-            "these C4 runs use different --c4-protocol settings, which compare against different pairs. "
-            f"Put each in its own results folder:\n  {detail}"
-        )
     return runs
-
-
-def c4_protocol(config: dict[str, Any]) -> str:
-    """`--c4-protocol` of a run; runs from before 2026-11-27 (no key) used the default, `split`."""
-    return config.get("c4_protocol") or "split"
 
 
 def skill_loading(config: dict[str, Any]) -> str:
@@ -134,9 +121,9 @@ H2_BINS = 10
 
 
 def position_bins(rows: Sequence[Row], bins: int = H2_BINS) -> list[list[str]]:
-    """Train pairs in run order, cut into `bins` near-equal groups (fewer when there are fewer pairs).
+    """Pairs in run order, cut into `bins` near-equal groups (fewer when there are fewer pairs).
 
-    C2 and C4 run the train pairs in the same manifest order, so bin k holds the same pairs in both runs.
+    C2 and C4 run the pairs in the same manifest order, so bin k holds the same pairs in both runs.
     """
     order: dict[str, int] = {}
     for r in sorted(rows, key=lambda r: r["unit"]):
@@ -167,7 +154,6 @@ def _h2_by_position(c2: Sequence[Row], c4: Sequence[Row]) -> list[dict[str, Any]
 def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
     conditions = sorted({run["config"]["condition"] for run in runs})
     rows = {c: pooled(runs, c) for c in conditions}
-    protocol = next((c4_protocol(r["config"]) for r in runs if r["config"]["condition"] == "C4"), "split")
     result: dict[str, Any] = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "runs": [
@@ -185,19 +171,14 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "manifest_sha256": runs[0]["config"]["manifest_sha256"] if runs else None,
         "bootstrap": {"resamples": DEFAULT_RESAMPLES, "confidence": CONFIDENCE, "paired": True},
         "h1": {},
-        "c4_protocol": protocol,
         "h2": None,
-        "h1_adaptive": None,
         "c0_vs_c1": None,
         "missing": [],
     }
 
     # H1: test ASR on the final file vs C1 on the same test pairs, at benign utility before/after.
     c1_test = _select(rows.get("C1", []), ("attack",), "test")
-    for cond in ("C3", "C4"):
-        if cond == "C4" and protocol != "split":
-            # no-split has no test phase; attack-test's test pairs face the evolving attacker, so C1 is no baseline.
-            continue
+    for cond in ("C3",):
         test = _select(rows.get(cond, []), ("test",))
         if not test or not c1_test:
             result["missing"].append(f"H1 {cond} vs C1 needs both runs")
@@ -217,32 +198,9 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
             cluster_bootstrap(c1_benign, lambda r: r["utility"], user_task_cluster).to_dict() if c1_benign else None
         )
 
-    # H1 under adaptive attack (`--c4-protocol attack-test`): the frozen C4 skills vs the fixed S0, both against the
-    # evolving attacker, on the same test pairs.
-    if protocol == "attack-test":
-        c4_test = _select(rows.get("C4", []), ("test",))
-        c2_test = _select(rows.get("C2", []), ("attack",), "test")
-        if c4_test and c2_test:
-            result["h1_adaptive"] = {
-                **_attacked_comparison(c4_test, c2_test),
-                "c4_asr": _asr(c4_test),
-                "c2_asr": _asr(c2_test),
-            }
-        else:
-            result["missing"].append(
-                "H1 under adaptive attack needs C4 (attack-test) and C2 runs with test pairs "
-                "(a smoke C2 needs --limit-each-split)"
-            )
-
-    # H2: C2 vs C4 on train-split injection tasks, overall and by trial index. With `--c4-protocol no-split` C4
-    # adapts on every pair, so C2's test-split pairs are compared too.
-    c2_train = _select(rows.get("C2", []), ("attack",), None if protocol == "no-split" else "train")
-    if protocol == "no-split" and c2_train and not any(r["split"] == "test" for r in c2_train):
-        result["missing"].append(
-            "C4 ran --c4-protocol no-split but C2 has no test-split pairs: H2 covers train-split pairs only "
-            "(a smoke C2 needs --limit-each-split)"
-        )
-    c4_train = _select(rows.get("C4", []), ("train",))
+    # H2: C2 vs C4 on every pair, overall, by position and by trial index.
+    c2_train = _select(rows.get("C2", []), ("attack",))
+    c4_train = _select(rows.get("C4", []), ("attack",))
     if c2_train and c4_train:
         trials = sorted({r["trial"] for r in c2_train + c4_train})
         result["h2"] = {
@@ -261,6 +219,11 @@ def compare(runs: list[dict[str, Any]]) -> dict[str, Any]:
                 for t in trials
             },
         }
+        c4_before = _select(rows["C4"], ("benign_before",))
+        c4_after = _select(rows["C4"], ("benign_after",))
+        result["h2"]["benign_utility_after_vs_before"] = (
+            _diff(c4_after, c4_before, lambda r: r["utility"], benign=True) if c4_before and c4_after else None
+        )
     else:
         result["missing"].append("H2 needs C2 and C4 runs")
 
@@ -335,12 +298,12 @@ def render_html(result: dict[str, Any]) -> str:
 
     out.append(
         "<h2>H1: final skill file vs S0 on held-out injection tasks</h2>"
-        "<p class='muted'>C3/C4 test phase (final, frozen file) against C1 on the same test pairs. "
+        "<p class='muted'>C3 test phase (final, frozen file) against C1 on the same test pairs. "
         "A negative ASR difference means the evolved file blocks more. H1 claims a gain only if benign utility "
         "holds (after minus before).</p>"
     )
     if not result["h1"]:
-        out.append("<p>Not available yet: needs C1 and C3 or C4 results.</p>")
+        out.append("<p>Not available yet: needs C1 and C3 results.</p>")
     for cond, h1 in result["h1"].items():
         out.append(f"<h3>{_e(cond)} vs C1</h3>")
         out.append(_comparison_table(f"{cond} test", "C1 test pairs", h1["test_vs_c1"]))
@@ -361,21 +324,25 @@ def render_html(result: dict[str, Any]) -> str:
 
     out.append(
         "<h2>H2: static vs evolving skill file under the evolving attacker</h2>"
-        "<p class='muted'>C2 minus C4 on train-split injection tasks only. A positive difference means the evolving "
-        "file (C4) holds up better against the adapting attacker. Main curve: position in the run (train pairs in run "
-        "order, cut into equal bins; the same pairs in each bin for C2 and C4), where the C4 file learns as it goes. "
-        "Second view: trial index 0/1/2, the attacker refining one pair.</p>"
+        "<p class='muted'>C2 minus C4 on every pair. A positive difference means the evolving skills (C4) hold up "
+        "better against the adapting attacker. Main curve: position in the run (pairs in run order, cut into equal "
+        "bins; the same pairs in each bin for C2 and C4), where the C4 skills learn as they go. Second view: trial "
+        "index, the attacker refining one pair.</p>"
     )
     if result["h2"] is None:
-        out.append("<p>Not available yet: needs C2 and C4 results (MUZZLE).</p>")
+        out.append("<p>Not available yet: needs C2 and C4 results.</p>")
     else:
-        if result.get("c4_protocol") == "no-split":
-            out.append("<p class='muted'>C4 ran with <code>--c4-protocol no-split</code>: all pairs, both sides.</p>")
-        out.append(_comparison_table("C2 (train inj.)", "C4 (train phase)", result["h2"]["overall"]))
+        out.append(_comparison_table("C2", "C4", result["h2"]["overall"]))
+        if result["h2"].get("benign_utility_after_vs_before") is not None:
+            out.append(
+                TABLE_HEAD.format(a="C4 after (final skills)", b="C4 before (S0)")
+                + _diff_row("Benign utility", result["h2"]["benign_utility_after_vs_before"])
+                + "</tbody></table>"
+            )
         by_pos = result["h2"]["by_position"]
         out.append(
             _point_whisker_chart(
-                "ASR over the run (train pairs in run order)",
+                "ASR over the run (pairs in run order)",
                 [f"{b['bin'] + 1}" for b in by_pos],
                 {"C2": [b["c2_asr"] for b in by_pos], "C4": [b["c4_asr"] for b in by_pos]},
             )
@@ -394,15 +361,6 @@ def render_html(result: dict[str, Any]) -> str:
                 {"C2": [v["c2_asr"] for v in by_trial.values()], "C4": [v["c4_asr"] for v in by_trial.values()]},
             )
         )
-
-    if result.get("h1_adaptive") is not None:
-        out.append(
-            "<h2>H1 under adaptive attack: frozen evolved skills vs S0 on held-out injection tasks</h2>"
-            "<p class='muted'>C4 test phase (<code>--c4-protocol attack-test</code>: frozen skills, the attacker "
-            "rewrites) against C2 on the same test pairs. A negative ASR difference means the evolved skills block "
-            "more new goals in new wording.</p>"
-        )
-        out.append(_comparison_table("C4 test (frozen skills)", "C2 test pairs", result["h1_adaptive"]))
 
     out.append("<h2>C0 vs C1: the checker with S0</h2>")
     if result["c0_vs_c1"] is None:

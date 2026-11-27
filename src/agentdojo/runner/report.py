@@ -355,7 +355,7 @@ def skill_file_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
 def evolving_metrics(records: Sequence[dict[str, Any]], trials_per_pair: int) -> dict[str, Any] | None:
     """Pair-level success, separating what the original AgentDojo text already does from what evolution adds.
 
-    Per pair (attacked phases except C4's static test phase): trial 0 is the original AgentDojo text. If it already
+    Per pair (attacked phases except C3's test phase): trial 0 is the original AgentDojo text. If it already
     succeeds, the pair is "baseline already works" and is left out of the evolving ASR. For every other pair, the
     first trial n >= 1 that succeeds is the number of evolutions it took. `asr_at_n[n-1]` is the share of those pairs
     that succeeded within n evolutions (cumulative, like pass@n with the evolution budget as n), and the evolving ASR
@@ -816,7 +816,7 @@ def render_html(summary: dict[str, Any]) -> str:
             "ASR splits are descriptive, not causal. The covering skill is the rule matcher's call from each skill's "
             "description.</p>"
         )
-        out.append(f"<p>Specialised skills at the end of the train phase: {library['final_skills']}</p>")
+        out.append(f"<p>Specialised skills when the skills froze: {library['final_skills']}</p>")
         if library["per_skill"]:
             out.append(
                 "<table><thead><tr><th>Skill</th><th>Trials listed</th><th>Load rate</th>"

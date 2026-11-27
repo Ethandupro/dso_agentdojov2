@@ -50,7 +50,7 @@ from agentdojo.agent_pipeline.deepagents_pipeline import ToolMiddlewareFactory
 from agentdojo.checker.middleware import CheckerFn, make_checker_factory
 from agentdojo.experiment_models import S0_SKILL_DESCRIPTION, S0_SKILL_NAME
 from agentdojo.logging import NullLogger, TraceLogger
-from agentdojo.runner.conditions import Condition, Unit
+from agentdojo.runner.conditions import LEARNING_PHASES, Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import evolving_metrics, replication_metrics
@@ -121,7 +121,6 @@ def run_dir_for(
     judge_trigger: str | None = None,
     skill_loading: str = "index",
     limit_each_split: bool = False,
-    c4_protocol: str = "split",
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -156,8 +155,6 @@ def run_dir_for(
         name = f"{name}-rep{replicate_wins}"
     if judge_trigger:
         name = f"{name}-{judge_trigger}"
-    if c4_protocol != "split":
-        name = f"{name}-{c4_protocol}"
     if stop_on_success:
         name = f"{name}-first-success"
     if victim_temperature is not None:
@@ -273,15 +270,12 @@ class Runner:
         judge_confirm_runs: int = 0,
         judge_evidence: bool = False,
         skill_loading: SkillLoading = "index",
-        attack_test_phase: bool = False,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
         if defense == "skills" and checker_fn is not None:
             raise ValueError("a checker model is only used with defense='checker'")
         self.defense = defense
-        self.attack_test_phase = attack_test_phase
-        """C4 `--c4-protocol attack-test`: the evolving attacker also rewrites test pairs (the skills stay frozen)."""
         self.skill_loading: SkillLoading = skill_loading
         """`prompt` or `both`: the shared skills prompt tells the agent it may load skills mid-task (L2). The S0 index
         (`index`, `both`) is rendered by the evolving skill file, not here."""
@@ -429,15 +423,14 @@ class Runner:
         )
 
     def attacker_for(self, unit: Unit) -> Attacker:
-        # C4: the evolving attacker never sees test-split injection tasks; test pairs keep the trial-0 text. With
-        # `--c4-protocol attack-test` it rewrites them too, against the frozen skills.
-        if unit.phase == "test" and not self.attack_test_phase:
+        # Only C3 has a test phase, and C3 has no evolving attacker; C4 (no split) attacks every pair.
+        if unit.phase == "test":
             return self.static_attacker
         return self.attacker
 
     def already_won(self, unit: Unit) -> bool:
         """`stop_on_success`: an evolving pair that already succeeded on an earlier trial (trial 0 included) is done.
-        Static pairs (C0/C1, and C4's test pairs) always run every trial."""
+        Static pairs (C0, C1, C3) always run every trial."""
         if not self.stop_on_success or unit.pair is None or self.attacker_for(unit) is self.static_attacker:
             return False
         return any(r["pair"] == unit.pair.id and r["phase"] == unit.phase and r["security"] for r in self.records)
@@ -551,7 +544,7 @@ class Runner:
         if (
             self.judge_confirm_runs > 0
             and self.condition.evolving_skill
-            and unit.phase == "train"
+            and unit.phase in LEARNING_PHASES
             and attacked
             and attacker_success
             and injection_task is not None
@@ -650,7 +643,7 @@ class Runner:
     ) -> dict[str, Any]:
         """C3/C4 train trials with rich judge evidence: `victim_text` (popped by the evolving skill file before the
         record is written) and, for a win, `judge_trace`, the run digest the judge reads."""
-        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase == "train" and attacked):
+        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase in LEARNING_PHASES and attacked):
             return {}
         hidden = frozenset({LOAD_SKILL_TOOL_NAME})
         return {

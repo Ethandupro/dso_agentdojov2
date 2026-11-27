@@ -49,7 +49,7 @@ from agentdojo.attacks.adaptive.autodojo import (
 )
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
-from agentdojo.runner.conditions import C4_PROTOCOLS, CONDITIONS, PairFilter, Unit, build_units, load_subset
+from agentdojo.runner.conditions import CONDITIONS, LEARNING_PHASES, PairFilter, Unit, build_units, load_subset
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
@@ -293,17 +293,8 @@ def skill_agent_settings(
     "--limit-each-split",
     is_flag=True,
     default=False,
-    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3/C4 always do), so C1's "
-    "test pairs match C3/C4's test phase. Gets its own '-each-split' results directory.",
-)
-@click.option(
-    "--c4-protocol",
-    type=click.Choice(C4_PROTOCOLS),
-    default="split",
-    show_default=True,
-    help="C4 only. split: train pairs, then frozen skills on test pairs with the fixed injection. no-split: one "
-    "adapting phase over all pairs (C2's pairs and order), no held-out test. attack-test: the split, but the attacker "
-    "also rewrites the test pairs against the frozen skills. Each non-default value gets its own results directory.",
+    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3 always does), so C1's "
+    "test pairs match C3's test phase. Gets its own '-each-split' results directory.",
 )
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
@@ -545,7 +536,6 @@ def main(
     single_injection_point: bool,
     smoke: bool,
     limit_each_split: bool,
-    c4_protocol: str,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -619,7 +609,8 @@ def main(
             raise click.ClickException(str(e)) from e
     if limit_each_split and (cond.evolving_skill or limit is None):
         raise click.ClickException(
-            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3/C4 already take N pairs from each split"
+            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3 already takes N pairs from each split, "
+            "and C4 runs C2's pairs"
         )
     pair_filter = PairFilter(
         user_tasks=subset_tasks,
@@ -627,17 +618,7 @@ def main(
         balance_suites=smoke,
         limit_each_split=limit_each_split,
     )
-    if c4_protocol != "split" and cond.name != "C4":
-        raise click.ClickException("--c4-protocol applies to C4 only")
-    units = build_units(
-        cond,
-        manifest_data,
-        trials_per_pair,
-        limit,
-        suites_tuple,
-        pair_filter,
-        "no-split" if c4_protocol == "no-split" else "attack-test" if c4_protocol == "attack-test" else "split",
-    )
+    units = build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple, pair_filter)
     if not any(u.pair is not None for u in units):
         raise click.ClickException("the suite/subset/single-injection-point cuts leave no pairs to run")
 
@@ -803,7 +784,6 @@ def main(
         judge_trigger=trigger_suffix,
         skill_loading=skill_loading,
         limit_each_split=limit_each_split,
-        c4_protocol=c4_protocol,
     )
     config = RunConfig(
         condition=cond.name,
@@ -857,7 +837,6 @@ def main(
         single_injection_point=single_injection_point,
         smoke=smoke or None,
         limit_each_split=limit_each_split or None,
-        c4_protocol=None if c4_protocol == "split" else c4_protocol,
         graded_score=graded_score if evolving_attack else None,
         show_victim_trace=show_victim_trace if evolving_attack else None,
         victim_trace_thinking=True if evolving_attack and show_victim_trace else None,
@@ -964,7 +943,7 @@ def main(
             s0_description=experiment_models.S0_SKILL_DESCRIPTION if not external_checker else "",
             s0_index=skill_loading in ("index", "both"),
             library_policy=library_policy,
-            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
+            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase in LEARNING_PHASES}),
         )
         skill_file = EvolvingSkillFile(
             evolver,
@@ -1007,7 +986,6 @@ def main(
         judge_confirm_runs=trigger.confirm_runs if cond.evolving_skill and trigger.batched else 0,
         judge_evidence=rich_evidence,
         skill_loading=skill_loading,  # type: ignore[arg-type]
-        attack_test_phase=c4_protocol == "attack-test",
     )
     try:
         records = runner.run()

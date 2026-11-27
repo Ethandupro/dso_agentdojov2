@@ -13,6 +13,7 @@ changelog.
 
 from typing import Any
 
+from agentdojo.runner.conditions import LEARNING_PHASES
 from agentdojo.runner.plugins import StaticAttacker
 from agentdojo.skillfile.judge import RemovedSpan, SkillFileEvolver, StepResult, TrialRecord
 from agentdojo.task_suite.load_suites import get_suite
@@ -25,9 +26,9 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
     return TrialRecord(
         pair=record["pair"],
         trial=record["trial"],
-        # The phase, not the pair's label, decides what the judge learns from: the same in every protocol except
-        # C4 `--c4-protocol no-split`, whose single adapting phase also runs test-split pairs.
-        split="train" if record["phase"] == "train" else record["split"],
+        # The phase, not the pair's label, decides what the judge learns from: C3's train phase, or C4's single
+        # attack phase (no split), which also runs test-split pairs.
+        split="train" if record["phase"] in LEARNING_PHASES else record["split"],
         skill_version=record["skill_version"],
         user_task=suite.user_tasks[record["user_task"]].PROMPT,
         injection_text=record["injection_text"],
@@ -131,7 +132,7 @@ class EvolvingSkillFile:
         trial = trial_record_from_run_record(record, self.benchmark_version)
         # The victim's own text is only used to find the rules it used; it never goes to trials.jsonl.
         record.pop("victim_text", None)
-        train = record["phase"] == "train" and not self.evolver.frozen
+        train = record["phase"] in LEARNING_PHASES and not self.evolver.frozen
         if train and self.evolver.rich_evidence and trial.victim_text is not None:
             match = self.evolver.match_rules(trial.victim_text, trial.injection_text)
             trial.cited_rules = match.rule_ids
@@ -140,12 +141,12 @@ class EvolvingSkillFile:
             trial.victim_text = None
             record["s0_rule_match"] = match.to_dict()
         step = self.evolver.record_trial(trial)
-        if self.evolver.rich_evidence and record["phase"] == "train":
+        if self.evolver.rich_evidence and record["phase"] in LEARNING_PHASES:
             record["s0_rules_quoted"] = trial.cited_rules
             if self.evolver.library_policy.enabled:
                 record["covered_by"] = trial.covered_by
         steps = [step] if step is not None else []
-        if self.evolver.trigger.batched and record["phase"] == "train" and self.pair_finished(record):
+        if self.evolver.trigger.batched and record["phase"] in LEARNING_PHASES and self.pair_finished(record):
             steps.extend(self.evolver.finish_pair())
         return step_summary(steps)
 

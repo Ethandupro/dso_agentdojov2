@@ -12,8 +12,8 @@ Only MUZZLE's refinement loop is used (decided 2026-10-29). Before trials 1 and 
    reads, replacing the vector's content.
 
 Trial 0 is always the manifest's `important_instructions` text, with no model call. The attacker keeps going after a
-success (upstream stops). It never sees the skill file, the checker's removals or the victim's trace; in C4 the
-runner keeps test pairs away from it, so this class is the same in C2 and C4.
+success (upstream stops). It never sees the skill file, the checker's removals or the victim's trace; it rewrites
+every pair in both C2 and C4, so this class is the same in both.
 
 Deviations from upstream's `MuzzleOptimizer` are listed in `DEVIATIONS` and saved with the run's config.
 """

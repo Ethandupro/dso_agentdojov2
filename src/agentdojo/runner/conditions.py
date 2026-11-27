@@ -13,20 +13,9 @@ from agentdojo.runner.manifest import Pair, load_pairs, task_sort_key
 
 ConditionName = Literal["C0", "C0E", "C1", "C2", "C3", "C4"]
 Phase = Literal["benign", "benign_before", "benign_after", "attack", "train", "test"]
-C4Protocol = Literal["split", "no-split", "attack-test"]
-C4_PROTOCOLS: tuple[C4Protocol, ...] = ("split", "no-split", "attack-test")
-"""How C4 runs its pairs (`run_condition --c4-protocol`, added 2026-11-27 for the deployment framing):
-
-- `split` (default, the design since 2026-11-11): train pairs with the judge and the evolving attacker, then the
-  frozen skills on test pairs with the fixed injection only.
-- `no-split`: one adapting phase. Every pair, train- or test-split, runs in C2's order (with `--limit N`: N train
-  pairs then N test pairs, as C2 with `--limit-each-split`), the judge learns from all of them and the attacker
-  rewrites all of them. The skills freeze only for the benign tasks after. Compared with C2 on all pairs (H2); there
-  is no held-out test for C4.
-- `attack-test`: the split as in `split`, but the evolving attacker also rewrites the test pairs, against the frozen
-  skills. Its test phase is compared with C2 on the same test pairs (run C2 with `--limit-each-split` for a smoke
-  run), not with C1.
-"""
+LEARNING_PHASES: tuple[Phase, ...] = ("train", "attack")
+"""Attacked phases whose trials the C3/C4 judge learns from: C3's train phase, and C4's single attack phase (C4 has
+no train/test split since 2026-11-27)."""
 
 
 @dataclass(frozen=True)
@@ -54,7 +43,9 @@ CONDITIONS: dict[str, Condition] = {
         Condition("C1", "c1_static-s0_static-attack", s0=True, skill_mode="static", attack_mode="static"),
         Condition("C2", "c2_static-s0_evolving-attack", s0=True, skill_mode="static", attack_mode="evolving"),
         Condition("C3", "c3_evolving-s0_static-attack", s0=True, skill_mode="evolving", attack_mode="static"),
-        Condition("C4", "c4_evolving-s0_evolving-attack", s0=True, skill_mode="evolving", attack_mode="evolving"),
+        # Run id changed 2026-11-27 (was `c4_evolving-s0_evolving-attack`) when C4 lost its train/test split, so old
+        # C4 runs are never resumed or pooled with new ones.
+        Condition("C4", "c4_evolving-s0_evolving-attack_live", s0=True, skill_mode="evolving", attack_mode="evolving"),
     ]
 }
 
@@ -90,10 +81,10 @@ class PairFilter:
     single_injection_point: bool = False
     """Keep only pairs whose user task reads exactly one injection vector."""
     limit_each_split: bool = False
-    """C0-C2 with `--limit`: take the first `limit` train pairs and the first `limit` test pairs, as C3/C4 always do
+    """C0-C2 with `--limit`: take the first `limit` train pairs and the first `limit` test pairs, as C3 always does
     (`run_condition --limit-each-split`, added 2026-11-27). Without it the first `limit` pairs of the run order are
     taken, and in the smoke order those are all train pairs (the first 136), so C1 has no test pairs to set against
-    C3/C4's test phase (H1)."""
+    C3's test phase (H1)."""
     balance_suites: bool = False
     """Not a cut but an order (added 2026-11-20 for `--smoke`): interleave the kept pairs suite by suite (one banking,
     one travel, ...), each suite keeping its run order, so `--limit N` takes about N / suites pairs from each suite
@@ -175,17 +166,18 @@ def build_units(
     limit: int | None = None,
     suites: tuple[str, ...] | None = None,
     pair_filter: PairFilter = NO_FILTER,
-    c4_protocol: C4Protocol = "split",
 ) -> list[Unit]:
     """The run's units in order.
 
     - C0-C2: benign tasks once (proposed 2026-11-16, DESIGN open question), then every pair x trials in manifest
       order, each pair keeping its train/test label.
-    - C3/C4: benign before, train pairs x trials, (freeze), test pairs x trials, benign after.
+    - C3: benign before, train pairs x trials, (freeze), test pairs x trials, benign after.
+    - C4 (no split, user decision 2026-11-27): benign before, every pair x trials in C2's order (phase `attack`; the
+      judge learns from all of them and the attacker rewrites all of them), (freeze), benign after.
 
     `suites` keeps only pairs in those suites (a pilot cut, e.g. the C0-vulnerable banking/travel pairs). `limit`
-    keeps only the first `limit` pairs of the (suite-filtered) run order (smoke runs); in C3/C4 that means the first
-    `limit` train pairs and the first `limit` test pairs. `pair_filter` (a `--subset` file and/or
+    keeps only the first `limit` pairs of the (suite-filtered) run order (smoke runs), as in C2; in C3 that means the
+    first `limit` train pairs and the first `limit` test pairs. `pair_filter` (a `--subset` file and/or
     `--single-injection-point`) is applied together with `suites`, also before `limit`.
     """
     pairs = _select_pairs(manifest, None, suites, pair_filter)
@@ -204,17 +196,10 @@ def build_units(
             for trial in range(trials_per_pair):
                 units.append(Unit(len(units), phase, pair.suite, pair.user_task, pair, trial))
 
-    if condition.evolving_skill and c4_protocol == "no-split":
-        # One adapting phase, every pair a "train" unit (its split label is kept). The run order puts all train-split
-        # pairs first, so with `limit` it takes the first `limit` of each split, the same pairs in the same order as
-        # C2 with `--limit-each-split` (and as the other C4 protocols). Without `limit`: all pairs, C2's order.
+    if condition.name == "C4":
+        # One adapting phase over C2's pairs in C2's order, so H2 compares the same pairs at every position.
         add_benign("benign_before")
-        if limit is not None:
-            train = order([p for p in pairs if p.split == "train"])[:limit]
-            test = order([p for p in pairs if p.split == "test"])[:limit]
-            add_pairs("train", train + test)
-        else:
-            add_pairs("train", pairs)
+        add_pairs("attack", pairs if limit is None else pairs[:limit])
         add_benign("benign_after")
     elif condition.evolving_skill:
         # Balanced within each split, so a smoke run's train and test cuts both cover every suite.

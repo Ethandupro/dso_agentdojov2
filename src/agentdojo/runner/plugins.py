@@ -1,8 +1,8 @@
 """The two plug-in points of the runner: where a trial's injection text comes from, and which skill file (S0 or an
 evolved version) the victim gets as its security skill (or the external checker reads, in the ablation). Both are saved in the run's checkpoint through `state_dict` / `load_state`.
 
-- `Attacker`: `StaticAttacker` here (C0, C1, C3, and C4 test pairs); `MuzzleAttacker` comes with the MUZZLE port
-  (C2, C4 train pairs). The runner, not the attacker, keeps test pairs away from MUZZLE in C4.
+- `Attacker`: `StaticAttacker` here (C0, C1, C3); the evolving attackers (AutoDojo, MUZZLE) in C0E, C2 and C4, on
+  every pair.
 - `SkillFileSource`: `NoChecker` (C0: no S0 in the skill list) and `FixedSkillFile` (C1, C2) here; the evolving file (C3, C4) wraps
   `agentdojo.skillfile.SkillFileEvolver`.
 """

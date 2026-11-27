@@ -64,13 +64,13 @@ def test_c2_trials_use_muzzle_rewrites_and_feed_back_outcomes(tmp_path: Path):
     assert "<h2>Attacker</h2>" in (runner.run_dir / "report.html").read_text()
 
 
-def test_c4_test_pairs_never_reach_muzzle(tmp_path: Path):
+def test_c4_muzzle_rewrites_every_pair(tmp_path: Path):
+    """C4 has no train/test split (2026-11-27): MUZZLE works on every pair, as in C2."""
     log: list[dict[str, Any]] = []
     attacker, _ = make_attacker(log)
     records = [r for r in make_runner(tmp_path, "C4", attacker).run() if r["pair"]]
-    assert [r["attack"] for r in records] == ["muzzle"] * 3 + ["static"] * 3
-    train_pair = records[0]["pair"]
-    assert {e["pair"] for e in attacker.archive} == {train_pair}
+    assert {r["attack"] for r in records} == {"muzzle"} and {r["phase"] for r in records} == {"attack"}
+    assert {e["pair"] for e in attacker.archive} == {r["pair"] for r in records}
 
 
 def test_resume_reuses_the_archive(tmp_path: Path):

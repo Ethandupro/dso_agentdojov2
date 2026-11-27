@@ -1,6 +1,6 @@
 """C4 with the security-skill library through the real runner: the AutoDojo attacker (analyst on, victim trace on),
 the batched judge that CREATEs a specialised skill, and a victim that loads it. Checks that the run finishes, that
-test pairs keep the static text, and that the specialised skill's rules never reach the attacker side (the trace
+the attacker works on every pair (C4 has no split), and that the specialised skill's rules never reach the attacker side (the trace
 digests are redacted against every security skill, not only S0)."""
 
 import json
@@ -83,7 +83,7 @@ def test_c4_library_runs_and_keeps_specialised_rules_from_the_attacker(tmp_path:
         rule_match_fn=KindMatcher(),
         library_policy=LibraryPolicy(enabled=True),
         s0_description=experiment_models.S0_SKILL_DESCRIPTION,
-        n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
+        n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "attack"}),
     )
     attacker, _, log = make_attacker(analyst=True)
     records = Runner(
@@ -103,7 +103,7 @@ def test_c4_library_runs_and_keeps_specialised_rules_from_the_attacker(tmp_path:
     ).run()
 
     attacked = [r for r in records if r["pair"] is not None]
-    assert {r["attack"] for r in attacked if r["phase"] == "test"} == {"static"}
+    assert {r["phase"] for r in attacked} == {"attack"} and {r["attack"] for r in attacked} == {"autodojo"}
     assert any((r["skill_step"] or {}).get("outcome") == "applied" for r in attacked)
     loaded_later = [r for r in attacked if SPECIALIST in (r["skills"] or {}).get("specialists_loaded", [])]
     assert loaded_later, "the victim should load the created skill in later trials"
@@ -128,4 +128,4 @@ def test_limit_each_split_gives_c1_the_same_pairs_as_c3():
     c1_old = build_units(CONDITIONS["C1"], MANIFEST, 1, 20, suites, smoke)
     assert {u.split for u in c1_old if u.pair is not None} == {"train"}
     assert pairs("C1", each, ("attack",)) == pairs("C3", smoke, ("train", "test"))
-    assert pairs("C2", smoke, ("attack",)) == pairs("C4", smoke, ("train",))  # H2 already matched
+    assert pairs("C2", smoke, ("attack",)) == pairs("C4", smoke, ("attack",))  # H2: C4 runs C2's pairs
