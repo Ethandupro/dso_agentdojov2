@@ -120,6 +120,7 @@ def run_dir_for(
     replicate_wins: int | None = None,
     judge_trigger: str | None = None,
     skill_loading: str = "index",
+    limit_each_split: bool = False,
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -168,6 +169,8 @@ def run_dir_for(
         name = f"{name}-single-point"
     if limit is not None:
         name = f"{name}-limit{limit}"
+        if limit_each_split:
+            name = f"{name}-each-split"
     return results_root / name / f"seed_{seed}"
 
 
@@ -470,6 +473,7 @@ class Runner:
 
         checker_lines: list[dict[str, Any]] = []
         markdown = self.skill_file.markdown
+        defender_text = self._defender_text(markdown)
         attacked = unit.pair is not None
         run = self._victim_run(
             unit,
@@ -489,7 +493,7 @@ class Runner:
         actions = agent_actions(list(messages))
         reasoning = run["reasoning"]
         victim_trace = (
-            victim_trace_digest(messages, markdown, reasoning=reasoning)
+            victim_trace_digest(messages, defender_text, reasoning=reasoning)
             if attacked and self.show_victim_trace
             else None
         )
@@ -614,7 +618,7 @@ class Runner:
                 if attacked and self.show_victim_trace:
                     feedback.analyst_trace = victim_trace_digest(
                         messages,
-                        markdown,
+                        defender_text,
                         reasoning=reasoning,
                         max_chars=ANALYST_TRACE_CHARS,
                         step_chars=ANALYST_STEP_CHARS,
@@ -624,6 +628,15 @@ class Runner:
         record["skill_step"] = self.skill_file.after_trial(record)
         record["skill_version_after"] = self.skill_file.version_name
         return record, checker_lines, replicas
+
+    def _defender_text(self, markdown: str | None) -> str | None:
+        """Everything of the defence the victim can read this trial, for the attacker-side redaction: S0 as served
+        (with its index) plus each specialised security skill's description and body (C3/C4 library). Without the
+        specialised skills, a victim that loads one would show its rules to the analyst and the attacker."""
+        if markdown is None:
+            return None
+        specialists = getattr(self.skill_file, "specialist_skills", [])
+        return "\n\n".join([markdown, *(f"{description}\n{body}" for _name, description, body in specialists)])
 
     def _judge_evidence(
         self, unit: Unit, attacked: bool, won: bool, messages: list[Any], reasoning: dict[int, str]

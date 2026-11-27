@@ -289,6 +289,13 @@ def skill_agent_settings(
     help=f"Smoke run preset: single-injection-point pairs only, {SMOKE_PAIRS} pairs (or --limit) taken in turn from "
     f"each suite ({','.join(SMOKE_SUITES)} unless --suites is given). Gets its own '-smoke' results directory.",
 )
+@click.option(
+    "--limit-each-split",
+    is_flag=True,
+    default=False,
+    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3/C4 always do), so C1's "
+    "test pairs match C3/C4's test phase. Gets its own '-each-split' results directory.",
+)
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
 @click.option("--victim-model-id", default=experiment_models.VICTIM_MODEL_ID, show_default=True)
@@ -528,6 +535,7 @@ def main(
     subset_path: Path | None,
     single_injection_point: bool,
     smoke: bool,
+    limit_each_split: bool,
     trials_per_pair: int,
     manifest: Path,
     victim_model_id: str,
@@ -599,8 +607,15 @@ def main(
             subset_tasks = load_subset(subset_path, manifest_data)
         except ValueError as e:
             raise click.ClickException(str(e)) from e
+    if limit_each_split and (cond.evolving_skill or limit is None):
+        raise click.ClickException(
+            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3/C4 already take N pairs from each split"
+        )
     pair_filter = PairFilter(
-        user_tasks=subset_tasks, single_injection_point=single_injection_point, balance_suites=smoke
+        user_tasks=subset_tasks,
+        single_injection_point=single_injection_point,
+        balance_suites=smoke,
+        limit_each_split=limit_each_split,
     )
     units = build_units(cond, manifest_data, trials_per_pair, limit, suites_tuple, pair_filter)
     if not any(u.pair is not None for u in units):
@@ -767,6 +782,7 @@ def main(
         replicate_wins=replicate if evolving_attack else None,
         judge_trigger=trigger_suffix,
         skill_loading=skill_loading,
+        limit_each_split=limit_each_split,
     )
     config = RunConfig(
         condition=cond.name,
@@ -819,6 +835,7 @@ def main(
         ),
         single_injection_point=single_injection_point,
         smoke=smoke or None,
+        limit_each_split=limit_each_split or None,
         graded_score=graded_score if evolving_attack else None,
         show_victim_trace=show_victim_trace if evolving_attack else None,
         victim_trace_thinking=True if evolving_attack and show_victim_trace else None,
