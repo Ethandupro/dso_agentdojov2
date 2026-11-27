@@ -50,7 +50,7 @@ from agentdojo.agent_pipeline.deepagents_pipeline import ToolMiddlewareFactory
 from agentdojo.checker.middleware import CheckerFn, make_checker_factory
 from agentdojo.experiment_models import S0_SKILL_DESCRIPTION, S0_SKILL_NAME
 from agentdojo.logging import NullLogger, TraceLogger
-from agentdojo.runner.conditions import Condition, Unit
+from agentdojo.runner.conditions import LEARNING_PHASES, Condition, Unit
 from agentdojo.runner.config import RunConfig, config_diff, sha256_text
 from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacker, SkillFileSource, StaticAttacker
 from agentdojo.runner.report import evolving_metrics, replication_metrics
@@ -423,14 +423,14 @@ class Runner:
         )
 
     def attacker_for(self, unit: Unit) -> Attacker:
-        # C4: the evolving attacker never sees test-split injection tasks; test pairs keep the trial-0 text.
+        # Only C3 has a test phase, and C3 has no evolving attacker; C4 (no split) attacks every pair.
         if unit.phase == "test":
             return self.static_attacker
         return self.attacker
 
     def already_won(self, unit: Unit) -> bool:
         """`stop_on_success`: an evolving pair that already succeeded on an earlier trial (trial 0 included) is done.
-        Static pairs (C0/C1, and C4's test pairs) always run every trial."""
+        Static pairs (C0, C1, C3) always run every trial."""
         if not self.stop_on_success or unit.pair is None or self.attacker_for(unit) is self.static_attacker:
             return False
         return any(r["pair"] == unit.pair.id and r["phase"] == unit.phase and r["security"] for r in self.records)
@@ -544,7 +544,7 @@ class Runner:
         if (
             self.judge_confirm_runs > 0
             and self.condition.evolving_skill
-            and unit.phase == "train"
+            and unit.phase in LEARNING_PHASES
             and attacked
             and attacker_success
             and injection_task is not None
@@ -643,7 +643,7 @@ class Runner:
     ) -> dict[str, Any]:
         """C3/C4 train trials with rich judge evidence: `victim_text` (popped by the evolving skill file before the
         record is written) and, for a win, `judge_trace`, the run digest the judge reads."""
-        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase == "train" and attacked):
+        if not (self.judge_evidence and self.condition.evolving_skill and unit.phase in LEARNING_PHASES and attacked):
             return {}
         hidden = frozenset({LOAD_SKILL_TOOL_NAME})
         return {

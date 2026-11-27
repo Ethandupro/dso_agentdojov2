@@ -49,7 +49,7 @@ from agentdojo.attacks.adaptive.autodojo import (
 )
 from agentdojo.attacks.adaptive.muzzle import AttackerModelConfig, MuzzleAttacker, MuzzleSettings
 from agentdojo.checker.middleware import CHECKER_REPLY_SCHEMA, CHECKER_USER_TEMPLATE, local_checker_fn
-from agentdojo.runner.conditions import CONDITIONS, PairFilter, Unit, build_units, load_subset
+from agentdojo.runner.conditions import CONDITIONS, LEARNING_PHASES, PairFilter, Unit, build_units, load_subset
 from agentdojo.runner.config import RunConfig, git_state, now, package_versions, sha256_text
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.manifest import DEFAULT_MANIFEST_PATH, ManifestMismatchError, check_manifest, manifest_sha256
@@ -293,8 +293,8 @@ def skill_agent_settings(
     "--limit-each-split",
     is_flag=True,
     default=False,
-    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3/C4 always do), so C1's "
-    "test pairs match C3/C4's test phase. Gets its own '-each-split' results directory.",
+    help="C0-C2 with --limit N: run the first N train pairs and the first N test pairs (as C3 always does), so C1's "
+    "test pairs match C3's test phase. Gets its own '-each-split' results directory.",
 )
 @click.option("--trials-per-pair", type=int, default=3, show_default=True)
 @click.option("--manifest", type=click.Path(path_type=Path), default=DEFAULT_MANIFEST_PATH, show_default=True)
@@ -611,7 +611,8 @@ def main(
             raise click.ClickException(str(e)) from e
     if limit_each_split and (cond.evolving_skill or limit is None):
         raise click.ClickException(
-            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3/C4 already take N pairs from each split"
+            "--limit-each-split is for C0-C2 with --limit (or --smoke); C3 already takes N pairs from each split, "
+            "and C4 runs C2's pairs"
         )
     pair_filter = PairFilter(
         user_tasks=subset_tasks,
@@ -944,7 +945,7 @@ def main(
             s0_description=experiment_models.S0_SKILL_DESCRIPTION if not external_checker else "",
             s0_index=skill_loading in ("index", "both"),
             library_policy=library_policy,
-            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
+            n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase in LEARNING_PHASES}),
         )
         skill_file = EvolvingSkillFile(
             evolver,

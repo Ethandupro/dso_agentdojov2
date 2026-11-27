@@ -214,10 +214,14 @@ def test_smoke_preset_takes_single_point_pairs_in_turn_from_each_suite(tmp_path:
     assert [p.suite for p in pairs] == ["banking", "travel"] * 4
     benign = [u for u in units if u.pair is None]
     assert {(u.suite, u.user_task) for u in benign} == {(p.suite, p.user_task) for p in pairs}
-    c4 = build_units(CONDITIONS["C4"], MANIFEST, 3, run_condition.SMOKE_PAIRS, suites, smoke)
+    c3 = build_units(CONDITIONS["C3"], MANIFEST, 3, run_condition.SMOKE_PAIRS, suites, smoke)
     for phase in ("train", "test"):
-        phase_pairs = [u.pair for u in c4 if u.phase == phase and u.trial == 0 and u.pair]
+        phase_pairs = [u.pair for u in c3 if u.phase == phase and u.trial == 0 and u.pair]
         assert len(phase_pairs) == 8 and {p.suite for p in phase_pairs} == {"banking", "travel"}
+    # C4 (no split): C2's pairs in C2's order, all in one attack phase.
+    c4 = build_units(CONDITIONS["C4"], MANIFEST, 3, run_condition.SMOKE_PAIRS, suites, smoke)
+    assert [u.pair for u in c4 if u.pair and u.trial == 0] == pairs
+    assert {u.phase for u in c4 if u.pair} == {"attack"}
     rd = run_dir_for(tmp_path, CONDITIONS["C2"], 0, 8, suites, single_injection_point=True, smoke=True)
     assert rd.parent.name == f"{CONDITIONS['C2'].run_id}-banking+travel-smoke-limit8"
 
@@ -436,15 +440,18 @@ class RecordingAttacker(StaticAttacker):
         return super().text_for(pair, trial, history)
 
 
-def test_c4_phases_freeze_and_keep_test_pairs_from_the_attacker(tmp_path: Path):
+def test_c4_attacks_every_pair_and_freezes_only_for_benign_after(tmp_path: Path):
+    """C4 has no train/test split (user decision 2026-11-27): one attack phase over C2's pairs, the evolving attacker
+    on every pair, the skill file frozen only for the benign tasks after."""
     cond = CONDITIONS["C4"]
     skill_file = RecordingSkillFile()
     attacker = RecordingAttacker(MANIFEST)
+    units = build_units(cond, MANIFEST, 3, 2)
     runner = Runner(
-        config=make_config("C4", 1),
+        config=make_config("C4", 2),
         condition=cond,
-        run_dir=run_dir_for(tmp_path, cond, 0, 1),
-        units=build_units(cond, MANIFEST, 3, 1),
+        run_dir=run_dir_for(tmp_path, cond, 0, 2),
+        units=units,
         attacker=attacker,
         static_attacker=StaticAttacker(MANIFEST),
         skill_file=skill_file,
@@ -454,12 +461,13 @@ def test_c4_phases_freeze_and_keep_test_pairs_from_the_attacker(tmp_path: Path):
     )
     records = runner.run()
     phases = [r["phase"] for r in records]
-    assert phases == ["benign_before", "train", "train", "train", "test", "test", "test", "benign_after"]
-    # Frozen before the first test unit; the evolving attacker saw only the train pair, with its own history.
-    assert skill_file.frozen_at == 4
-    train_pair = records[1]["pair"]
-    assert attacker.calls == [(train_pair, 0, 0), (train_pair, 1, 1), (train_pair, 2, 2)]
-    assert [r["attack"] for r in records if r["pair"]] == ["recording"] * 3 + ["static"] * 3
+    attacked = [r for r in records if r["pair"]]
+    assert {r["phase"] for r in attacked} == {"attack"} and len(attacked) == 6
+    assert [r["pair"] for r in attacked] == [u.pair.id for u in build_units(CONDITIONS["C2"], MANIFEST, 3, 2) if u.pair]
+    assert set(phases) - {"attack"} == {"benign_before", "benign_after"}
+    assert skill_file.frozen_at == phases.index("benign_after")
+    assert [r["attack"] for r in attacked] == ["recording"] * 6
+    assert len(attacker.calls) == 6
     assert skill_file.seen == [(p, i) for i, p in enumerate(phases)]
 
 

@@ -1,6 +1,6 @@
 """Cluster bootstrap confidence intervals (decided 2026-11-16 by the user: bootstrapped over injection tasks).
 
-Trials of one injection task are strongly correlated (same goal, same text in trial 0, and in C3/C4 the split itself
+Trials of one injection task are strongly correlated (same goal, same text in trial 0, and in C3 the split itself
 is by injection task), so the resampling unit is the cluster, not the trial: draw clusters with replacement, keep all
 of each drawn cluster's trials, recompute the pooled rate. Benign tasks have no injection task; they are clustered by
 user task.

@@ -121,7 +121,7 @@ def test_evolving_metrics_separates_baseline_from_evolution():
         # e: still running (2 of 4 trials, no win) -> not counted yet.
         rec("e", 0, False),
         rec("e", 1, False),
-        # C4's static test phase is left out.
+        # A test-phase row (C3 only) is left out.
         rec("f", 0, True, phase="test"),
     ]
     evo = evolving_metrics(records, trials_per_pair=4)
