@@ -123,7 +123,7 @@ tr.same td { background: var(--zone); }
 
 <div class="wrap">
 <header>
-  <div class="eyebrow">AgentDojo v1.2.2 · experiment design · as of 2026-11-27 (main @ PR #58; C4 without a split per user decision)</div>
+  <div class="eyebrow">AgentDojo v1.2.2 · experiment design · as of 2026-11-27 (main @ PR #67)</div>
   <h1>Skill File Evolution</h1>
   <p class="lede">Can a judge model keep editing an agent's security skills (the general skill S0 plus specialised skills the judge creates, all of which the agent chooses whether to load) a few rules at a time, after attacks that keep getting through, so prompt-injection success drops on attacks it has never seen, including against attackers that adapt back?</p>
   <div class="legend" aria-label="Legend">
@@ -641,7 +641,6 @@ tr.same td { background: var(--zone); }
   <div class="eyebrow" style="color:var(--inj)">Still open</div>
   <ul>
     <li>When the benign set runs in C0, C0E, C1 and C2. The runner runs it once, before the attacked pairs, against S0 (proposal). H1 needs C1's benign utility.</li>
-    <li>C4 without a split is coded in PR #67, which is still open; until it merges, main still runs C4 with the old split.</li>
     <li>The cap of 6 specialised skills is a guess; the report shows how often a run reaches it.</li>
     <li>Delta edits: whether the Principles are frozen, the edit budget (≤ 2 edits per step, ~60 tokens per rule), the common-word list for the identifier ban (empty for now, so the ban is strict), and whether one invalid edit rejects the whole batch. The code uses these proposals as defaults. Four S0 rules (S4, S6, K2, K3) are already over ~60 tokens.</li>
     <li>The digest size N (proposed 20), the token counter for the 1500-token cap (since 2026-11-19: the victim's tokenizer), and the leakage archive in C3 (proposed: every injection text the run's train trials used so far).</li>
