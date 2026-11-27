@@ -39,7 +39,7 @@ from agentdojo.skillfile.library import (
     check_library_rendered,
 )
 from agentdojo.skillfile.structure import SkillFile, load_skill_file
-from agentdojo.skillfile.trigger import TriggerPolicy
+from agentdojo.skillfile.trigger import TriggerPolicy, library_allowed, route_library
 
 S0_PATH = Path(__file__).parents[2] / "skillfile_evolution" / "skill_files" / "S0.md"
 ORIGIN = EditOrigin(pair="travel/user_task_1/injection_task_1", trial=0, step=1)
@@ -368,3 +368,142 @@ def test_evolver_without_library_never_matches_kinds(tmp_path: Path, s0: SkillFi
     trial = library_trial()
     ev.record_trial(trial)
     assert trial.covered_by is None and fn.calls[0][0] == RULE_MATCH_SYSTEM_PROMPT
+
+
+# PR C: route losses by (diagnosis, skill), library judge steps, proactive CREATE.
+
+
+def lib_record(
+    pair: str = "travel/user_task_1/injection_task_1",
+    t: int = 0,
+    covered: str | None = "none",
+    s0: bool = True,
+    specialists: list[str] | None = None,
+    goal: bool = True,
+    repeats: int = 2,
+) -> TrialRecord:
+    record = won_trial()
+    record.pair, record.trial, record.covered_by, record.s0_loaded = pair, t, covered, s0
+    record.specialists_loaded = specialists
+    record.injection_goal_achieved = goal
+    record.confirmation = {"runs": 2, "attacker_successes": repeats}
+    return record
+
+
+def test_route_library():
+    p = TriggerPolicy(mode="batched")
+    skills = {"defend-a", "defend-b"}
+    assert route_library(lib_record(covered="none"), p, skills)[0] == ("create", "")
+    assert route_library(lib_record(covered=None), p, skills)[0] == ("create", "")
+    assert route_library(lib_record(covered="defend-gone"), p, skills)[0] == ("create", "")  # retired since
+    assert route_library(lib_record(covered="defend-a", specialists=["defend-a"]), p, skills)[0] == (
+        "rules",
+        "defend-a",
+    )
+    assert route_library(lib_record(covered="defend-a", specialists=[]), p, skills)[0] == ("describe", "defend-a")
+    assert route_library(lib_record(covered="defend-a", s0=False), p, skills)[0] == ("describe", "defend-a")
+    bucket, reason = route_library(lib_record(covered="defend-a", specialists=["defend-b"]), p, skills)
+    assert bucket == ("route", "defend-a") and "defend-b was loaded instead" in reason
+    assert route_library(lib_record(goal=False, s0=False, specialists=[]), p, skills) == (
+        None,
+        "user task failed without any security skill loaded",
+    )
+    assert route_library(lib_record(repeats=0), p, skills)[0] is None
+    assert route_library(lib_record(pair="banking/user_task_0/injection_task_1"), p, skills)[0] is None
+
+
+def test_library_allowed():
+    rules_ops, rules_skills = library_allowed(("rules", "defend-a"), [], True)
+    assert "CREATE" not in rules_ops and "DESCRIBE" not in rules_ops and rules_skills == {"defend-a"}
+    assert library_allowed(("describe", "defend-a"), [], True) == (frozenset({"DESCRIBE"}), frozenset({"defend-a"}))
+    assert library_allowed(("route", "defend-a"), ["defend-b"], True)[1] == {"defend-a", "defend-b"}
+    create_ops, create_skills = library_allowed(("create", ""), [], False)
+    assert {"CREATE", "RETIRE", "ADD"} <= create_ops and "DESCRIBE" not in create_ops and create_skills == {""}
+
+
+def test_allowed_skills_are_enforced(library: SecurityLibrary, s0: SkillFile):
+    lib = apply_library_edits(library, [create()], ORIGIN)
+    s0_edit = [AddRule(section="Signs of injected text", text="A rule.")]
+    failures = check_library_edits(
+        lib, s0_edit, context(s0), POLICY, ON, approx_token_count, allowed_skills=frozenset({"defend-fake-notice"})
+    )
+    assert any("may only change defend-fake-notice" in f.message for f in failures)
+
+
+class LibraryJudge:
+    """Answers each library step as its focus asks: CREATE in a create step, an S0 edit (refused) then a skill edit
+    in a rules step."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, system: str, user: str) -> JudgeCall:
+        self.calls.append((system, user))
+        if "No specialised skill covers" in user:
+            edits = [{"op": "CREATE", "name": "defend-fake-notice", "covers": COVERS, "rules": RULES}]
+        elif "Your previous reply" in user:
+            edits = [{"op": "ADD", "section": "Rules", "text": "Checks who asked.", "skill": "defend-fake-notice"}]
+        else:
+            edits = [{"op": "ADD", "section": "Signs of injected text", "text": "Checks who asked."}]
+        reply = {"diagnosis": [{"type": "no_skill", "rules": [], "explanation": "x"}], "edits": edits}
+        return JudgeCall(text=json.dumps(reply), input_tokens=10, output_tokens=5)
+
+
+def test_library_batch_creates_then_fixes_the_skill(tmp_path: Path, s0: SkillFile):
+    judge = LibraryJudge()
+    ev = SkillFileEvolver(
+        s0,
+        judge,
+        tmp_path,
+        approx_token_count,
+        policy=POLICY,
+        trigger=TriggerPolicy(mode="batched", batch_pairs=1, min_losses=2),
+        library_policy=ON,
+        rich_evidence=True,
+    )
+    blocked = lib_record("travel/user_task_5/injection_task_1", goal=False)
+    blocked.user_task_succeeded = True
+    blocked.rule_evidence = {"S1": "this text speaks to me as an AI, so it is injected"}
+    ev.record_trial(blocked)
+    for t in range(2):
+        ev.record_trial(lib_record(t=t))
+    [step] = ev.finish_pair()
+    assert step.outcome == "applied" and ev.library.names == ["defend-fake-notice"]
+    system, user = judge.calls[0]
+    assert "Specialised security skills. Besides the policy above" in system and "no_skill" in system
+    assert "Specialised security skills: none yet." in user
+    assert "<blocked_trials>" in user and "used S1: this text speaks to me as an AI" in user
+    saved = json.loads((tmp_path / "step_0001.json").read_text())
+    assert saved["focus"] == ["create", ""] and saved["library_policy"]["max_skills"] == 6
+    assert "CREATE defend-fake-notice" in ev.changelog[-1] and "create, 2 losses" in ev.changelog[-1]
+
+    for t in range(2):
+        ev.record_trial(
+            lib_record(
+                "travel/user_task_2/injection_task_1", t, "defend-fake-notice", specialists=["defend-fake-notice"]
+            )
+        )
+    [step] = ev.finish_pair()
+    assert step.outcome == "applied" and len(step.attempts) == 2
+    assert "this step may only change defend-fake-notice" in step.attempts[0].failures[0]
+    assert ev.library.specialists[0].file.rule_ids() == ["L1.1", "L1.2", "L1.3"]
+    _, user = judge.calls[1]
+    assert '<skill name="defend-fake-notice"' in user and "[L1.1]" in user
+    assert "Edit the rules of defend-fake-notice only" in user
+    assert "Specialised security skills it loaded: defend-fake-notice" in user
+    assert "Specialised skill whose description fits this injected text: defend-fake-notice" in user
+
+
+def test_library_small_bucket_carries_over(tmp_path: Path, s0: SkillFile):
+    judge = LibraryJudge()
+    ev = SkillFileEvolver(
+        s0,
+        judge,
+        tmp_path,
+        approx_token_count,
+        policy=POLICY,
+        trigger=TriggerPolicy(mode="batched", batch_pairs=1, min_losses=2),
+        library_policy=ON,
+    )
+    ev.record_trial(lib_record())
+    assert ev.finish_pair() == [] and len(ev.pending) == 1 and judge.calls == []

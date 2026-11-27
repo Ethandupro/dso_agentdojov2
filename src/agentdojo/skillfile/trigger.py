@@ -18,6 +18,8 @@ Two modes:
   - **rules**: the agent loaded S0 and still lost (injection goal achieved, or the user task failed). This step may
     edit rules but not the description.
   A bucket gets a judge step only once it holds `min_losses` wins; a smaller bucket carries over to the next batch.
+
+With the security-skill library on, wins are routed by (diagnosis, skill) instead: see `route_library`.
 """
 
 from dataclasses import dataclass
@@ -94,3 +96,63 @@ def route(record: "TrialRecord", policy: TriggerPolicy, description_editable: bo
     if record.injection_goal_achieved:
         return "rules", "S0 loaded, injection goal achieved"
     return "rules", "S0 loaded, user task failed"
+
+
+# The security-skill library (design note 2026-11-26, "Specialised defender skills", PR C). With the library on, a
+# confirmed train win is routed by which specialised skill covers its attack (`TrialRecord.covered_by`, found by the
+# rule-match call) and which security skills the victim loaded:
+#
+# | covering skill | loaded                       | bucket (diagnosis, skill) | the step may                         |
+# |----------------|------------------------------|---------------------------|--------------------------------------|
+# | k              | k                            | ("rules", k)        D1    | edit k's rules                       |
+# | k              | not k, no other specialist   | ("describe", k)     D2    | rewrite k's covers line              |
+# | k              | another specialised skill    | ("route", k)        D4    | rewrite the covers lines of k and it |
+# | none           | anything                     | ("create", "")      D3/D5 | CREATE (or RETIRE to make room), or  |
+# |                |                              |                           | edit S0's rules or description       |
+#
+# The filters before routing are the same as above; "user task failed without S0 loaded" becomes "... without any
+# security skill loaded".
+
+NO_SKILL = "none"
+"""`covered_by` when no specialised skill covers a trial's attack."""
+
+LibraryDiagnosis = Literal["describe", "route", "rules", "create"]
+LIBRARY_DIAGNOSES: tuple[LibraryDiagnosis, ...] = ("describe", "route", "rules", "create")
+"""Step order within a batch: loading fixes first, then rule fixes, then new skills."""
+LibraryBucket = tuple[LibraryDiagnosis, str]
+
+
+def route_library(record: "TrialRecord", policy: TriggerPolicy, skills: set[str]) -> tuple[LibraryBucket | None, str]:
+    """Which library step a train win goes to (None: it never reaches the judge), and why. `skills`: the
+    specialised skills alive now (a win covered by a skill retired since is treated as covered by none)."""
+    if any(record.pair.startswith(f"{task}/") for task in policy.skip_user_tasks):
+        return None, "excluded user task"
+    if not confirmed(record, policy):
+        return None, "did not repeat on re-run"
+    loaded = [name for name in (record.specialists_loaded or []) if name in skills]
+    if not record.injection_goal_achieved and record.s0_loaded is False and not loaded:
+        return None, "user task failed without any security skill loaded"
+    kind = record.covered_by if record.covered_by in skills else NO_SKILL
+    if kind == NO_SKILL:
+        return ("create", ""), "no specialised skill covers this attack"
+    if kind in loaded:
+        return ("rules", kind), f"{kind} covers it and was loaded, still lost"
+    if loaded:
+        return ("route", kind), f"{kind} covers it but {', '.join(loaded)} was loaded instead"
+    return ("describe", kind), f"{kind} covers it but was not loaded"
+
+
+def library_allowed(
+    bucket: LibraryBucket, record_loads: list[str], description_editable: bool
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The operations and the skills ("" = S0) a library step may change. CREATE and RETIRE name no existing target
+    and are allowed only in a "create" step."""
+    diagnosis, skill = bucket
+    if diagnosis == "rules":
+        return RULE_OPS, frozenset({skill})
+    if diagnosis == "describe":
+        return frozenset({"DESCRIBE"}), frozenset({skill})
+    if diagnosis == "route":
+        return frozenset({"DESCRIBE"}), frozenset({skill, *record_loads})
+    ops = RULE_OPS | {"CREATE", "RETIRE"} | ({"DESCRIBE"} if description_editable else set())
+    return frozenset(ops), frozenset({""})

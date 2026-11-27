@@ -35,6 +35,7 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
         injection_survival=checker.get("injection_survival"),
         defense="checker" if record.get("checker") is not None else "skills",
         s0_loaded=skills.get("s0_loaded"),
+        specialists_loaded=list(skills["specialists_loaded"]) if "specialists_loaded" in skills else None,
         agent_actions=list(record.get("agent_actions") or []),
         final_answer=record.get("final_answer"),
         confirmation=record.get("judge_confirmation"),
@@ -133,6 +134,7 @@ class EvolvingSkillFile:
             match = self.evolver.match_rules(trial.victim_text, trial.injection_text)
             trial.cited_rules = match.rule_ids
             trial.covered_by = match.covered_by
+            trial.rule_evidence = dict(match.evidence) or None
             trial.victim_text = None
             record["s0_rule_match"] = match.to_dict()
         step = self.evolver.record_trial(trial)

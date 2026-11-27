@@ -578,3 +578,34 @@ def test_judge_preflight_and_env_file_override(monkeypatch, tmp_path: Path):
     args = ["--condition", "C3", "--env-file", str(env_file), "--victim-base-url", "http://127.0.0.1:9/v1"]
     CliRunner().invoke(main, args)
     assert os.environ["OPENROUTER_API_KEY"] == "sk-or-new"
+
+
+def test_cli_c3_defender_library_by_default_and_single_ablation(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(run_condition, "check_served", lambda role, url, model: [model])
+    monkeypatch.setattr(run_condition, "check_judge", lambda model: None)
+    monkeypatch.setattr(run_condition, "Runner", CapturedRunner)
+    monkeypatch.setattr(run_condition, "write_report", lambda run_dir: run_dir / "report.html")
+    monkeypatch.setattr(run_condition, "vllm_token_counter", lambda url, model: len)
+    base = ["--condition", "C3", "--results-root", str(tmp_path), "--limit", "2"]
+
+    result = CliRunner().invoke(main, base)
+    assert result.exit_code == 0, result.output
+    wiring = CapturedRunner.last
+    assert wiring["skill_file"].evolver.library_policy.enabled
+    assert wiring["config"].judge["library"]["enabled"] is True and wiring["config"].judge["library"]["max_skills"] == 6
+    assert wiring["run_dir"].parent.name == "c3_evolving-s0_static-attack-limit2"
+
+    result = CliRunner().invoke(main, [*base, "--defender", "single"])
+    assert result.exit_code == 0, result.output
+    wiring = CapturedRunner.last
+    assert not wiring["skill_file"].evolver.library_policy.enabled and "library" not in wiring["config"].judge
+    assert wiring["run_dir"].parent.name == "c3_evolving-s0_static-attack-single-s0-limit2"
+
+    refused = CliRunner().invoke(main, [*base, "--judge-trigger", "every-win"])
+    assert refused.exit_code != 0 and "--defender single" in refused.output
+    ok = CliRunner().invoke(main, [*base, "--judge-trigger", "every-win", "--defender", "single"])
+    assert ok.exit_code == 0, ok.output
+    assert CapturedRunner.last["run_dir"].parent.name == "c3_evolving-s0_static-attack-every-win-single-s0-limit2"
+    assert CliRunner().invoke(main, ["--condition", "C1", "--defender", "single"]).exit_code != 0

@@ -63,6 +63,9 @@ from agentdojo.skillfile.judge import (
     DEFAULT_JUDGE_MAX_TOKENS,
     DEFAULT_JUDGE_MODEL,
     JUDGE_SYSTEM_PROMPTS,
+    KIND_MATCH_PROMPT,
+    LIBRARY_FOCUS,
+    LIBRARY_PROMPT,
     QUOTE_WORDS,
     RULE_MATCH_SYSTEM_PROMPT,
     UNTRUSTED_NOTE,
@@ -70,7 +73,7 @@ from agentdojo.skillfile.judge import (
     openrouter_client,
     openrouter_judge_fn,
 )
-from agentdojo.skillfile.library import INDEX_OPENING, SKILL_LOADINGS
+from agentdojo.skillfile.library import INDEX_OPENING, SKILL_LOADINGS, SPECIALIST_WHEN_TEXT, LibraryPolicy
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 from agentdojo.skillfile.trigger import TriggerPolicy
@@ -368,6 +371,17 @@ def skill_agent_settings(
     "only, no extra calls; it gets a '-verbatim-quotes' results directory.",
 )
 @click.option(
+    "--defender",
+    type=click.Choice(["library", "single"]),
+    default="library",
+    show_default=True,
+    help="C3/C4: 'library' (decided 2026-11-26 by user, the study's main defender): starts from S0 only; at each "
+    "rewrite step the judge may CREATE specialised security skills (up to 6) that the victim can load next to S0, "
+    "and losses are routed by which skill covers the attack. Needs --judge-trigger batched, --judge-evidence rich "
+    "and --rule-match paraphrase. 'single': S0 is the only security skill (#59/#60 behaviour); it gets a "
+    "'-single-s0' results directory.",
+)
+@click.option(
     "--judge-batch-pairs",
     type=click.IntRange(min=1),
     default=TriggerPolicy.batch_pairs,
@@ -532,6 +546,7 @@ def main(
     judge_trigger: str,
     judge_evidence: str,
     rule_match: str,
+    defender: str,
     judge_batch_pairs: int,
     judge_confirm_runs: int,
     judge_min_losses: int,
@@ -674,6 +689,18 @@ def main(
     paraphrase_match = rich_evidence and rule_match == "paraphrase"
     if rich_evidence and not paraphrase_match:
         trigger_suffix = f"{trigger_suffix}-verbatim-quotes" if trigger_suffix else "verbatim-quotes"
+    if defender != "library" and not cond.evolving_skill:
+        raise click.ClickException("--defender is C3/C4 only")
+    use_library = cond.evolving_skill and defender == "library"
+    if use_library and (external_checker or not trigger.batched or not paraphrase_match):
+        raise click.ClickException(
+            "--defender library needs the skills design with --judge-trigger batched, --judge-evidence rich and "
+            "--rule-match paraphrase (it routes losses by which skill covers the attack). Add --defender single to "
+            "run the single-S0 defender instead."
+        )
+    if cond.evolving_skill and not use_library:
+        trigger_suffix = f"{trigger_suffix}-single-s0" if trigger_suffix else "single-s0"
+    library_policy = LibraryPolicy(enabled=use_library)
     if evolving_attack:
         if attacker_loop == "muzzle":
             attacker = MuzzleAttacker(manifest_data, muzzle_settings(attacker_model_id, attacker_base_url, seed))
@@ -851,6 +878,19 @@ def main(
                     ),
                 },
                 "policy": {k: v for k, v in asdict(policy).items() if k != "common_words"},
+                **(
+                    {
+                        "library": {
+                            **library_policy.to_dict(),
+                            "prompt_sha256": sha256_text(LIBRARY_PROMPT),
+                            "focus_sha256": sha256_text(json.dumps(LIBRARY_FOCUS, sort_keys=True)),
+                            "kind_match_prompt_sha256": sha256_text(KIND_MATCH_PROMPT),
+                            "skill_text_sha256": sha256_text(SPECIALIST_WHEN_TEXT + INDEX_OPENING),
+                        }
+                    }
+                    if use_library
+                    else {}
+                ),
                 "common_words": len(policy.common_words),
                 "token_counter": f"vLLM /tokenize of {token_model_id}",
                 "on_api_failure": "retry 5 times, then stop the run (resumable)",
@@ -884,6 +924,7 @@ def main(
             rule_match_fn=openrouter_judge_fn(judge_model, seed=seed) if paraphrase_match else None,
             s0_description=experiment_models.S0_SKILL_DESCRIPTION if not external_checker else "",
             s0_index=skill_loading in ("index", "both"),
+            library_policy=library_policy,
             n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
         skill_file = EvolvingSkillFile(

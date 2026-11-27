@@ -295,9 +295,11 @@ def check_library_edits(
     library_policy: LibraryPolicy,
     count_tokens: TokenCounter,
     allowed_ops: frozenset[str] | None = None,
+    allowed_skills: frozenset[str] | None = None,
 ) -> list[CheckFailure]:
     """The checks of `check_edits`, for edits that may name any skill of the library, plus the checks on CREATE and
-    RETIRE. Each edit is checked against the skill it changes."""
+    RETIRE. Each edit is checked against the skill it changes. `allowed_skills` (a library step, see
+    `trigger.library_allowed`): the skills ("" = S0) that edits other than CREATE and RETIRE may change."""
     failures: list[CheckFailure] = []
     if len(edits) > policy.max_edits:
         failures.append(CheckFailure(f"{len(edits)} edits; at most {policy.max_edits} are allowed per step"))
@@ -352,6 +354,10 @@ def check_library_edits(
                 )
                 continue
             target = ""  # an unknown rule ID: the S0 check below names it
+        if allowed_skills is not None and target not in allowed_skills:
+            names = ", ".join(sorted(library.s0_name if n == "" else n for n in allowed_skills))
+            fail(index, edit, f"this step may only change {names}")
+            continue
         if target in retired:
             fail(index, edit, f"{target} is retired in this reply")
             continue

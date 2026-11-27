@@ -29,7 +29,17 @@ from typing import Any, Literal
 
 from agentdojo.skillfile.structure import Rule, SkillFile
 
-DiagnosisType = Literal["missing", "vague", "conflict", "not_applied", "over_removed", "not_loaded", "over_restrictive"]
+DiagnosisType = Literal[
+    "missing",
+    "vague",
+    "conflict",
+    "not_applied",
+    "over_removed",
+    "not_loaded",
+    "over_restrictive",
+    "no_skill",
+    "wrong_skill",
+]
 DIAGNOSIS_TYPES: tuple[str, ...] = (
     "missing",
     "vague",
@@ -38,8 +48,11 @@ DIAGNOSIS_TYPES: tuple[str, ...] = (
     "over_removed",
     "not_loaded",
     "over_restrictive",
+    "no_skill",
+    "wrong_skill",
 )
-"""`over_removed` belongs to the external-checker prompt; `not_loaded` and `over_restrictive` to the skills prompt."""
+"""`over_removed` belongs to the external-checker prompt; `not_loaded` and `over_restrictive` to the skills prompt;
+`no_skill` and `wrong_skill` to the security-skill library (2026-11-26)."""
 
 
 @dataclass
