@@ -451,9 +451,10 @@ def skill_agent_settings(
     "--show-victim-trace/--no-victim-trace",
     default=True,
     show_default=True,
-    help="C2/C4/C0E with --attacker autodojo: show the evolving attacker an S0-redacted digest of the victim's run "
-    "(its thinking, what it said, the tools it called) on the leaderboard, so it sees why an injection was ignored. "
-    "On by default (user decision 2026-11-20); --no-victim-trace gets a '-no-victim-trace' results directory.",
+    help="C2/C4/C0E: record an S0-redacted digest of the victim's run (its thinking, what it said, the tools it "
+    "called and their outputs) and give a longer one to the analyst. The attacker itself never sees it (user decision "
+    "2026-11-26), only the analyst's diagnosis. On by default; --no-victim-trace (no analyst either) gets a "
+    "'-no-victim-trace' results directory.",
 )
 @click.option(
     "--stop-on-success",
@@ -522,9 +523,10 @@ def skill_agent_settings(
     "--analyst/--no-analyst",
     default=True,
     show_default=True,
-    help="C2/C4/C0E with --attacker autodojo or skill-agent: after each failed trial, a second call to the attacker "
-    "model reads the victim's trace (reasoning included, S0 redacted) and diagnoses why it failed; the optimizer "
-    "sees the diagnosis on its leaderboard. Needs the victim trace. --no-analyst gets a '-no-analyst' directory.",
+    help="C2/C4/C0E with --attacker autodojo or skill-agent: after each trial, a second call to the attacker model "
+    "reads the victim's trace (reasoning included, S0 redacted) and diagnoses why it failed or worked; the optimizer "
+    "sees only that diagnosis of the run, never the trace. Needs the victim trace. --no-analyst (the optimizer then "
+    "sees the agent's final reply instead) gets a '-no-analyst' directory.",
 )
 def main(
     condition: str,
