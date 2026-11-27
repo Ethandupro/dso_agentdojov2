@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Start the project's model servers on the GPU VM and wait until they answer (victim redesign of 2026-11-19):
-#   victim   mistralai/Magistral-Small-2509 (thinking, no draft)  on GPU 0, port 8000
+#   victim   openai/gpt-oss-20b (reasoning, MXFP4, no draft)      on GPU 0, port 8000
 #   attacker Qwen/Qwen3.8-27B + DFlash2 draft z-lab/Qwen3.8-27B-DFlash2 on GPU 1, port 8003 (C2/C4 only)
 # (2026-11-20, the user's choices: attacker Qwen3.8-27B instead of Mistral Small 3.2 24B; victim Magistral Small 1.2,
-# Mistral Small 3.2 with reasoning, instead of Qwen3.5-27B. VICTIM_MODEL=Qwen/Qwen3.5-27B VICTIM_DRAFT=z-lab/Qwen3.5-27B-DFlash
-# serves the old victim.)
+# Mistral Small 3.2 with reasoning, instead of Qwen3.5-27B. 2026-11-27, the user's choice: victim gpt-oss-20b with
+# reasoning instead of Magistral. VICTIM_MODEL=mistralai/Magistral-Small-2509 serves the previous victim.)
+# The attacker gets --max-num-seqs 128 by default (ATTACKER_MAX_NUM_SEQS): Qwen3.8 is a hybrid (linear-attention)
+# model, and with vLLM's default the server refused to start on a shared GPU ("max_num_seqs exceeds Mamba cache
+# blocks", 2026-11-27).
 # There is no external checker any more: S0 is one of the victim's skills. CHECKER=1 also starts the old checker
 # (Qwen/Qwen3.5-9B, GPU 1, port 8002) for the `run_condition --external-checker` ablation; the attacker then shares
 # GPU 1 with it and is loaded in FP8, as before.
-# The drafts (~2B each) make the models faster without changing their answers. Magistral has none; ATTACKER_DRAFT=none
+# The drafts (~2B each) make the models faster without changing their answers. The victim has none; ATTACKER_DRAFT=none
 # serves the plain 27B attacker (use it if this vLLM build cannot load the draft). The DFlash2 model card asks for a vLLM
 # build from vllm-project/vllm PR #52816; install that in its own venv and point only the attacker at it with
 # ATTACKER_VENV=<venv>, so the victim keeps the venv that works (VICTIM_VENV does the same for the victim;
@@ -71,12 +74,18 @@ wait_for() {  # name port
   echo "port $port ready: $(curl -s "localhost:$port/v1/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')"
 }
 
-# ONE_GPU=<n> (added 2026-11-20 by the user's request): put the victim and the attacker on the same GPU n. Both are then
-# loaded in FP8 so they fit in one 96 GB H100 together. Victim Magistral 24B (~24 GB FP8 weights, no draft) in 0.48
-# of the GPU (~46 GB, ~20 GB left for KV cache, 64k context); attacker 27B + ~2B draft (~28 GB + ~4 GB) in 0.44
-# (~42 GB, ~10 GB KV cache, context capped at 32k tokens). The attacker starts only once the victim is up, so each
-# server sees the other's memory as used. Use the same setting for every condition you compare: FP8 changes the
-# victim's answers slightly against BF16, and the run's config.json does not record the server's quantization.
+# ONE_GPU=<n> (added 2026-11-20 by the user's request): put the victim and the attacker on the same GPU n.
+# gpt-oss-20b victim (2026-11-27): its own MXFP4 weights (~13 GB, never re-quantized) in 0.30 of the GPU (~29 GB,
+# ~12 GB KV cache, plenty for its 128k context); the attacker 27B in FP8 + ~2B draft (~28 GB + ~4 GB) in 0.58 (~56 GB,
+# ~20 GB KV cache, context capped at 32k tokens). A Magistral victim (VICTIM_MODEL=mistralai/Magistral-Small-2509) is
+# loaded in FP8 in 0.48 with the attacker in 0.44, as before. The attacker starts only once the victim is up, so each
+# server sees the other's memory as used. Use the same setting for every condition you compare: FP8 changes answers
+# slightly against BF16, and the run's config.json does not record the server's quantization.
+VICTIM_MODEL=${VICTIM_MODEL:-openai/gpt-oss-20b}
+case "$VICTIM_MODEL" in
+  *gpt-oss*) VICTIM_IS_GPT_OSS=1 ;;
+  *) VICTIM_IS_GPT_OSS=0 ;;
+esac
 ONE_GPU=${ONE_GPU:-}
 if [ -n "$ONE_GPU" ]; then
   if [ "${CHECKER:-0}" = "1" ]; then
@@ -85,10 +94,18 @@ if [ -n "$ONE_GPU" ]; then
   fi
   VICTIM_GPU=${VICTIM_GPU:-$ONE_GPU}
   ATTACKER_GPU=${ATTACKER_GPU:-$ONE_GPU}
-  VICTIM_QUANT=${VICTIM_QUANT-fp8}
-  VICTIM_GPU_MEM=${VICTIM_GPU_MEM:-0.48}
+  if [ "$VICTIM_IS_GPT_OSS" = "1" ]; then
+    VICTIM_GPU_MEM=${VICTIM_GPU_MEM:-0.30}
+    ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.58}
+  else
+    VICTIM_QUANT=${VICTIM_QUANT-fp8}
+    VICTIM_GPU_MEM=${VICTIM_GPU_MEM:-0.48}
+    ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.44}
+  fi
   ATTACKER_QUANT=${ATTACKER_QUANT-fp8}
-  ATTACKER_GPU_MEM=${ATTACKER_GPU_MEM:-0.44}
+fi
+if [ "$VICTIM_IS_GPT_OSS" = "1" ]; then
+  VICTIM_QUANT=  # MXFP4 weights already; --quantization fp8 would not apply to them
 fi
 VICTIM_GPU=${VICTIM_GPU:-0}
 ATTACKER_GPU=${ATTACKER_GPU:-1}
@@ -97,14 +114,14 @@ VICTIM_QUANT=${VICTIM_QUANT-}
 VICTIM_PORT=${VICTIM_PORT:-8000}
 CHECKER_PORT=${CHECKER_PORT:-8002}
 ATTACKER_PORT=${ATTACKER_PORT:-8003}
-start victim "$VICTIM_GPU" "$VICTIM_PORT" "${VICTIM_MODEL:-mistralai/Magistral-Small-2509}" "${VICTIM_GPU_MEM:-0.90}" \
+start victim "$VICTIM_GPU" "$VICTIM_PORT" "$VICTIM_MODEL" "${VICTIM_GPU_MEM:-0.90}" \
   "${VICTIM_QUANT:+--quantization $VICTIM_QUANT}" \
   "${VICTIM_DRAFT:-none}" "${VICTIM_VENV:-${VENV:-$HOME/venvs/vllm}}"
 if [ "${CHECKER:-0}" = "1" ]; then
   start checker 1 "$CHECKER_PORT" "${CHECKER_MODEL:-Qwen/Qwen3.5-9B}" "${CHECKER_GPU_MEM:-0.50}"
 fi
 
-echo "waiting for the servers (the first start downloads the weights: ~48 GB for the victim, ~58 GB for the attacker with its draft)..."
+echo "waiting for the servers (the first start downloads the weights: ~13 GB for the gpt-oss victim, ~58 GB for the attacker with its draft)..."
 wait_for victim "$VICTIM_PORT"
 if [ "${CHECKER:-0}" = "1" ]; then
   wait_for checker "$CHECKER_PORT"
@@ -124,7 +141,7 @@ if [ "${ATTACKER:-1}" != "0" ]; then
   fi
   # 32k context, as for Mistral Small before: the attacker's prompts are far shorter, and it keeps the KV cache small.
   start attacker "$ATTACKER_GPU" "$ATTACKER_PORT" "${ATTACKER_MODEL:-Qwen/Qwen3.8-27B}" \
-    "$ATTACKER_GPU_MEM" "${ATTACKER_QUANT:+--quantization $ATTACKER_QUANT}" \
+    "$ATTACKER_GPU_MEM" "${ATTACKER_QUANT:+--quantization $ATTACKER_QUANT} --max-num-seqs ${ATTACKER_MAX_NUM_SEQS:-128}" \
     "${ATTACKER_DRAFT-z-lab/Qwen3.8-27B-DFlash2}" "${ATTACKER_VENV:-${VENV:-$HOME/venvs/vllm}}" \
     "${ATTACKER_MAX_LEN:-32768}"
   wait_for attacker "$ATTACKER_PORT"

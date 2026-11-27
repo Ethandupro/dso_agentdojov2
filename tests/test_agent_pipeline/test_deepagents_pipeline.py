@@ -656,6 +656,43 @@ def test_magistral_requests_carry_the_reasoning_prompt_ahead_of_the_agents():
     assert get_model_name_from_pipeline(pipeline) == "Magistral"
 
 
+def test_gpt_oss_requests_carry_effort_and_the_current_tasks_reasoning():
+    config = DeepAgentsConfig(
+        model_id="openai/gpt-oss-20b",
+        base_url="http://localhost:8000/v1",
+        reasoning_effort="medium",
+        send_reasoning_back=True,
+        temperature=0.1,
+        top_p=1.0,
+    )
+    assert config.extra_body() == {"reasoning_effort": "medium"}
+    pipeline = DeepAgentsPipeline.from_config(config)
+    model = pipeline.model
+    assert isinstance(model, ReasoningChatOpenAI) and not isinstance(model, ThinkingPromptChatOpenAI)
+    call = {"name": "get_balance", "args": {}, "id": "call_1", "type": "tool_call"}
+    messages = [
+        SystemMessage("You are the agent."),
+        HumanMessage("first task"),
+        AIMessage("done", additional_kwargs={REASONING_KWARG: "old thoughts"}),
+        HumanMessage("second task"),
+        AIMessage("", tool_calls=[call], additional_kwargs={REASONING_KWARG: "I should check the balance."}),
+        ToolMessage("100", tool_call_id="call_1"),
+    ]
+    payload = model._get_request_payload(messages)
+    sent = payload["messages"]
+    assert payload["extra_body"] == {"reasoning_effort": "medium"} or payload.get("reasoning_effort") == "medium"
+    assert "reasoning" not in sent[2]  # an earlier task's reasoning stays out
+    assert sent[4]["reasoning"] == "I should check the balance." and sent[4]["tool_calls"]
+    assert all("reasoning" not in m for i, m in enumerate(sent) if i != 4)
+    assert get_model_name_from_pipeline(pipeline) == "ChatGPT"
+
+    plain = DeepAgentsPipeline.from_config(config.model_copy(update={"send_reasoning_back": False})).model
+    assert isinstance(plain, ReasoningChatOpenAI)
+    assert all("reasoning" not in m for m in plain._get_request_payload(messages)["messages"])
+    with pytest.raises(ValueError, match="local server"):
+        DeepAgentsConfig(model_id="m", reasoning_effort="low")
+
+
 def test_cli_passes_local_server_to_the_victim_config(monkeypatch: pytest.MonkeyPatch):
     captured: list[DeepAgentsConfig] = []
 
@@ -682,12 +719,20 @@ def test_cli_defaults_to_the_project_victim_and_checker(monkeypatch: pytest.Monk
     args = ["-s", "banking", "-ut", "user_task_0", "--harness", "deepagents", "--logdir", str(tmp_path)]
     CliRunner().invoke(benchmark_script.main, args)
     config, factory = captured[-1]
-    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "mistralai/Magistral-Small-2509"
+    assert config.model_id == experiment_models.VICTIM_MODEL_ID == "openai/gpt-oss-20b"
     assert config.base_url == experiment_models.VICTIM_BASE_URL
-    assert config.enable_thinking is None  # Magistral thinks through its reasoning system prompt, not a switch
+    assert config.enable_thinking is None  # gpt-oss always reasons; the effort is the switch
+    assert config.reasoning_effort == "medium" and config.send_reasoning_back
+    assert config.reasoning_system_prompt is None
+    assert (config.temperature, config.top_p) == (0.1, 1.0)
+    assert factory is None
+
+    magistral = ["--model-id", "mistralai/Magistral-Small-2509", "--base-url", experiment_models.VICTIM_BASE_URL]
+    CliRunner().invoke(benchmark_script.main, [*args, *magistral])
+    config, _ = captured[-1]
     assert config.reasoning_system_prompt == FAKE_REASONING_PROMPT
     assert (config.temperature, config.top_p) == (0.7, 0.95)
-    assert factory is None
+    assert config.reasoning_effort is None and not config.send_reasoning_back
 
     CliRunner().invoke(benchmark_script.main, [*args, "--checker"])
     config, factory = captured[-1]

@@ -117,6 +117,8 @@ MODEL_NAMES = {
     "gemini-2.5-flash-preview-04-17": "AI model developed by Google",
     "gemini-2.5-pro-preview-05-06": "AI model developed by Google",
     "deepseek-v4.1-flash": "DeepSeek",
+    # gpt-oss (victim since 2026-11-27): its harmony system message tells it "You are ChatGPT".
+    "gpt-oss": "ChatGPT",
     "Magistral-Small": "Magistral",
     "magistral-small": "Magistral",
     "Mistral-Small": "Mistral",

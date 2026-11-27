@@ -149,6 +149,14 @@ class DeepAgentsConfig(BaseModel):
     `SYSTEM_PROMPT.txt` (victim since 2026-11-20). Sent ahead of the agent's system prompt with the `[THINK]` part as a
     `thinking` content chunk, which is how Mistral's tokenizer encodes those tags as special tokens (as the Magistral
     model card's own client does). Kept verbatim here so a run only resumes with the same prompt. Local servers only."""
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    """Sent as `reasoning_effort` to a local server, e.g. for gpt-oss (victim since 2026-11-27), whose harmony system
+    message carries it. Unset, the server's default is used. Local servers only."""
+    send_reasoning_back: bool = False
+    """Send the model's own reasoning back with its earlier assistant messages of the current task (as the message's
+    `reasoning` field, which vLLM turns into harmony `analysis` messages). gpt-oss expects its chain of thought to stay
+    in context between tool calls; vLLM drops it again once a final answer follows. Off for other models, whose
+    reasoning is never sent back. Local servers only."""
     max_model_calls: int = 30
     """Per-agent limit on model calls in one run (main agent and each subagent run separately)."""
     hide_filesystem_tools: bool = True
@@ -181,6 +189,10 @@ class DeepAgentsConfig(BaseModel):
             raise ValueError("enable_thinking is only supported with base_url (a local server)")
         if self.base_url is None and self.reasoning_system_prompt is not None:
             raise ValueError("reasoning_system_prompt is only supported with base_url (a local server)")
+        if self.base_url is None and (self.reasoning_effort is not None or self.send_reasoning_back):
+            raise ValueError(
+                "reasoning_effort and send_reasoning_back are only supported with base_url (a local server)"
+            )
         if self.reasoning_system_prompt is not None:
             thinking_prompt_chunks(self.reasoning_system_prompt)  # fails early on a prompt without [THINK]...[/THINK]
         return self
@@ -194,9 +206,12 @@ class DeepAgentsConfig(BaseModel):
         """Extra request body fields for the configured backend."""
         if self.base_url is None:
             return self.openrouter_extra_body()
-        if self.enable_thinking is None:
-            return None
-        return {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
+        body: dict[str, Any] = {}
+        if self.enable_thinking is not None:
+            body["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+        if self.reasoning_effort is not None:
+            body["reasoning_effort"] = self.reasoning_effort
+        return body or None
 
     @property
     def pipeline_name(self) -> str:
@@ -273,14 +288,41 @@ def _reasoning_of(choice_message: Any) -> str | None:
     return None
 
 
+def add_reasoning_to_payload(messages: Sequence[BaseMessage], payload: dict[str, Any]) -> None:
+    """Copies the recorded reasoning of each assistant message after the last user message into the matching request
+    message's `reasoning` field (vLLM reads it as the harmony `analysis` channel). Earlier tasks' reasoning stays out.
+    Does nothing if the request's messages do not line up one-to-one with `messages`."""
+    request_messages = payload.get("messages")
+    if not isinstance(request_messages, list) or len(request_messages) != len(messages):
+        return
+    last_user = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1)
+    for i in range(last_user + 1, len(messages)):
+        message = messages[i]
+        if not isinstance(message, AIMessage):
+            continue
+        reasoning = message.additional_kwargs.get(REASONING_KWARG)
+        if isinstance(reasoning, str) and reasoning.strip() and request_messages[i].get("role") == "assistant":
+            request_messages[i] = {**request_messages[i], "reasoning": reasoning}
+
+
 class ReasoningChatOpenAI(ChatOpenAI):
     """`ChatOpenAI` that keeps a local server's reasoning text.
 
     With a reasoning parser (e.g. vLLM's `mistral` parser for Magistral), the server returns the model's
     `[THINK]...[/THINK]` text in a separate `reasoning_content` field. `ChatOpenAI` ignores non-OpenAI fields, so the
     reasoning used to be lost. This copies it into `additional_kwargs[REASONING_KWARG]`, where the transcript records
-    it for the victim trace. It is never sent back to the model: `ChatOpenAI` serialises only the known keys of
-    `additional_kwargs`, so requests are unchanged (the model card allows dropping earlier turns' reasoning)."""
+    it for the victim trace. By default it is never sent back to the model: `ChatOpenAI` serialises only the known keys
+    of `additional_kwargs`, so requests are unchanged (Magistral's model card allows dropping earlier turns'
+    reasoning). With `send_reasoning=True` (gpt-oss), each assistant message after the last user message carries its
+    reasoning back as `reasoning`, as harmony models expect between tool calls."""
+
+    send_reasoning: bool = False
+
+    def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if self.send_reasoning:
+            add_reasoning_to_payload(self._convert_input(input_).to_messages(), payload)
+        return payload
 
     def _create_chat_result(self, response: Any, generation_info: dict | None = None) -> ChatResult:
         result = super()._create_chat_result(response, generation_info)
@@ -648,6 +690,7 @@ class DeepAgentsPipeline(BasePipelineElement):
                     config.model_id,
                     config.base_url,
                     thinking_prompt=config.reasoning_system_prompt,
+                    send_reasoning=config.send_reasoning_back,
                     **model_kwargs,
                 )
         if config.tool_output_format == "json":

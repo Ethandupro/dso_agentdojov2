@@ -1,7 +1,7 @@
 """A compact, S0-redacted digest of the victim's run (item 4, decided 2026-11-20). Since 2026-11-26 (user decision) it
 goes only to the analyst, which diagnoses the run for the evolving attacker; the attacker never sees the digest.
 
-The attacker already sees the victim's final answer (PR #38). The victim now reasons (Magistral), so its step-by-step
+The attacker already sees the victim's final answer (PR #38). The victim now reasons (gpt-oss-20b since 2026-11-27, Magistral before), so its step-by-step
 run -- its thinking, what it said, the tools it called and what they returned -- shows *why* an injection was ignored
 or refused, which a flat "failed" never did. `victim_trace_digest` turns the run's messages into that digest.
 

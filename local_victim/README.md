@@ -11,13 +11,14 @@ not used (the `deepagents` extra needs Python >= 3.11).
 
 | Model | BF16 weights | Fits one H100 NVL | Tool parser | Published AgentDojo ASR (no defense) |
 | --- | --- | --- | --- | --- |
-| `mistralai/Magistral-Small-2509` (default since 2026-11-20, thinks) | ~48 GB | yes, ~36 GB left | `mistral` | none published for AgentDojo |
+| `openai/gpt-oss-20b` (default since 2026-11-27, reasons) | ~13 GB (MXFP4, MoE ~3.6B active) | yes, plenty left | `openai` | none published for AgentDojo (gpt-oss-120b: ~27%, important_instructions) |
+| `mistralai/Magistral-Small-2509` (default 2026-11-20 to 2026-11-27, thinks) | ~48 GB | yes, ~36 GB left | `mistral` | none published for AgentDojo |
 | `Qwen/Qwen3.5-27B` (default until 2026-11-20) | ~54 GB | yes, ~30 GB left for KV cache | `qwen3_coder` | ~26% (banking ~52%) |
 | `Qwen/Qwen3-32B` | ~65 GB | yes, ~20 GB left | `hermes` | ~30% (important_instructions) |
 | `google/gemma-4-26B-A4B-it` | ~52 GB (MoE, ~4B active) | yes | `gemma4` | none published for AgentDojo |
 
-The Qwen models clear the C0 rule (ASR >= 20%) in the literature; Magistral has no published number, so its C0
-pilot decides. Only the pilot on this setup counts. Both models think by
+The Qwen models clear the C0 rule (ASR >= 20%) in the literature; gpt-oss-20b and Magistral have no published
+number (gpt-oss is trained on an instruction hierarchy, which may push its ASR down), so their C0 pilot decides. Only the pilot on this setup counts. Both models think by
 default; the published numbers are non-thinking, so the server turns thinking off by default and the benchmark is
 run with `--no-thinking` (sent per request, so it is in every request even if the server default changes).
 
@@ -96,7 +97,38 @@ version or thinking setting.
 To use both GPUs, run the suites in parallel (`--max-workers 4`, one process per suite). Each suite runs its pairs
 one after another, so a single suite keeps only one request in flight.
 
-## The project setup: victim (Magistral, thinking) and attacker (Qwen3.8 + DFlash2)
+## The project setup: victim (gpt-oss-20b, reasoning) and attacker (Qwen3.8 + DFlash2)
+
+**Victim since 2026-11-27 (the user's choice): `openai/gpt-oss-20b`, reasoning on.** It replaces Magistral Small 1.2;
+the Magistral notes below are kept for `VICTIM_MODEL=mistralai/Magistral-Small-2509`.
+
+- *Serving.* vLLM serves gpt-oss in OpenAI's harmony format by itself (model type `gpt_oss`; no chat template).
+  `serve_vllm.sh` passes tool parser `openai` and reasoning parser `openai_gptoss`, 128k context, and never
+  `--quantization`: the weights are MXFP4 already (~13 GB; H100 runs them with vLLM's MXFP4 kernels). vLLM writes
+  today's date into gpt-oss's system message, so `serve_vllm.sh` pins it with `VLLM_SYSTEM_START_DATE` (2026-11-27)
+  to keep prompts the same on every day; the date is in the server info file. If your vLLM is too old for gpt-oss,
+  the log fails on `gpt_oss` or `openai_gptoss`: upgrade vLLM in `~/venvs/vllm`.
+- *Reasoning.* gpt-oss always reasons. The runner sends `reasoning_effort` with every request (default `medium`,
+  `experiment_models.VICTIM_REASONING_EFFORT`; `run_condition --victim-reasoning-effort low|medium|high` gets an
+  `-effort<E>` results directory). It is recorded in `config.json` (`victim.reasoning_effort`).
+- *Reasoning between tool calls.* Harmony models expect their own chain of thought to stay in context while they work
+  through tool calls. The victim's chat model sends each assistant message of the current task back with its
+  `reasoning` (vLLM turns it into the harmony `analysis` channel and drops it once a final answer follows).
+  Recorded as `victim.send_reasoning_back: true`.
+- *Who sees the reasoning.* As with Magistral, the reasoning is kept per message as `deepagents.reasoning` and shown
+  only in the analyst's digest of the victim's run, with S0 and the specialised skills redacted. The attacker never
+  sees it (PR #58 rule).
+- *Sampling.* Temperature 0.1 (`VICTIM_TEMPERATURE`, as for Magistral) and top_p 1.0 (OpenAI's recommendation).
+- *Name in the attack.* The `important_instructions` text addresses the victim by name; for gpt-oss that is
+  "ChatGPT" (its harmony system message says "You are ChatGPT"), so the manifest was rebuilt (pairs, order and split
+  unchanged).
+- *One GPU.* With `ONE_GPU=<n>` the victim takes 0.30 of the GPU in its MXFP4 weights and the attacker 0.58 in FP8
+  (it had 0.44 next to Magistral), so the attacker gets about twice the KV cache.
+- *Attacker `--max-num-seqs 128`.* Qwen3.8 is a hybrid model with a linear-attention ("Mamba") cache; with vLLM's
+  default it refused to start on a shared GPU ("max_num_seqs exceeds Mamba cache blocks"). `serve_all.sh` now passes
+  `--max-num-seqs 128` to the attacker (`ATTACKER_MAX_NUM_SEQS` to change it).
+
+### Before 2026-11-27: Magistral
 
 Since the victim redesign of 2026-11-19 there is no external checker: the security skill S0 is one of the victim's
 skills (`skillfile_evolution/DESIGN.md`, "Victim skills"). The project's models (`src/agentdojo/experiment_models.py`,
@@ -153,11 +185,12 @@ left for its KV cache) and the attacker (~28 GB + ~4 GB draft) in 0.44 (~10 GB K
 victim's answers slightly against BF16, and `config.json` doesn't record the server's quantization, so serve every
 condition you compare the same way (all with `ONE_GPU`, or all without). It can't be combined with `CHECKER=1`.
 
-Victim options: `VICTIM_MODEL` (`mistralai/Magistral-Small-2509`), `VICTIM_DRAFT` (`none`; e.g.
+Victim options: `VICTIM_MODEL` (`openai/gpt-oss-20b`; `mistralai/Magistral-Small-2509` for the previous victim), `VICTIM_DRAFT` (`none`; e.g.
 `z-lab/Qwen3.5-27B-DFlash` with the old Qwen victim), `VICTIM_VENV` (the vLLM venv for the victim only), `VICTIM_GPU` (0), `VICTIM_QUANT` (empty = BF16; `fp8`),
-`VICTIM_GPU_MEM` (0.90; 0.48 with `ONE_GPU`). Attacker options: `ATTACKER_MODEL` (`Qwen/Qwen3.8-27B`),
+`VICTIM_GPU_MEM` (0.90; with `ONE_GPU` 0.30 for gpt-oss, 0.48 for Magistral; gpt-oss is never re-quantized). Attacker options: `ATTACKER_MODEL` (`Qwen/Qwen3.8-27B`),
 `ATTACKER_DRAFT` (`z-lab/Qwen3.8-27B-DFlash2`; `none` turns it off), `ATTACKER_VENV` (the vLLM venv for the attacker
-only), `ATTACKER_GPU` (1), `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90; 0.42 with `CHECKER=1`; 0.44 with `ONE_GPU`),
+only), `ATTACKER_GPU` (1), `ATTACKER_PORT`, `ATTACKER_GPU_MEM` (0.90; 0.42 with `CHECKER=1`; with `ONE_GPU` 0.58 next to gpt-oss, 0.44 next to Magistral),
+`ATTACKER_MAX_NUM_SEQS` (128),
 `ATTACKER_QUANT` (empty = BF16; `fp8` with `CHECKER=1` or `ONE_GPU`), `ATTACKER_MAX_LEN` (32768). `SPEC_TOKENS` (7:
 tokens drafted per step) applies to both. The attacker needs no API key.
 
