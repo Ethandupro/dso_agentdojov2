@@ -111,6 +111,7 @@ def run_dir_for(
     skill_agent: bool = False,
     stop_on_success: bool = False,
     victim_temperature: float | None = None,
+    victim_reasoning_effort: str | None = None,
     attacker_temperature: float | None = None,
     distill_every: int = 0,
     distill_plain: bool = False,
@@ -159,6 +160,8 @@ def run_dir_for(
         name = f"{name}-first-success"
     if victim_temperature is not None:
         name = f"{name}-vtemp{victim_temperature:g}"
+    if victim_reasoning_effort is not None:
+        name = f"{name}-effort{victim_reasoning_effort}"
     if attacker_temperature is not None:
         name = f"{name}-atemp{attacker_temperature:g}"
     if subset:

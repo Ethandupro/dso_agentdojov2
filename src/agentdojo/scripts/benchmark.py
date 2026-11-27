@@ -106,9 +106,18 @@ def benchmark_suite(
                 log_context={"suite": suite.name, "attack": attack, "skill_file": str(skill_file)},
             )
             print(f"Using checker: '{checker_model_id}' ({checker_base_url or 'OpenRouter'}), skill file {skill_file}")
-        # A local Magistral victim thinks through its model card's reasoning system prompt, with the card's sampling.
+        # A local gpt-oss victim reasons at the project's reasoning effort and gets its reasoning back between tool
+        # calls; a local Magistral victim thinks through its model card's reasoning system prompt, with the card's
+        # sampling.
         magistral: dict[str, Any] = {}
-        if base_url is not None and experiment_models.is_magistral(model_id):
+        if base_url is not None and experiment_models.is_gpt_oss(model_id):
+            magistral = {
+                "temperature": experiment_models.VICTIM_TEMPERATURE,
+                "top_p": experiment_models.GPT_OSS_TOP_P,
+                "reasoning_effort": experiment_models.VICTIM_REASONING_EFFORT,
+                "send_reasoning_back": True,
+            }
+        elif base_url is not None and experiment_models.is_magistral(model_id):
             magistral = {
                 "temperature": experiment_models.MAGISTRAL_TEMPERATURE,
                 "top_p": experiment_models.MAGISTRAL_TOP_P,
@@ -204,8 +213,8 @@ def show_results(suite_name: str, results: SuiteResults, show_security_results: 
     default=None,
     help="The model id for local models, or the victim model id with `--harness deepagents` (an OpenRouter id, or "
     "the served name with `--base-url`). With `--harness deepagents` and no `--model-id`, the project's victim "
-    f"`{experiment_models.VICTIM_MODEL_ID}` at `{experiment_models.VICTIM_BASE_URL}` is used (a Magistral victim "
-    "thinks, through its model card's reasoning system prompt).",
+    f"`{experiment_models.VICTIM_MODEL_ID}` at `{experiment_models.VICTIM_BASE_URL}` is used (it reasons at "
+    f"reasoning effort {experiment_models.VICTIM_REASONING_EFFORT}).",
 )
 @click.option(
     "--harness",

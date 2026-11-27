@@ -3,7 +3,7 @@
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1
     uv run --extra deepagents python -m agentdojo.runner.run_condition --condition C1 --limit 5   # smoke run
 
-Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (Magistral Small 1.2, thinking,
+Runs on the GPU VM against the local vLLM servers (`local_victim/serve_all.sh`): the victim (gpt-oss-20b, reasoning,
 no draft model) on port 8000. Results go to `results/<run_id>/seed_<n>/` (`results/<run_id>-limit<N>/...` for smoke
 runs). Run the same command again to resume after a crash or Ctrl-C; it refuses to resume under a different config.
 
@@ -163,12 +163,31 @@ def victim_deepagents_config(
     base_url: str,
     fetch: Callable[[str, str], str] | None = None,
     temperature: float | None = None,
+    reasoning_effort: str | None = None,
 ) -> DeepAgentsConfig:
-    """The victim's settings. A Magistral victim (default since 2026-11-20) thinks: its model card's reasoning system
+    """The victim's settings. A gpt-oss victim (default since 2026-11-27) reasons at `reasoning_effort`
+    (`--victim-reasoning-effort`, default `VICTIM_REASONING_EFFORT`), at temperature 0.1 (`VICTIM_TEMPERATURE`) and
+    top_p 1.0, and gets its own reasoning back between tool calls (`send_reasoning_back`, as harmony models expect).
+    A Magistral victim (default 2026-11-20 to 2026-11-27) thinks: its model card's reasoning system
     prompt goes ahead of the agent's, with the card's top_p and temperature 0.1 (`VICTIM_TEMPERATURE`, user decision
     2026-11-25; the card says 0.7). Other (Qwen) victims run non-thinking at temperature
     0, as before. `temperature` (`--victim-temperature`) overrides the default, e.g. a low value so the same
     injection gets (nearly) the same answer every time."""
+    if experiment_models.is_gpt_oss(model_id):
+        effort = experiment_models.VICTIM_REASONING_EFFORT if reasoning_effort is None else reasoning_effort
+        if effort not in experiment_models.GPT_OSS_REASONING_EFFORTS:
+            raise ValueError(f"reasoning effort {effort!r}: use one of {experiment_models.GPT_OSS_REASONING_EFFORTS}")
+        return DeepAgentsConfig(
+            model_id=model_id,
+            base_url=base_url,
+            enable_thinking=None,
+            temperature=experiment_models.VICTIM_TEMPERATURE if temperature is None else temperature,
+            top_p=experiment_models.GPT_OSS_TOP_P,
+            reasoning_effort=effort,  # type: ignore[arg-type]
+            send_reasoning_back=True,
+        )
+    if reasoning_effort is not None:
+        raise ValueError(f"--victim-reasoning-effort is a gpt-oss setting; {model_id} has none")
     if experiment_models.is_magistral(model_id):
         return DeepAgentsConfig(
             model_id=model_id,
@@ -468,8 +487,15 @@ def skill_agent_settings(
     "--victim-temperature",
     type=float,
     default=None,
-    help=f"Victim sampling temperature (default for Magistral: {experiment_models.VICTIM_TEMPERATURE}, user decision "
-    "2026-11-25; the model card says 0.7). Passing it gets a '-vtemp<T>' results directory.",
+    help=f"Victim sampling temperature (default for gpt-oss and Magistral: {experiment_models.VICTIM_TEMPERATURE}, "
+    "user decision 2026-11-25; the model cards say 1.0 / 0.7). Passing it gets a '-vtemp<T>' results directory.",
+)
+@click.option(
+    "--victim-reasoning-effort",
+    type=click.Choice(experiment_models.GPT_OSS_REASONING_EFFORTS),
+    default=None,
+    help=f"gpt-oss victim: reasoning effort (default {experiment_models.VICTIM_REASONING_EFFORT}). Passing it gets an "
+    "'-effort<E>' results directory.",
 )
 @click.option(
     "--attacker-temperature",
@@ -569,6 +595,7 @@ def main(
     show_victim_trace: bool,
     stop_on_success: bool,
     victim_temperature: float | None,
+    victim_reasoning_effort: str | None,
     attacker_temperature: float | None,
     distill_every: int,
     distill_mode: str,
@@ -633,7 +660,11 @@ def main(
         raise click.ClickException(f"{skills_dir} already has a skill named {experiment_models.S0_SKILL_NAME}")
 
     try:
-        victim_config = victim_deepagents_config(victim_model_id, victim_base_url, temperature=victim_temperature)
+        victim_config = victim_deepagents_config(
+            victim_model_id, victim_base_url, temperature=victim_temperature, reasoning_effort=victim_reasoning_effort
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(
             f"could not download {experiment_models.REASONING_PROMPT_FILE} of {victim_model_id}: {e}"
@@ -776,6 +807,7 @@ def main(
         skill_agent=evolving_attack and attacker_loop == "skill-agent",
         stop_on_success=stop_on_success,
         victim_temperature=victim_temperature,
+        victim_reasoning_effort=victim_reasoning_effort,
         attacker_temperature=attacker_temperature,
         distill_every=distill_every,
         distill_plain=bool(distill_every) and distill_mode == "plain",

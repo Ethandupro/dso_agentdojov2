@@ -2,7 +2,8 @@
 # Serve a local victim model with vLLM's OpenAI-compatible server (no admin rights, no nvcc needed).
 #
 #   bash local_victim/serve_vllm.sh            # Qwen/Qwen3.5-27B, one copy per GPU, port 8000
-#   MODEL=mistralai/Magistral-Small-2509 bash local_victim/serve_vllm.sh   # the project's victim since 2026-11-20
+#   MODEL=openai/gpt-oss-20b bash local_victim/serve_vllm.sh   # the project's victim since 2026-11-27
+#   MODEL=mistralai/Magistral-Small-2509 bash local_victim/serve_vllm.sh   # the victim 2026-11-20 to 2026-11-27
 #   MODEL=Qwen/Qwen3-32B bash local_victim/serve_vllm.sh
 #
 # Then run the benchmark with:
@@ -36,7 +37,16 @@ case "$MODEL" in
   # Gemma 4 needs vLLM >= 0.25 and vLLM's Gemma 4 tool chat template (pass it with
   # EXTRA_ARGS="--chat-template /path/to/tool_chat_template_gemma4.jinja", see local_victim/README.md).
   *gemma-4*)           TOOL_PARSER=${TOOL_PARSER:-gemma4};      REASONING_PARSER=${REASONING_PARSER:-gemma4}; MAX_LEN=${MAX_LEN:-131072} ;;
-  # Magistral Small 1.2 (the victim since 2026-11-20): Mistral Small 3.2 with reasoning. Mistral's own format and
+  # gpt-oss-20b (the victim since 2026-11-27): OpenAI's harmony format, which vLLM applies itself for model type
+  # gpt_oss (no chat template, no enable_thinking switch: it always reasons; the runner sends reasoning_effort). The
+  # `openai` tool parser and `openai_gptoss` reasoning parser return tool calls and the analysis channel (as
+  # `reasoning`) separately. Weights are MXFP4 already, so it is never given --quantization (serve_all.sh skips it);
+  # ~13 GB. Native 128k context. vLLM writes today's date into gpt-oss's system message unless VLLM_SYSTEM_START_DATE
+  # is set, so it is pinned (recorded in the server info file) to keep prompts identical across days.
+  *gpt-oss*)           TOOL_PARSER=${TOOL_PARSER:-openai};      REASONING_PARSER=${REASONING_PARSER:-openai_gptoss}; MAX_LEN=${MAX_LEN:-131072}
+                       THINKING_KWARGS=${THINKING_KWARGS:-none}
+                       export VLLM_SYSTEM_START_DATE=${VLLM_SYSTEM_START_DATE:-2026-11-27} ;;
+  # Magistral Small 1.2 (the victim 2026-11-20 to 2026-11-27): Mistral Small 3.2 with reasoning. Mistral's own format and
   # tokenizer as its model card asks (mistral_common >= 1.8.5); the mistral reasoning parser returns the [THINK] part
   # as reasoning_content. Thinking comes from the model card's reasoning system prompt, which the runner sends with
   # every request, so no enable_thinking switch is passed. Images off (text-only benchmark). 64k context: the card
@@ -66,7 +76,7 @@ fi
 mkdir -p "${LOG_DIR:-$HOME/vllm_logs}"
 INFO="${LOG_DIR:-$HOME/vllm_logs}/server_$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
-  echo "model=$MODEL draft=$DRAFT spec_tokens=$SPEC_TOKENS port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER reasoning_parser=$REASONING_PARSER model_args=$MODEL_ARGS extra=${EXTRA_ARGS:-}"
+  echo "model=$MODEL draft=$DRAFT spec_tokens=$SPEC_TOKENS port=$PORT dp=$DP tp=$TP max_len=$MAX_LEN tool_parser=$TOOL_PARSER reasoning_parser=$REASONING_PARSER model_args=$MODEL_ARGS start_date=${VLLM_SYSTEM_START_DATE:-} extra=${EXTRA_ARGS:-}"
   "$VENV/bin/python" -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 } | tee "$INFO"
