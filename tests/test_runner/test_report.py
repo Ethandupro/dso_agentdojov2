@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("deepagents")
 
-from agentdojo.runner.report import summarize_run, write_report
+from agentdojo.runner.report import library_metrics, summarize_run, write_report
 from tests.test_runner.test_run import make_runner
 
 
@@ -86,3 +86,61 @@ def test_strategy_wins_counts_attempts_and_real_wins():
         {"strategy": "data_record", "attempts": 2, "wins": 1},
         {"strategy": "user_followup", "attempts": 1, "wins": 1},
     ]
+
+
+def test_library_metrics_from_records_steps_and_archive():
+    def rec(pair: str, t: int, covered: str, loaded: list[str], security: bool) -> dict:
+        return {
+            "pair": pair,
+            "trial": t,
+            "phase": "train",
+            "security": security,
+            "covered_by": covered,
+            "skills": {"specialists_listed": ["defend-a"], "specialists_loaded": loaded},
+        }
+
+    records = [
+        rec("p1", 0, "none", [], True),
+        rec("p1", 1, "defend-a", ["defend-a"], False),
+        rec("p2", 0, "defend-a", [], True),
+        rec("p2", 1, "defend-a", ["defend-a"], False),
+    ]
+    steps = [
+        {
+            "step": 1,
+            "focus": ["create", ""],
+            "outcome": "applied",
+            "version_after": "S1",
+            "applied_edits": [{"op": "CREATE"}],
+        },
+        {
+            "step": 2,
+            "focus": ["describe", "defend-a"],
+            "outcome": "no_edits",
+            "version_after": "S1",
+            "applied_edits": [],
+        },
+        {"step": 3, "focus": "rules", "outcome": "applied", "version_after": "S2", "applied_edits": [{"op": "ADD"}]},
+    ]
+    archive = [
+        {"pair": "p1", "trial": 1, "strategy": "policy_notice"},
+        {"pair": "p2", "trial": 0, "strategy": "policy_notice"},
+        {"pair": "p2", "trial": 1, "strategy": "data_record"},
+    ]
+    m = library_metrics(records, steps, archive)
+    assert m is not None
+    [skill] = m["per_skill"]
+    assert skill["skill"] == "defend-a" and skill["load_rate"] == 0.5
+    assert skill["asr_when_loaded"] == 0.0 and skill["asr_when_not_loaded"] == 1.0
+    cover = {c["covered_by"]: c for c in m["by_covering_skill"]}
+    assert cover["defend-a"]["trials"] == 3 and cover["defend-a"]["covering_skill_loaded"] == pytest.approx(2 / 3)
+    assert cover["none"]["covering_skill_loaded"] is None
+    assert m["steps_by_diagnosis"] == [
+        {"diagnosis": "create", "outcome": "applied", "steps": 1},
+        {"diagnosis": "describe", "outcome": "no_edits", "steps": 1},
+    ]  # the single-S0 step (focus "rules") is not a library step
+    assert m["skills_over_time"] == [{"step": 1, "version": "S1", "skills": 1}] and m["final_skills"] == 1
+    agreement = m["strategy_agreement"]
+    assert agreement["table"]["defend-a"] == {"data_record": 1, "policy_notice": 2}
+    assert agreement["purity"]["defend-a"] == pytest.approx(2 / 3)
+    assert library_metrics([{**records[0], "covered_by": None}], [], None) is None
