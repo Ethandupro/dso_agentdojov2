@@ -25,7 +25,9 @@ def trial_record_from_run_record(record: dict[str, Any], benchmark_version: str)
     return TrialRecord(
         pair=record["pair"],
         trial=record["trial"],
-        split=record["split"],
+        # The phase, not the pair's label, decides what the judge learns from: the same in every protocol except
+        # C4 `--c4-protocol no-split`, whose single adapting phase also runs test-split pairs.
+        split="train" if record["phase"] == "train" else record["split"],
         skill_version=record["skill_version"],
         user_task=suite.user_tasks[record["user_task"]].PROMPT,
         injection_text=record["injection_text"],

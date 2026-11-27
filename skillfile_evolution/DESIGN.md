@@ -377,6 +377,11 @@ C0 (no S0; "no checker" before 2026-11-19), C0E and C5 (final C4 file frozen vs 
 
 *C0E (added 2026-11-20 by the user):* C0's victim (the 5 fixed skills, no S0) against C2's evolving attacker (AutoDojo, same settings), run id `c0e_no-s0_evolving-attack`. C2 vs C0E shows what S0 adds under adaptive attack, as C1 vs C0 does under the static attack. No split, like C0–C2; run it with the same `--trials-per-pair` as C2.
 
+*C4 protocols (added 2026-11-27 by the user, for the deployment framing):* `--c4-protocol` (C4 only; default `split`, the design above).
+- `no-split`: one adapting phase. Every pair runs as a train unit (its split label kept), in C2's order; with `--limit N` the first N train then the first N test pairs, as C2 with `--limit-each-split`. The judge learns from every pair and the attacker rewrites every pair; the skills freeze only for the benign tasks after. H2 then compares C2 and C4 on all pairs (run a smoke C2 with `--limit-each-split`). No held-out test for C4. Run dir suffix `-no-split`.
+- `attack-test`: the split, but the evolving attacker also rewrites the test pairs, against the frozen skills (the attacker keeps its memory from the train pairs). `compare` reports "H1 under adaptive attack": C4 test phase vs C2 on the same test pairs (smoke C2 with `--limit-each-split`); C4 is left out of H1 vs C1, whose test pairs see only the fixed injection. Run dir suffix `-attack-test`.
+- The three protocols are all C4, so `compare` refuses to mix them in one results folder.
+
 *On hold (noted 2026-11-18, user decision):* C5 is on hold. Work focuses on C0–C4, and the runner does not build C5.
 
 Segmentation rules:

@@ -121,6 +121,7 @@ def run_dir_for(
     judge_trigger: str | None = None,
     skill_loading: str = "index",
     limit_each_split: bool = False,
+    c4_protocol: str = "split",
 ) -> Path:
     name = condition.run_id
     if external_checker:
@@ -155,6 +156,8 @@ def run_dir_for(
         name = f"{name}-rep{replicate_wins}"
     if judge_trigger:
         name = f"{name}-{judge_trigger}"
+    if c4_protocol != "split":
+        name = f"{name}-{c4_protocol}"
     if stop_on_success:
         name = f"{name}-first-success"
     if victim_temperature is not None:
@@ -270,12 +273,15 @@ class Runner:
         judge_confirm_runs: int = 0,
         judge_evidence: bool = False,
         skill_loading: SkillLoading = "index",
+        attack_test_phase: bool = False,
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
         if defense == "skills" and checker_fn is not None:
             raise ValueError("a checker model is only used with defense='checker'")
         self.defense = defense
+        self.attack_test_phase = attack_test_phase
+        """C4 `--c4-protocol attack-test`: the evolving attacker also rewrites test pairs (the skills stay frozen)."""
         self.skill_loading: SkillLoading = skill_loading
         """`prompt` or `both`: the shared skills prompt tells the agent it may load skills mid-task (L2). The S0 index
         (`index`, `both`) is rendered by the evolving skill file, not here."""
@@ -423,8 +429,9 @@ class Runner:
         )
 
     def attacker_for(self, unit: Unit) -> Attacker:
-        # C4: the evolving attacker never sees test-split injection tasks; test pairs keep the trial-0 text.
-        if unit.phase == "test":
+        # C4: the evolving attacker never sees test-split injection tasks; test pairs keep the trial-0 text. With
+        # `--c4-protocol attack-test` it rewrites them too, against the frozen skills.
+        if unit.phase == "test" and not self.attack_test_phase:
             return self.static_attacker
         return self.attacker
 

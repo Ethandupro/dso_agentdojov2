@@ -13,6 +13,20 @@ from agentdojo.runner.manifest import Pair, load_pairs, task_sort_key
 
 ConditionName = Literal["C0", "C0E", "C1", "C2", "C3", "C4"]
 Phase = Literal["benign", "benign_before", "benign_after", "attack", "train", "test"]
+C4Protocol = Literal["split", "no-split", "attack-test"]
+C4_PROTOCOLS: tuple[C4Protocol, ...] = ("split", "no-split", "attack-test")
+"""How C4 runs its pairs (`run_condition --c4-protocol`, added 2026-11-27 for the deployment framing):
+
+- `split` (default, the design since 2026-11-11): train pairs with the judge and the evolving attacker, then the
+  frozen skills on test pairs with the fixed injection only.
+- `no-split`: one adapting phase. Every pair, train- or test-split, runs in C2's order (with `--limit N`: N train
+  pairs then N test pairs, as C2 with `--limit-each-split`), the judge learns from all of them and the attacker
+  rewrites all of them. The skills freeze only for the benign tasks after. Compared with C2 on all pairs (H2); there
+  is no held-out test for C4.
+- `attack-test`: the split as in `split`, but the evolving attacker also rewrites the test pairs, against the frozen
+  skills. Its test phase is compared with C2 on the same test pairs (run C2 with `--limit-each-split` for a smoke
+  run), not with C1.
+"""
 
 
 @dataclass(frozen=True)
@@ -161,6 +175,7 @@ def build_units(
     limit: int | None = None,
     suites: tuple[str, ...] | None = None,
     pair_filter: PairFilter = NO_FILTER,
+    c4_protocol: C4Protocol = "split",
 ) -> list[Unit]:
     """The run's units in order.
 
@@ -189,7 +204,19 @@ def build_units(
             for trial in range(trials_per_pair):
                 units.append(Unit(len(units), phase, pair.suite, pair.user_task, pair, trial))
 
-    if condition.evolving_skill:
+    if condition.evolving_skill and c4_protocol == "no-split":
+        # One adapting phase, every pair a "train" unit (its split label is kept). The run order puts all train-split
+        # pairs first, so with `limit` it takes the first `limit` of each split, the same pairs in the same order as
+        # C2 with `--limit-each-split` (and as the other C4 protocols). Without `limit`: all pairs, C2's order.
+        add_benign("benign_before")
+        if limit is not None:
+            train = order([p for p in pairs if p.split == "train"])[:limit]
+            test = order([p for p in pairs if p.split == "test"])[:limit]
+            add_pairs("train", train + test)
+        else:
+            add_pairs("train", pairs)
+        add_benign("benign_after")
+    elif condition.evolving_skill:
         # Balanced within each split, so a smoke run's train and test cuts both cover every suite.
         train = order([p for p in pairs if p.split == "train"])
         test = order([p for p in pairs if p.split == "test"])

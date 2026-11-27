@@ -57,6 +57,8 @@ class RunConfig(BaseModel):
     replicate_wins: int | None = None
     """Evolving-attacker runs: how many times each successful injection is re-run unchanged (`--replicate-wins`,
     default 4 since 2026-11-25), logged apart from the trials. None when there is no evolving attacker."""
+    c4_protocol: str | None = None
+    """C4 `--c4-protocol no-split|attack-test`; None for the default split, so earlier runs still resume."""
     limit_each_split: bool | None = None
     """C0-C2 `--limit-each-split`: `limit` train pairs plus `limit` test pairs. None when off, so earlier runs
     still resume."""
