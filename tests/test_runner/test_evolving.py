@@ -18,6 +18,7 @@ from agentdojo.functions_runtime import EmptyEnv, Env, FunctionsRuntime
 from agentdojo.runner.conditions import CONDITIONS, Unit, build_units
 from agentdojo.runner.evolving import EvolvingSkillFile
 from agentdojo.runner.plugins import StaticAttacker
+from agentdojo.runner.report import summarize_run, write_report
 from agentdojo.runner.run import Runner, run_dir_for
 from agentdojo.skillfile.checks import EditPolicy, approx_token_count
 from agentdojo.skillfile.judge import JudgeCall, RemovedSpan, SkillFileEvolver, TrialRecord
@@ -413,3 +414,8 @@ def test_c3_library_records_which_skill_covers_each_train_trial(tmp_path: Path):
     assert all(r["covered_by"] == "defend-fake-notice" for r in train[1:])
     assert all(r["s0_rule_match"]["covered_by"] == r["covered_by"] for r in train[1:])
     assert all("covered_by" not in r for r in records if r["phase"] != "train")
+    summary = summarize_run(run_dir)
+    library = summary["library"]
+    assert library["final_skills"] == 1 and library["skills_over_time"][0]["version"] == "S1"
+    assert {c["covered_by"] for c in library["by_covering_skill"]} == {"none", "defend-fake-notice"}
+    assert "Specialised security skills" in write_report(run_dir).read_text()
