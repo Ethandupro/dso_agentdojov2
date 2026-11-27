@@ -130,13 +130,16 @@ class EvolvingSkillFile:
         record.pop("victim_text", None)
         train = record["phase"] == "train" and not self.evolver.frozen
         if train and self.evolver.rich_evidence and trial.victim_text is not None:
-            match = self.evolver.match_rules(trial.victim_text)
+            match = self.evolver.match_rules(trial.victim_text, trial.injection_text)
             trial.cited_rules = match.rule_ids
+            trial.covered_by = match.covered_by
             trial.victim_text = None
             record["s0_rule_match"] = match.to_dict()
         step = self.evolver.record_trial(trial)
         if self.evolver.rich_evidence and record["phase"] == "train":
             record["s0_rules_quoted"] = trial.cited_rules
+            if self.evolver.library_policy.enabled:
+                record["covered_by"] = trial.covered_by
         steps = [step] if step is not None else []
         if self.evolver.trigger.batched and record["phase"] == "train" and self.pair_finished(record):
             steps.extend(self.evolver.finish_pair())
