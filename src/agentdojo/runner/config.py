@@ -57,6 +57,9 @@ class RunConfig(BaseModel):
     replicate_wins: int | None = None
     """Evolving-attacker runs: how many times each successful injection is re-run unchanged (`--replicate-wins`,
     default 4 since 2026-11-25), logged apart from the trials. None when there is no evolving attacker."""
+    limit_each_split: bool | None = None
+    """C0-C2 `--limit-each-split`: `limit` train pairs plus `limit` test pairs. None when off, so earlier runs
+    still resume."""
     smoke: bool | None = None
     """`--smoke` preset: single injection point, `limit` pairs taken in turn from each suite. Own directory. None
     (not False) when off, so runs made before the flag existed still resume."""

@@ -75,6 +75,11 @@ class PairFilter:
     """Keep only these user tasks, as `suite/user_task` (from a `--subset` file)."""
     single_injection_point: bool = False
     """Keep only pairs whose user task reads exactly one injection vector."""
+    limit_each_split: bool = False
+    """C0-C2 with `--limit`: take the first `limit` train pairs and the first `limit` test pairs, as C3/C4 always do
+    (`run_condition --limit-each-split`, added 2026-11-27). Without it the first `limit` pairs of the run order are
+    taken, and in the smoke order those are all train pairs (the first 136), so C1 has no test pairs to set against
+    C3/C4's test phase (H1)."""
     balance_suites: bool = False
     """Not a cut but an order (added 2026-11-20 for `--smoke`): interleave the kept pairs suite by suite (one banking,
     one travel, ...), each suite keeping its run order, so `--limit N` takes about N / suites pairs from each suite
@@ -196,5 +201,10 @@ def build_units(
         add_benign("benign_after")
     else:
         add_benign("benign")
-        add_pairs("attack", pairs if limit is None else pairs[:limit])
+        if limit is not None and pair_filter.limit_each_split:
+            train = order([p for p in pairs if p.split == "train"])[:limit]
+            test = order([p for p in pairs if p.split == "test"])[:limit]
+            add_pairs("attack", train + test)
+        else:
+            add_pairs("attack", pairs if limit is None else pairs[:limit])
     return units
