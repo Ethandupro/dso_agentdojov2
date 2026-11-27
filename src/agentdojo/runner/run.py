@@ -56,6 +56,7 @@ from agentdojo.runner.plugins import Attacker, AttemptFeedback, ObservingAttacke
 from agentdojo.runner.report import evolving_metrics, replication_metrics
 from agentdojo.runner.score import goal_tool_names, progress_score
 from agentdojo.runner.trace import judge_trace_digest, victim_own_text, victim_trace_digest
+from agentdojo.skillfile.library import SkillLoading
 from agentdojo.task_suite.load_suites import get_suite
 from agentdojo.types import get_text_content_as_str
 
@@ -118,12 +119,15 @@ def run_dir_for(
     no_analyst: bool = False,
     replicate_wins: int | None = None,
     judge_trigger: str | None = None,
+    skill_loading: str = "index",
 ) -> Path:
     name = condition.run_id
     if external_checker:
         name = f"{name}-external-checker"
     elif skills_prompt_style != "nudge":
         name = f"{name}-{skills_prompt_style}-skills"
+    if skill_loading != "index" and not external_checker:
+        name = f"{name}-load-{skill_loading}"
     if suites:
         name = f"{name}-{'+'.join(sorted(suites))}"
     if no_attacker_memory:
@@ -262,12 +266,16 @@ class Runner:
         replicate_wins: int = 0,
         judge_confirm_runs: int = 0,
         judge_evidence: bool = False,
+        skill_loading: SkillLoading = "index",
     ) -> None:
         if defense == "checker" and condition.s0 and checker_fn is None:
             raise ValueError(f"{condition.name} with the external checker needs a checker model")
         if defense == "skills" and checker_fn is not None:
             raise ValueError("a checker model is only used with defense='checker'")
         self.defense = defense
+        self.skill_loading: SkillLoading = skill_loading
+        """`prompt` or `both`: the shared skills prompt tells the agent it may load skills mid-task (L2). The S0 index
+        (`index`, `both`) is rendered by the evolving skill file, not here."""
         self.agent_skills = list(agent_skills or [])
         self.skills_prompt_style: SkillsPromptStyle = skills_prompt_style
         self.security_skill_name = security_skill_name
@@ -706,12 +714,18 @@ class Runner:
         library: SkillLibrary | None = None
         if self.defense == "skills":
             skills = list(self.agent_skills)
+            specialists: list[str] = []
             if markdown is not None:
                 description = getattr(self.skill_file, "description", None) or self.security_skill_description
                 skills.append(AgentSkill(self.security_skill_name, description, markdown))
+                for name, specialist_description, body in getattr(self.skill_file, "specialist_skills", []):
+                    skills.append(AgentSkill(name, specialist_description, body))
+                    specialists.append(name)
             if skills:
-                library = SkillLibrary(skills)
-                middleware = AgentSkillsMiddleware(library, self.skills_prompt_style)
+                library = SkillLibrary(skills, specialists=specialists)
+                middleware = AgentSkillsMiddleware(
+                    library, self.skills_prompt_style, midtask=self.skill_loading in ("prompt", "both")
+                )
                 factory = lambda _query: [middleware]
         elif markdown is not None:
             assert self.checker_fn is not None

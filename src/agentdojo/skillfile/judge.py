@@ -49,6 +49,13 @@ from agentdojo.skillfile.edits import (
     parse_judge_reply,
     reply_to_dict,
 )
+from agentdojo.skillfile.library import (
+    LibraryPolicy,
+    SecurityLibrary,
+    apply_library_edits,
+    check_library_edits,
+    check_library_rendered,
+)
 from agentdojo.skillfile.structure import PRINCIPLES_SECTION, SkillFile
 from agentdojo.skillfile.trigger import ALLOWED_OPS, BUCKETS, Bucket, TriggerPolicy, route
 
@@ -689,8 +696,19 @@ class SkillFileEvolver:
         n_train_pairs: int | None = None,
         rich_evidence: bool = False,
         rule_match_fn: JudgeFn | None = None,
+        library_policy: LibraryPolicy | None = None,
+        s0_name: str = experiment_models.S0_SKILL_NAME,
+        s0_description: str = "",
+        s0_index: bool = True,
     ) -> None:
         self.defense: Defense = defense
+        self.library_policy = library_policy or LibraryPolicy()
+        """Specialised skills (design note 2026-11-26). Disabled by default: S0 is the only security skill and every
+        step checks and applies edits exactly as before."""
+        self.s0_description = s0_description
+        """The run's default S0 description, counted in the listing cap when the judge has not set its own."""
+        self.s0_index = s0_index
+        """Whether S0 carries the index of specialised skills (`--skill-loading index|both`); counted in its cap."""
         self.trigger = trigger or TriggerPolicy()
         self.n_train_pairs = n_train_pairs
         """Batched trigger: the run's number of train pairs, so the last batch runs even when it is short."""
@@ -703,7 +721,8 @@ class SkillFileEvolver:
         self.rule_match_fn = rule_match_fn
         """Rich evidence: the LLM that also finds paraphrased rules (`match_rules`); None means verbatim quotes only."""
         self.s0 = s0
-        self.current = s0.copy()
+        self.library = SecurityLibrary(s0.copy(), s0_name=s0_name)
+        """S0 as it evolves, and the specialised skills (none unless `library_policy.enabled`)."""
         self.version = 0
         self.judge_fn = judge_fn
         self.out_dir = out_dir
@@ -725,6 +744,11 @@ class SkillFileEvolver:
         return f"S{self.version}"
 
     @property
+    def current(self) -> SkillFile:
+        """S0 as it is now."""
+        return self.library.s0
+
+    @property
     def current_markdown(self) -> str:
         """The file the checker reads in the next trial."""
         return self.current.render()
@@ -741,6 +765,7 @@ class SkillFileEvolver:
         """Everything that changes during a run, for the runner's checkpoint."""
         return {
             "current": self.current.to_dict(),
+            **({"library": self.library.to_dict()} if self.library_policy.enabled else {}),
             "version": self.version,
             "history": [asdict(r) for r in self.history],
             "attack_archive": list(self.attack_archive),
@@ -754,7 +779,10 @@ class SkillFileEvolver:
     def load_state(self, state: dict[str, Any]) -> None:
         """Restores a checkpoint written by `state_dict` (resume). The version and step files already on disk are
         kept; a step of a trial that did not finish is rewritten when that trial runs again."""
-        self.current = SkillFile.from_dict(state["current"])
+        if "library" in state:
+            self.library = SecurityLibrary.from_dict(state["library"])
+        else:
+            self.library = SecurityLibrary(SkillFile.from_dict(state["current"]), s0_name=self.library.s0_name)
         self.version = state["version"]
         self.history = [_trial_from_dict(r) for r in state["history"]]
         self.pending = [_trial_from_dict(r) for r in state.get("pending", [])]
@@ -867,7 +895,7 @@ class SkillFileEvolver:
         attempts: list[Attempt] = []
         version_before = self.version_name
         message = user
-        result: tuple[SkillFile, JudgeReply, list[int]] | None = None
+        result: tuple[SecurityLibrary, JudgeReply, list[int]] | None = None
         for _ in range(2):
             call = self.judge_fn(system, message)
             attempt, result = self._try(call, context, origin, allowed_ops)
@@ -885,12 +913,12 @@ class SkillFileEvolver:
             outcome: Literal["applied", "no_edits", "carried_over"] = "carried_over"
             self.changelog.append(f"Step {self.steps} ({label}): edits failed the checks twice; no change.")
         else:
-            new_file, reply, dropped_indexes = result
+            new_library, reply, dropped_indexes = result
             applied = [edit_to_dict(e) for i, e in enumerate(reply.edits) if i not in dropped_indexes]
             dropped = [edit_to_dict(e) for i, e in enumerate(reply.edits) if i in dropped_indexes]
             if applied:
                 outcome = "applied"
-                self.current = new_file
+                self.library = new_library
                 self.version += 1
                 self._save_version()
                 summary = "; ".join(self._describe(e) for e in applied)
@@ -914,12 +942,17 @@ class SkillFileEvolver:
 
     def _try(
         self, call: JudgeCall, context: EditContext, origin: EditOrigin, allowed_ops: frozenset[str] | None = None
-    ) -> tuple[Attempt, tuple[SkillFile, JudgeReply, list[int]] | None]:
+    ) -> tuple[Attempt, tuple[SecurityLibrary, JudgeReply, list[int]] | None]:
         try:
             reply = parse_judge_reply(call.text)
         except JudgeReplyError as e:
             return Attempt(call.text, call.input_tokens, call.output_tokens, None, [str(e)]), None
-        failures = check_edits(self.current, reply.edits, context, self.policy, self.count_tokens, allowed_ops)
+        if self.library_policy.enabled:
+            failures = check_library_edits(
+                self.library, reply.edits, context, self.policy, self.library_policy, self.count_tokens, allowed_ops
+            )
+        else:
+            failures = check_edits(self.current, reply.edits, context, self.policy, self.count_tokens, allowed_ops)
         dropped: list[int] = []
         if failures:
             batch_level = any(f.edit_index is None for f in failures)
@@ -927,11 +960,23 @@ class SkillFileEvolver:
                 return self._attempt(call, reply, failures), None
             dropped = sorted({f.edit_index for f in failures if f.edit_index is not None})
         kept = [e for i, e in enumerate(reply.edits) if i not in dropped]
-        new_file = apply_edits(self.current, kept, origin)
-        rendered_failures = check_rendered(new_file, self.attack_archive, self.policy, self.count_tokens)
+        if self.library_policy.enabled:
+            new_library = apply_library_edits(self.library, kept, origin)
+            rendered_failures = check_library_rendered(
+                new_library,
+                self.attack_archive,
+                self.policy,
+                self.library_policy,
+                self.count_tokens,
+                self.s0_description,
+                self.s0_index,
+            )
+        else:
+            new_library = replace(self.library, s0=apply_edits(self.current, kept, origin))
+            rendered_failures = check_rendered(new_library.s0, self.attack_archive, self.policy, self.count_tokens)
         if rendered_failures:
             return self._attempt(call, reply, failures + rendered_failures), None
-        return self._attempt(call, reply, failures), (new_file, reply, dropped)
+        return self._attempt(call, reply, failures), (new_library, reply, dropped)
 
     @staticmethod
     def _attempt(call: JudgeCall, reply: JudgeReply, failures: list[CheckFailure]) -> Attempt:
@@ -947,20 +992,32 @@ class SkillFileEvolver:
 
     @staticmethod
     def _describe(edit: dict[str, Any]) -> str:
+        skill = f" of {edit['skill']}" if edit.get("skill") else ""
+        if edit["op"] == "CREATE":
+            return f"CREATE {edit['name']} ({edit['covers']}): " + " | ".join(edit["rules"])
+        if edit["op"] == "RETIRE":
+            return f"RETIRE {edit['skill']}"
         if edit["op"] == "ADD":
-            return f"ADD to {edit['section']}: {edit['text']}"
+            return f"ADD to {edit['section']}{skill}: {edit['text']}"
         if edit["op"] == "MODIFY":
             return f"MODIFY {edit['id']}: {edit['text']}"
         if edit["op"] == "DELETE":
             return f"DELETE {edit['id']}"
         if edit["op"] == "DESCRIBE":
-            return f"DESCRIBE: {edit['text']}"
+            return f"DESCRIBE{skill}: {edit['text']}"
         return f"MERGE {', '.join(edit['ids'])}: {edit['text']}"
 
     def _save_version(self) -> None:
         name = self.version_name
         (self.out_dir / f"{name}.md").write_text(self.current.render(), encoding="utf-8")
         (self.out_dir / f"{name}.json").write_text(json.dumps(self.current.to_dict(), indent=2), encoding="utf-8")
+        if self.library_policy.enabled:
+            library = self.library
+            (self.out_dir / f"{name}.library.json").write_text(
+                json.dumps(library.to_dict(), indent=2), encoding="utf-8"
+            )
+            for skill_name, _description, body in library.victim_skills():
+                (self.out_dir / f"{name}.{skill_name}.md").write_text(body, encoding="utf-8")
 
     def _save_step(
         self,

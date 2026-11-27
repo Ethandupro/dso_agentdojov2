@@ -9,6 +9,14 @@ The judge never writes the file. It returns a diagnosis and a list of edits:
 - `DESCRIBE`: replace the skill's one-line description, which the victim sees in its skill list before deciding
   whether to load the skill (only when `EditPolicy.description_editable`; decided 2026-11-19 by user).
 
+With the security-skill library (`library`, design note 2026-11-26 "Specialised defender skills"), `ADD` and
+`DESCRIBE` may name a `skill` (empty: S0), and two more operations exist:
+
+- `CREATE` a specialised security skill: a name (`defend-<kind>`), a one-line "covers" description, and its rules;
+- `RETIRE` a specialised skill.
+
+`MODIFY`, `DELETE` and `MERGE` need no skill: rule IDs are unique across the library.
+
 `apply_edits` applies them to a copy of the file. Everything the edits don't name stays byte-identical. A new or
 merged rule gets the next unused ID of its section; deleted and merged IDs are retired and never reused.
 Validity (IDs exist, frozen parts untouched, budget, identifier ban) is checked separately, in `checks`.
@@ -48,6 +56,8 @@ class AddRule:
     text: str
     keeps: str = ""
     """A benign text the rule would keep. Asked for in the prompt only; no code checks it."""
+    skill: str = ""
+    """Library only: the skill the rule goes to; empty means S0."""
     op: Literal["ADD"] = "ADD"
 
 
@@ -77,10 +87,34 @@ class MergeRules:
 class DescribeSkill:
     text: str
     """The new one-line description of the skill."""
+    skill: str = ""
+    """Library only: the skill whose description changes; empty means S0."""
     op: Literal["DESCRIBE"] = "DESCRIBE"
 
 
-Edit = AddRule | ModifyRule | DeleteRule | MergeRules | DescribeSkill
+@dataclass
+class CreateSkill:
+    """Library only: a new specialised security skill."""
+
+    name: str
+    """`defend-<kind>`, lowercase words joined by hyphens."""
+    covers: str
+    """One line: the kind of injected text the skill covers, as the victim can see it. It is the skill's description
+    in the victim's skill list and its line in S0's index."""
+    rules: list[str]
+    op: Literal["CREATE"] = "CREATE"
+
+
+@dataclass
+class RetireSkill:
+    """Library only: remove a specialised skill. Its name is never reused."""
+
+    skill: str
+    op: Literal["RETIRE"] = "RETIRE"
+
+
+Edit = AddRule | ModifyRule | DeleteRule | MergeRules | DescribeSkill | CreateSkill | RetireSkill
+LIBRARY_OPS = frozenset({"CREATE", "RETIRE"})
 
 
 @dataclass
@@ -112,6 +146,15 @@ def _str(item: dict[str, Any], key: str) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value.strip():
         raise JudgeReplyError(f"{item.get('op', 'diagnosis')}: '{key}' must be a non-empty string")
+    return value.strip()
+
+
+def _skill(item: dict[str, Any]) -> str:
+    value = item.get("skill", "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise JudgeReplyError(f"{item.get('op')}: 'skill' must be a skill name")
     return value.strip()
 
 
@@ -151,7 +194,9 @@ def parse_judge_reply(reply: str) -> JudgeReply:
         op = item.get("op")
         keeps = item.get("keeps", "") if isinstance(item.get("keeps", ""), str) else ""
         if op == "ADD":
-            edits.append(AddRule(section=_str(item, "section"), text=_str(item, "text"), keeps=keeps))
+            edits.append(
+                AddRule(section=_str(item, "section"), text=_str(item, "text"), keeps=keeps, skill=_skill(item))
+            )
         elif op == "MODIFY":
             edits.append(ModifyRule(id=_str(item, "id"), text=_str(item, "text"), keeps=keeps))
         elif op == "DELETE":
@@ -162,21 +207,39 @@ def parse_judge_reply(reply: str) -> JudgeReply:
                 raise JudgeReplyError("MERGE: 'ids' must list at least two rule IDs")
             edits.append(MergeRules(ids=ids, text=_str(item, "text"), keeps=keeps))
         elif op == "DESCRIBE":
-            edits.append(DescribeSkill(text=_str(item, "text")))
+            edits.append(DescribeSkill(text=_str(item, "text"), skill=_skill(item)))
+        elif op == "CREATE":
+            rules = item.get("rules")
+            if not isinstance(rules, list) or not rules or not all(isinstance(r, str) and r.strip() for r in rules):
+                raise JudgeReplyError("CREATE: 'rules' must be a non-empty list of rule texts")
+            edits.append(
+                CreateSkill(name=_str(item, "name"), covers=_str(item, "covers"), rules=[r.strip() for r in rules])
+            )
+        elif op == "RETIRE":
+            edits.append(RetireSkill(skill=_str(item, "skill")))
         else:
-            raise JudgeReplyError(f"edit 'op' must be ADD, MODIFY, DELETE, MERGE or DESCRIBE; got {op!r}")
+            raise JudgeReplyError(
+                f"edit 'op' must be ADD, MODIFY, DELETE, MERGE, DESCRIBE, CREATE or RETIRE; got {op!r}"
+            )
     return JudgeReply(diagnosis=diagnosis, edits=edits)
 
 
 def edit_to_dict(edit: Edit) -> dict[str, Any]:
+    """`skill` appears only when set, so step files of single-skill runs are unchanged."""
     if isinstance(edit, AddRule):
-        return {"op": "ADD", "section": edit.section, "text": edit.text, "keeps": edit.keeps}
+        add = {"op": "ADD", "section": edit.section, "text": edit.text, "keeps": edit.keeps}
+        return {**add, "skill": edit.skill} if edit.skill else add
     if isinstance(edit, ModifyRule):
         return {"op": "MODIFY", "id": edit.id, "text": edit.text, "keeps": edit.keeps}
     if isinstance(edit, DeleteRule):
         return {"op": "DELETE", "id": edit.id}
     if isinstance(edit, DescribeSkill):
-        return {"op": "DESCRIBE", "text": edit.text}
+        describe = {"op": "DESCRIBE", "text": edit.text}
+        return {**describe, "skill": edit.skill} if edit.skill else describe
+    if isinstance(edit, CreateSkill):
+        return {"op": "CREATE", "name": edit.name, "covers": edit.covers, "rules": list(edit.rules)}
+    if isinstance(edit, RetireSkill):
+        return {"op": "RETIRE", "skill": edit.skill}
     return {"op": "MERGE", "ids": list(edit.ids), "text": edit.text, "keeps": edit.keeps}
 
 
@@ -199,9 +262,12 @@ def _locate(skill_file: SkillFile, rule_id: str):
 
 
 def apply_edits(skill_file: SkillFile, edits: list[Edit], origin: EditOrigin) -> SkillFile:
-    """Apply the edits in order to a copy of `skill_file` and return the copy. The input is not changed."""
+    """Apply the edits in order to a copy of `skill_file` and return the copy. The input is not changed. `skill` fields
+    are ignored here (the library routes each edit to its file); CREATE and RETIRE need the library."""
     result = skill_file.copy()
     for edit in edits:
+        if isinstance(edit, CreateSkill | RetireSkill):
+            raise EditApplyError(f"{edit.op} needs the security-skill library")
         if isinstance(edit, AddRule):
             section = result.section(edit.section)
             if section is None or section.kind != "rules":

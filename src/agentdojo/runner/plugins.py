@@ -99,6 +99,12 @@ class SkillFileSource(Protocol):
         run's default (`experiment_models.S0_SKILL_DESCRIPTION`)."""
         ...
 
+    @property
+    def specialist_skills(self) -> list[tuple[str, str, str]]:
+        """The judge-created specialised security skills in the next trial, as (name, description, body); empty
+        outside the C3/C4 library."""
+        ...
+
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         """Called after every unit with its trial record; returns a summary of an evolution step, if one ran."""
         ...
@@ -116,6 +122,10 @@ class NoChecker:
     version_name = "none"
     markdown = None
     description = None
+
+    @property
+    def specialist_skills(self) -> list[tuple[str, str, str]]:
+        return []
 
     def after_trial(self, record: dict[str, Any]) -> dict[str, Any] | None:
         return None
@@ -135,6 +145,10 @@ class FixedSkillFile:
 
     version_name = "S0"
     description = None
+
+    @property
+    def specialist_skills(self) -> list[tuple[str, str, str]]:
+        return []
 
     def __init__(self, text: str) -> None:
         self._text = text

@@ -21,7 +21,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agentdojo.skillfile.edits import AddRule, DeleteRule, DescribeSkill, Edit, MergeRules, ModifyRule
+from agentdojo.skillfile.edits import (
+    AddRule,
+    CreateSkill,
+    DeleteRule,
+    DescribeSkill,
+    Edit,
+    MergeRules,
+    ModifyRule,
+    RetireSkill,
+)
 from agentdojo.skillfile.structure import PRINCIPLES_SECTION, SkillFile
 
 TokenCounter = Callable[[str], int]
@@ -134,6 +143,10 @@ def _edit_problems(
     seen_ids: set[str],
 ) -> list[str]:
     problems: list[str] = []
+    if isinstance(edit, CreateSkill | RetireSkill):
+        return [f"{edit.op} is not available in this run: S0 is the only security skill"]
+    if isinstance(edit, AddRule | DescribeSkill) and edit.skill:
+        return ["this run has only one security skill (S0); leave 'skill' out"]
     if isinstance(edit, DescribeSkill):
         if not policy.description_editable:
             return ["the skill's description cannot be edited in this run"]

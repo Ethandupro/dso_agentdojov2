@@ -34,7 +34,7 @@ import openai
 from dotenv import load_dotenv
 
 from agentdojo import experiment_models
-from agentdojo.agent_pipeline.agent_skills import SKILLS_PROMPTS, load_skills_dir
+from agentdojo.agent_pipeline.agent_skills import MIDTASK_LOADING, SKILLS_PROMPTS, load_skills_dir
 from agentdojo.agent_pipeline.deepagents_pipeline import (
     DeepAgentsConfig,
     DeepAgentsPipeline,
@@ -70,6 +70,7 @@ from agentdojo.skillfile.judge import (
     openrouter_client,
     openrouter_judge_fn,
 )
+from agentdojo.skillfile.library import INDEX_OPENING, SKILL_LOADINGS
 from agentdojo.skillfile.structure import load_skill_file
 from agentdojo.skillfile.tokens import vllm_token_counter
 from agentdojo.skillfile.trigger import TriggerPolicy
@@ -308,6 +309,17 @@ def skill_agent_settings(
     "tool call; 'plain' (the first pilot's prompt) only offers them. 'plain' runs get a '-plain-skills' directory.",
 )
 @click.option(
+    "--skill-loading",
+    type=click.Choice(SKILL_LOADINGS),
+    default="index",
+    show_default=True,
+    help="How a security skill can be loaded once a tool output shows it applies (design note 2026-11-26). 'index' "
+    "(L1): S0 ends with a short index of the judge's specialised skills (C3/C4; nothing changes while there are "
+    "none). 'prompt' (L2): the shared skills prompt also says skills may be loaded mid-task; this changes every "
+    "condition, so C0-C2 must be re-run with the same setting before comparing. 'both': L1 and L2. Non-default "
+    "values get a '-load-<value>' results directory.",
+)
+@click.option(
     "--skills-dir",
     type=click.Path(path_type=Path, file_okay=False),
     default=experiment_models.AGENT_SKILLS_DIR,
@@ -511,6 +523,7 @@ def main(
     min_span_chars: int,
     external_checker: bool,
     skills_prompt_style: str,
+    skill_loading: str,
     skills_dir: Path,
     env_file: Path | None,
     judge_model: str,
@@ -579,6 +592,8 @@ def main(
         raise click.ClickException("the suite/subset/single-injection-point cuts leave no pairs to run")
 
     use_checker = external_checker and cond.s0
+    if external_checker and skill_loading != "index":
+        raise click.ClickException("--skill-loading is about the victim's skills; drop --external-checker")
     defense = "checker" if external_checker else "skills"
     agent_skills = [] if external_checker else load_skills_dir(skills_dir)
     if any(s.name == experiment_models.S0_SKILL_NAME for s in agent_skills):
@@ -724,6 +739,7 @@ def main(
         no_analyst=evolving_attack and attacker_loop in AUTODOJO_LOOPS and show_victim_trace and not analyst,
         replicate_wins=replicate if evolving_attack else None,
         judge_trigger=trigger_suffix,
+        skill_loading=skill_loading,
     )
     config = RunConfig(
         condition=cond.name,
@@ -748,6 +764,16 @@ def main(
                 "load_tool": "load_skill",
                 "prompt_style": skills_prompt_style,
                 "prompt_sha256": sha256_text(SKILLS_PROMPTS[skills_prompt_style]),  # type: ignore[index]
+                # Only when not the default, so runs from before 2026-11-26 still resume.
+                **(
+                    {
+                        "loading": skill_loading,
+                        "midtask_prompt_sha256": sha256_text(MIDTASK_LOADING),
+                        **({"index_sha256": sha256_text(INDEX_OPENING)} if skill_loading == "both" else {}),
+                    }
+                    if skill_loading != "index"
+                    else {}
+                ),
             }
         ),
         skill_mode=cond.skill_mode,
@@ -856,6 +882,8 @@ def main(
             trigger=trigger,
             rich_evidence=rich_evidence,
             rule_match_fn=openrouter_judge_fn(judge_model, seed=seed) if paraphrase_match else None,
+            s0_description=experiment_models.S0_SKILL_DESCRIPTION if not external_checker else "",
+            s0_index=skill_loading in ("index", "both"),
             n_train_pairs=len({u.pair.id for u in units if u.pair is not None and u.phase == "train"}),
         )
         skill_file = EvolvingSkillFile(
@@ -898,6 +926,7 @@ def main(
         replicate_wins=replicate,
         judge_confirm_runs=trigger.confirm_runs if cond.evolving_skill and trigger.batched else 0,
         judge_evidence=rich_evidence,
+        skill_loading=skill_loading,  # type: ignore[arg-type]
     )
     try:
         records = runner.run()

@@ -77,7 +77,19 @@ def find_runs(results_root: Path, limit: int | None = None) -> list[dict[str, An
             for r in runs
         )
         raise RunMismatchError(f"these runs were not built from the same manifest and trial count:\n  {detail}")
+    loadings = {skill_loading(r["config"]) for r in runs}
+    if len(loadings) > 1:
+        detail = "\n  ".join(f"{r['dir']}: --skill-loading {skill_loading(r['config'])}" for r in runs)
+        raise RunMismatchError(
+            "these runs use different --skill-loading settings, so their victims saw different skills prompts. "
+            f"Re-run with one setting, or move the other runs aside:\n  {detail}"
+        )
     return runs
+
+
+def skill_loading(config: dict[str, Any]) -> str:
+    """`--skill-loading` of a run; runs from before 2026-11-26 (no key) used the default, `index`."""
+    return (config.get("skills") or {}).get("loading", "index")
 
 
 def pooled(runs: list[dict[str, Any]], condition: str) -> list[Row]:
