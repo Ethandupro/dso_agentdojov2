@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("deepagents")
+
 from agentdojo import experiment_models
 from agentdojo.runner.conditions import CONDITIONS
 from agentdojo.runner.run import run_dir_for
